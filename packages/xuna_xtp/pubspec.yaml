@@ -1,0 +1,16 @@
+name: xuna_xtp
+description: "Pure-Dart XUNA Tool Protocol (XTP) v1 codec, schemas, cryptographic proof helpers, and fail-closed host policy evaluator."
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.6.2
+
+dependencies:
+  crypto: 3.0.7
+
+dev_dependencies:
+  lints: ^5.0.0
+  pointycastle: ^3.9.1
+  test: ^1.25.8
+
