@@ -1578,6 +1578,163 @@ class PocketTransformItemTool extends HostToolHandler {
   }
 }
 
+class WatchdogWatchProcessOrPortTool extends HostToolHandler {
+  const WatchdogWatchProcessOrPortTool();
+
+  @override
+  String get name => 'watchdog.watch_process_or_port';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final targetKind = context.arguments['targetKind'] as String;
+    final processName = context.arguments['processName'] as String?;
+    final port = context.arguments['port'] as int?;
+    final label = context.arguments['label'] as String?;
+    final res = await context.symbioticService.registerProcessOrPortWatchdog(
+      targetKind: targetKind,
+      processName: processName,
+      port: port,
+      label: label,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.summary,
+      structuredContent: <String, Object?>{
+        'watchdogId': res.watchdogId,
+        'targetKind': res.targetKind,
+        'targetValue': res.targetValue,
+        'status': res.status,
+        'summary': res.summary,
+      },
+    );
+  }
+}
+
+class WatchdogWatchResourceThresholdTool extends HostToolHandler {
+  const WatchdogWatchResourceThresholdTool();
+
+  @override
+  String get name => 'watchdog.watch_resource_threshold';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final metric = context.arguments['metric'] as String;
+    final threshold = context.arguments['threshold'] as int;
+    final res = await context.symbioticService.registerResourceWatchdog(
+      metric: metric,
+      threshold: threshold,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.summary,
+      structuredContent: <String, Object?>{
+        'watchdogId': res.watchdogId,
+        'metric': res.metric,
+        'threshold': res.threshold,
+        'currentValue': res.currentValue,
+        'triggered': res.triggered,
+        'summary': res.summary,
+      },
+    );
+  }
+}
+
+class WatchdogListAndClearTool extends HostToolHandler {
+  const WatchdogListAndClearTool();
+
+  @override
+  String get name => 'watchdog.list_and_clear';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = (context.arguments['action'] as String?) ?? 'list';
+    final res = context.symbioticService.listAndClearWatchdogs(action: action);
+    return ToolHandlerOutput(
+      text:
+          'Có ${res.watchdogs.length} đội tuần tra đang chạy (đã xóa ${res.clearedCount}).',
+      structuredContent: <String, Object?>{
+        'watchdogs': res.watchdogs,
+        'clearedCount': res.clearedCount,
+      },
+    );
+  }
+}
+
+class CoachDecomposeOverwhelmTool extends HostToolHandler {
+  const CoachDecomposeOverwhelmTool();
+
+  @override
+  String get name => 'coach.decompose_overwhelm';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final goal = context.arguments['goal'] as String;
+    final project = context.arguments['project'] as String?;
+    final res = context.symbioticService.decomposeOverwhelm(
+      goal: goal,
+      project: project,
+    );
+    return ToolHandlerOutput(
+      text: '${res.firstFiveMinuteStep} — ${res.encouragementVi}',
+      structuredContent: <String, Object?>{
+        'goal': res.goal,
+        'project': res.project,
+        'firstFiveMinuteStep': res.firstFiveMinuteStep,
+        'followUpSteps': res.followUpSteps,
+        'encouragementVi': res.encouragementVi,
+      },
+    );
+  }
+}
+
+class MeetingDeskWhisperDigestTool extends HostToolHandler {
+  const MeetingDeskWhisperDigestTool();
+
+  @override
+  String get name => 'meeting.desk_whisper_digest';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final topic = context.arguments['topic'] as String;
+    final contextHint = context.arguments['contextHint'] as String?;
+    final res = context.symbioticService.buildDeskWhisperDigest(
+      topic: topic,
+      contextHint: contextHint,
+    );
+    return ToolHandlerOutput(
+      text: res.whisperLine,
+      structuredContent: <String, Object?>{
+        'topic': res.topic,
+        'whisperLine': res.whisperLine,
+        'bulletPoints': res.bulletPoints,
+        'silentMode': res.silentMode,
+      },
+    );
+  }
+}
+
+class HabitProposeWorkflowTool extends HostToolHandler {
+  const HabitProposeWorkflowTool();
+
+  @override
+  String get name => 'habit.propose_workflow';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final minOccurrences =
+        (context.arguments['minOccurrences'] as int?) ?? 2;
+    final proposals = context.symbioticService.proposeHabitWorkflows(
+      minOccurrences: minOccurrences,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã phát hiện ${proposals.length} quy trình thói quen gợi ý.',
+      structuredContent: <String, Object?>{
+        'proposals': proposals,
+      },
+    );
+  }
+}
+
 /// Registry and dispatcher for all MVP, Dev Workspace, Desk Co-Pilot, Ambient Co-Pilot, Smart TV/Home, and Symbiotic Co-Pilot tools (`UDC-3` §5.6.5, `UDC-11`..`UDC-15`).
 class HostToolDispatcher {
   HostToolDispatcher({
@@ -1653,6 +1810,12 @@ class HostToolDispatcher {
           const PocketPushItemTool(),
           const PocketListItemsTool(),
           const PocketTransformItemTool(),
+          const WatchdogWatchProcessOrPortTool(),
+          const WatchdogWatchResourceThresholdTool(),
+          const WatchdogListAndClearTool(),
+          const CoachDecomposeOverwhelmTool(),
+          const MeetingDeskWhisperDigestTool(),
+          const HabitProposeWorkflowTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -1704,6 +1867,7 @@ class HostToolDispatcher {
       includeSmartTvHomeTools: true,
       includeSymbioticCopilotTools: true,
       includeSymbioticEvolutionTools: true,
+      includeSymbioticSentinelTools: true,
     );
     if (computerUseManager == null) {
       return mvp;
@@ -1935,6 +2099,7 @@ class HostToolDispatcher {
             arguments: params.arguments,
             nowUtc: effectiveNow,
           );
+          symbioticService.recordToolExecution(params.name);
         }
       }
     } on TimeoutException {

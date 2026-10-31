@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(44));
+        expect(toolsList, hasLength(50));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -2825,6 +2825,112 @@ void main() {
             taskSc['transformedText'] as String,
             contains('- [ ] Kiểm tra BLE'),
           );
+
+          // 6. SYM-2 S2.1: Autonomous Watchdogs, Coach, Desk Whisper & Habit Miner
+          final wdPortResp = await sym1Dispatcher.dispatch(
+            requestId: 1207,
+            params: const ToolsCallParams(
+              name: 'watchdog.watch_process_or_port',
+              arguments: <String, Object?>{
+                'targetKind': 'port',
+                'port': 5173,
+                'label': 'Vite dev server',
+              },
+              invocationId: '12070000-0000-4000-8000-000000000007',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final wdPortSc =
+              wdPortResp.result['structuredContent'] as Map<String, Object?>;
+          expect(wdPortSc['watchdogId'], equals('wd-1'));
+          expect(wdPortSc['targetValue'], equals(':5173'));
+
+          final wdResResp = await sym1Dispatcher.dispatch(
+            requestId: 1208,
+            params: const ToolsCallParams(
+              name: 'watchdog.watch_resource_threshold',
+              arguments: <String, Object?>{
+                'metric': 'battery_below',
+                'threshold': 90,
+              },
+              invocationId: '12080000-0000-4000-8000-000000000008',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final wdResSc =
+              wdResResp.result['structuredContent'] as Map<String, Object?>;
+          expect(wdResSc['triggered'], isTrue);
+
+          final wdListResp = await sym1Dispatcher.dispatch(
+            requestId: 1209,
+            params: const ToolsCallParams(
+              name: 'watchdog.list_and_clear',
+              arguments: <String, Object?>{'action': 'clear_triggered'},
+              invocationId: '12090000-0000-4000-8000-000000000009',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final wdListSc =
+              wdListResp.result['structuredContent'] as Map<String, Object?>;
+          expect(wdListSc['clearedCount'], equals(1));
+
+          final coachResp = await sym1Dispatcher.dispatch(
+            requestId: 1210,
+            params: const ToolsCallParams(
+              name: 'coach.decompose_overwhelm',
+              arguments: <String, Object?>{
+                'goal': 'Hoàn thiện SYM-2',
+                'project': 'xuna_pet',
+              },
+              invocationId: '12100000-0000-4000-8000-000000000010',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final coachSc =
+              coachResp.result['structuredContent'] as Map<String, Object?>;
+          expect(
+            coachSc['firstFiveMinuteStep'] as String,
+            contains('Trong 5 phút tới'),
+          );
+
+          final whisperResp = await sym1Dispatcher.dispatch(
+            requestId: 1211,
+            params: const ToolsCallParams(
+              name: 'meeting.desk_whisper_digest',
+              arguments: <String, Object?>{
+                'topic': 'Báo cáo SYM-2',
+                'contextHint': 'Nhấn mạnh 50 XTP tools và 0B firmware delta',
+              },
+              invocationId: '12110000-0000-4000-8000-000000000011',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final whisperSc =
+              whisperResp.result['structuredContent'] as Map<String, Object?>;
+          expect(whisperSc['silentMode'], isTrue);
+          expect(
+            (whisperSc['whisperLine'] as String).length,
+            lessThanOrEqualTo(120),
+          );
+
+          final habitResp = await sym1Dispatcher.dispatch(
+            requestId: 1212,
+            params: const ToolsCallParams(
+              name: 'habit.propose_workflow',
+              arguments: <String, Object?>{'minOccurrences': 2},
+              invocationId: '12120000-0000-4000-8000-000000000012',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final habitSc =
+              habitResp.result['structuredContent'] as Map<String, Object?>;
+          expect(habitSc['proposals'] as List<Object?>, isNotEmpty);
         },
       );
     },

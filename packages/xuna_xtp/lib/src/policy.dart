@@ -425,20 +425,24 @@ class HostPolicyEvaluator {
             ? ToolFamily.media
             : (prefix == 'system')
                 ? ToolFamily.host
-                : (prefix == 'display' ||
-                        prefix == 'workspace' ||
-                        prefix == 'selection' ||
-                        prefix == 'mcp' ||
-                        prefix == 'window' ||
-                        prefix == 'beam' ||
-                        prefix == 'action' ||
-                        prefix == 'smarthome' ||
-                        prefix == 'clipboard' ||
-                        prefix == 'dev' ||
-                        prefix == 'pocket' ||
-                        toolName == 'tv.launch_app')
-                    ? ToolFamily.app
-                    : ToolFamily.fromWire(prefix);
+                : (prefix == 'habit')
+                    ? ToolFamily.workflow
+                    : (prefix == 'display' ||
+                            prefix == 'workspace' ||
+                            prefix == 'selection' ||
+                            prefix == 'mcp' ||
+                            prefix == 'window' ||
+                            prefix == 'beam' ||
+                            prefix == 'action' ||
+                            prefix == 'smarthome' ||
+                            prefix == 'clipboard' ||
+                            prefix == 'dev' ||
+                            prefix == 'pocket' ||
+                            prefix == 'watchdog' ||
+                            prefix == 'coach' ||
+                            toolName == 'tv.launch_app')
+                        ? ToolFamily.app
+                        : ToolFamily.fromWire(prefix);
     if (!activePolicy.isFamilyAllowed(family)) {
       return const PolicyEvaluationResult(
         allowed: false,
@@ -1005,6 +1009,128 @@ class HostPolicyEvaluator {
             (!hasItemId && !hasText) ||
             (itemId != null && !hasItemId) ||
             (text != null && !hasText)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'watchdog.watch_process_or_port':
+        final targetKind = arguments['targetKind'];
+        final processName = arguments['processName'];
+        final port = arguments['port'];
+        final label = arguments['label'];
+        const allowedWdKeys = <String>{
+          'targetKind',
+          'processName',
+          'port',
+          'label',
+        };
+        final validProcess = processName is String &&
+            processName.trim().isNotEmpty &&
+            processName.length <= 64 &&
+            isSafeAgentPrompt(processName);
+        final validPort = port is int && port >= 1024 && port <= 65535;
+        if (arguments.keys.any((k) => !allowedWdKeys.contains(k)) ||
+            targetKind is! String ||
+            !allowedWatchdogTargetKinds.contains(targetKind) ||
+            (targetKind == 'process' && !validProcess) ||
+            (targetKind == 'port' && !validPort) ||
+            (processName != null && !validProcess) ||
+            (port != null && !validPort) ||
+            (label != null &&
+                (label is! String ||
+                    label.length > 80 ||
+                    !isSafeAgentPrompt(label)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'watchdog.watch_resource_threshold':
+        final metric = arguments['metric'];
+        final threshold = arguments['threshold'];
+        const allowedResKeys = <String>{'metric', 'threshold'};
+        if (arguments.keys.any((k) => !allowedResKeys.contains(k)) ||
+            metric is! String ||
+            !allowedWatchdogResourceMetrics.contains(metric) ||
+            threshold is! int ||
+            threshold < 1 ||
+            threshold > 99) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'watchdog.list_and_clear':
+        final action = arguments['action'];
+        if (arguments.keys.any((k) => k != 'action') ||
+            (action != null &&
+                (action is! String ||
+                    !allowedWatchdogListActions.contains(action)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'coach.decompose_overwhelm':
+        final goal = arguments['goal'];
+        final project = arguments['project'];
+        const allowedCoachKeys = <String>{'goal', 'project'};
+        if (arguments.keys.any((k) => !allowedCoachKeys.contains(k)) ||
+            goal is! String ||
+            goal.trim().isEmpty ||
+            goal.length > 240 ||
+            !isSafeAgentPrompt(goal) ||
+            (project != null &&
+                (project is! String || !isValidWorkspaceQuery(project)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'meeting.desk_whisper_digest':
+        final topic = arguments['topic'];
+        final contextHint = arguments['contextHint'];
+        const allowedWhisperKeys = <String>{'topic', 'contextHint'};
+        if (arguments.keys.any((k) => !allowedWhisperKeys.contains(k)) ||
+            topic is! String ||
+            topic.trim().isEmpty ||
+            topic.length > 120 ||
+            !isSafeAgentPrompt(topic) ||
+            (contextHint != null &&
+                (contextHint is! String ||
+                    contextHint.length > 240 ||
+                    !isSafeAgentPrompt(contextHint)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'habit.propose_workflow':
+        final minOccurrences = arguments['minOccurrences'];
+        if (arguments.keys.any((k) => k != 'minOccurrences') ||
+            (minOccurrences != null &&
+                (minOccurrences is! int ||
+                    minOccurrences < 2 ||
+                    minOccurrences > 10))) {
           return const PolicyEvaluationResult(
             allowed: false,
             status: XtpStatus.invalidArgs,

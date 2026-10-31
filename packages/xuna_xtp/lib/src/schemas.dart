@@ -362,20 +362,24 @@ class ToolDescriptor {
             ? ToolFamily.media
             : (prefix == 'system')
                 ? ToolFamily.host
-                : (prefix == 'display' ||
-                        prefix == 'workspace' ||
-                        prefix == 'selection' ||
-                        prefix == 'mcp' ||
-                        prefix == 'window' ||
-                        prefix == 'beam' ||
-                        prefix == 'action' ||
-                        prefix == 'smarthome' ||
-                        prefix == 'clipboard' ||
-                        prefix == 'dev' ||
-                        prefix == 'pocket' ||
-                        name == 'tv.launch_app')
-                    ? ToolFamily.app
-                    : ToolFamily.fromWire(prefix);
+                : (prefix == 'habit')
+                    ? ToolFamily.workflow
+                    : (prefix == 'display' ||
+                            prefix == 'workspace' ||
+                            prefix == 'selection' ||
+                            prefix == 'mcp' ||
+                            prefix == 'window' ||
+                            prefix == 'beam' ||
+                            prefix == 'action' ||
+                            prefix == 'smarthome' ||
+                            prefix == 'clipboard' ||
+                            prefix == 'dev' ||
+                            prefix == 'pocket' ||
+                            prefix == 'watchdog' ||
+                            prefix == 'coach' ||
+                            name == 'tv.launch_app')
+                        ? ToolFamily.app
+                        : ToolFamily.fromWire(prefix);
     if (expectedFamily != null && family != expectedFamily) {
       throw FormatException(
         'Tool $name prefix ($prefix) does not match policy family (${expectedFamily.wire})',
@@ -500,6 +504,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeSmartTvHomeTools = false,
   bool includeSymbioticCopilotTools = false,
   bool includeSymbioticEvolutionTools = false,
+  bool includeSymbioticSentinelTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -828,6 +833,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildSymbioticCopilotTools(defaultPermission: defaultPermission),
     if (includeSymbioticEvolutionTools)
       ...buildSymbioticEvolutionTools(defaultPermission: defaultPermission),
+    if (includeSymbioticSentinelTools)
+      ...buildSymbioticSentinelTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -2442,6 +2449,310 @@ List<ToolDescriptor> buildSymbioticEvolutionTools({
         family: ToolFamily.app,
         risk: RiskTier.r1,
         observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Allowed target kinds for `watchdog.watch_process_or_port` (`SYM-2` S2.1).
+const Set<String> allowedWatchdogTargetKinds = <String>{
+  'process',
+  'port',
+};
+
+/// Allowed resource metrics for `watchdog.watch_resource_threshold` (`SYM-2` S2.1).
+const Set<String> allowedWatchdogResourceMetrics = <String>{
+  'battery_below',
+  'memory_above',
+  'disk_free_below',
+};
+
+/// Allowed actions for `watchdog.list_and_clear` (`SYM-2` S2.1).
+const Set<String> allowedWatchdogListActions = <String>{
+  'list',
+  'clear_triggered',
+  'clear_all',
+};
+
+/// Builds the 6 `SYM-2` Autonomous Watchdogs, Executive Coach, Desk Whisper & Habit Miner tools (`S2.1`):
+/// - `watchdog.watch_process_or_port` (`R1`, `observes: true`, family `app`)
+/// - `watchdog.watch_resource_threshold` (`R1`, `observes: true`, family `app`)
+/// - `watchdog.list_and_clear` (`R1`, `reversible: true`, family `app`)
+/// - `coach.decompose_overwhelm` (`R1`, `reversible: true`, family `app`)
+/// - `meeting.desk_whisper_digest` (`R1`, `reversible: true`, family `media`)
+/// - `habit.propose_workflow` (`R1`, `observes: true`, family `workflow`)
+List<ToolDescriptor> buildSymbioticSentinelTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'watchdog.watch_process_or_port',
+      description:
+          'Register an autonomous background watchdog on a local process name or localhost port and report status changes.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'targetKind': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['process', 'port'],
+          },
+          'processName': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'port': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1024,
+            'maximum': 65535,
+          },
+          'label': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+        },
+        'required': <String>['targetKind'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'watchdogId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'targetKind': <String, Object?>{'type': 'string', 'maxLength': 24},
+          'targetValue': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'status': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 200},
+        },
+        'required': <String>[
+          'watchdogId',
+          'targetKind',
+          'targetValue',
+          'status',
+          'summary',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'watchdog.watch_resource_threshold',
+      description:
+          'Register an autonomous background threshold alert on battery, memory, or free disk space.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'metric': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'battery_below',
+              'memory_above',
+              'disk_free_below',
+            ],
+          },
+          'threshold': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 99,
+          },
+        },
+        'required': <String>['metric', 'threshold'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'watchdogId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'metric': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'threshold': <String, Object?>{'type': 'integer'},
+          'currentValue': <String, Object?>{'type': 'integer'},
+          'triggered': <String, Object?>{'type': 'boolean'},
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 200},
+        },
+        'required': <String>[
+          'watchdogId',
+          'metric',
+          'threshold',
+          'currentValue',
+          'triggered',
+          'summary',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'watchdog.list_and_clear',
+      description:
+          'List active or triggered background watchdogs and optionally clear triggered or all sentinels.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['list', 'clear_triggered', 'clear_all'],
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'watchdogs': <String, Object?>{'type': 'array'},
+          'clearedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+        },
+        'required': <String>['watchdogs', 'clearedCount'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'coach.decompose_overwhelm',
+      description:
+          'Decompose an overwhelming goal and project state into exactly one concrete 5-minute starter micro-step plus hidden follow-ups.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'goal': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 240,
+          },
+          'project': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+        },
+        'required': <String>['goal'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'goal': <String, Object?>{'type': 'string', 'maxLength': 240},
+          'project': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'firstFiveMinuteStep': <String, Object?>{
+            'type': 'string',
+            'maxLength': 160,
+          },
+          'followUpSteps': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 160},
+          },
+          'encouragementVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 200,
+          },
+        },
+        'required': <String>[
+          'goal',
+          'project',
+          'firstFiveMinuteStep',
+          'followUpSteps',
+          'encouragementVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'meeting.desk_whisper_digest',
+      description:
+          'Prepare a silent <= 120-char cue card for the physical XUNA desk screen during a meeting without showing any PC popup.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'topic': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 120,
+          },
+          'contextHint': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+        },
+        'required': <String>['topic'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'topic': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'whisperLine': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'bulletPoints': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 120},
+          },
+          'silentMode': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>[
+          'topic',
+          'whisperLine',
+          'bulletPoints',
+          'silentMode',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.media,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'habit.propose_workflow',
+      description:
+          'Mine repeated owner tool sequences to propose a bounded 1-tap macro workflow (<= 5 steps, max R2).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'minOccurrences': <String, Object?>{
+            'type': 'integer',
+            'minimum': 2,
+            'maximum': 10,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'proposals': <String, Object?>{'type': 'array'},
+        },
+        'required': <String>['proposals'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.workflow,
+        risk: RiskTier.r1,
+        observes: true,
         reversible: true,
         permission: defaultPermission,
       ),

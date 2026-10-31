@@ -1728,6 +1728,106 @@ void main() {
             .allowed,
         isTrue,
       );
+
+      final sentinelTools = buildSymbioticSentinelTools();
+      expect(sentinelTools, hasLength(6));
+      expect(
+        sentinelTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'watchdog.watch_process_or_port',
+          'watchdog.watch_resource_threshold',
+          'watchdog.list_and_clear',
+          'coach.decompose_overwhelm',
+          'meeting.desk_whisper_digest',
+          'habit.propose_workflow',
+        ]),
+      );
+
+      final fullCatalog50 = buildMvpToolCatalog(
+        includeBrowserCurrentUrl: true,
+        includeDevWorkspaceTools: true,
+        includeDeskCopilotTools: true,
+        includeAmbientCopilotTools: true,
+        includeSmartTvHomeTools: true,
+        includeSymbioticCopilotTools: true,
+        includeSymbioticEvolutionTools: true,
+        includeSymbioticSentinelTools: true,
+      );
+      expect(fullCatalog50, hasLength(50));
+
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'watchdog.watch_process_or_port',
+              arguments: const <String, Object?>{
+                'targetKind': 'port',
+                'port': 5173,
+                'label': 'Canh cổng Vite',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'watchdog.watch_resource_threshold',
+              arguments: const <String, Object?>{
+                'metric': 'battery_below',
+                'threshold': 20,
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'watchdog.list_and_clear',
+              arguments: const <String, Object?>{'action': 'list'},
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'coach.decompose_overwhelm',
+              arguments: const <String, Object?>{
+                'goal': 'Refactor toàn bộ hệ thống thanh toán',
+                'project': 'xuna_pet',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'meeting.desk_whisper_digest',
+              arguments: const <String, Object?>{
+                'topic': 'Báo cáo tiến độ SYM-2',
+                'contextHint': 'Nhấn mạnh 50 XTP tools và 0B firmware delta',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'habit.propose_workflow',
+              arguments: const <String, Object?>{'minOccurrences': 2},
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
     });
   });
 }
