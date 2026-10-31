@@ -415,7 +415,9 @@ class HostPolicyEvaluator {
     }
 
     final activePolicy = policy!;
-    final family = ToolFamily.fromWire(toolName.split('.').first);
+    final prefix = toolName.split('.').first;
+    final family =
+        prefix == 'browser' ? ToolFamily.url : ToolFamily.fromWire(prefix);
     if (!activePolicy.isFamilyAllowed(family)) {
       return const PolicyEvaluationResult(
         allowed: false,
@@ -543,6 +545,20 @@ class HostPolicyEvaluator {
           );
         }
         normalizedUrlHost = urlCheck.asciiHost;
+        effectiveRisk = RiskTier.r2;
+      case 'browser.current_url':
+        if (arguments.length > 1 ||
+            (arguments.containsKey('browser') &&
+                (arguments['browser'] is! String ||
+                    !<String>{'auto', 'edge', 'chrome', 'safari'}
+                        .contains(arguments['browser'] as String)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
         effectiveRisk = RiskTier.r2;
       case 'workflow.run':
         if (arguments.length != 1 || arguments['id'] is! String) {

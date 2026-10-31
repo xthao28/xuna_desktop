@@ -77,6 +77,14 @@ class NowPlayingSnapshot {
   };
 }
 
+/// Snapshot of the active browser tab returned by `browserCurrentUrl` (`UDC-9` S9.1).
+class BrowserTabSnapshot {
+  const BrowserTabSnapshot({required this.url, required this.browser});
+
+  final String url;
+  final String browser;
+}
+
 /// Abstract interface for the native `xuna/host` MethodChannel (`UDC-3` §5.6.3).
 ///
 /// Every call has a 10 s native timeout. Unit and integration tests use
@@ -105,6 +113,10 @@ abstract interface class XunaHostChannel {
 
   /// Opens a pre-validated `https://` URL in the user's default browser.
   Future<void> urlOpen(String url);
+
+  /// Reads the active `https://` tab URL from Edge/Chrome (Windows UIA) or
+  /// Safari/Chrome (macOS AppleScript) (`UDC-9` S9.1).
+  Future<BrowserTabSnapshot> browserCurrentUrl({String browser = 'auto'});
 
   /// Runs an allowlisted workflow (`lnk` or `shortcut`).
   Future<void> workflowRun({
@@ -214,6 +226,30 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
   @override
   Future<void> urlOpen(String url) async {
     await _invokeMap('urlOpen', <String, Object?>{'url': url});
+  }
+
+  @override
+  Future<BrowserTabSnapshot> browserCurrentUrl({
+    String browser = 'auto',
+  }) async {
+    final map = await _invokeMap('browserCurrentUrl', <String, Object?>{
+      'browser': browser,
+    });
+    final url = map['url'];
+    final resolvedBrowser = map['browser'];
+    if (url is! String || url.isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'No active browser tab URL found',
+      );
+    }
+    return BrowserTabSnapshot(
+      url: url,
+      browser: resolvedBrowser is String && resolvedBrowser.isNotEmpty
+          ? resolvedBrowser
+          : (browser == 'auto' ? 'edge' : browser),
+    );
   }
 
   @override

@@ -71,6 +71,11 @@ void main() {
               case 'workflowRun':
               case 'showToast':
                 return <String, Object?>{};
+              case 'browserCurrentUrl':
+                return <String, Object?>{
+                  'url': 'https://github.com/xthao28/xuna_pet',
+                  'browser': 'edge',
+                };
               case 'permissions':
                 return <String, Object?>{
                   'accessibility': 'granted',
@@ -110,6 +115,9 @@ void main() {
         target: r'C:\Program Files\App\app.exe',
       );
       await hostChannel.urlOpen('https://github.com');
+      final tabSnap = await hostChannel.browserCurrentUrl(browser: 'edge');
+      expect(tabSnap.url, 'https://github.com/xthao28/xuna_pet');
+      expect(tabSnap.browser, 'edge');
       await hostChannel.workflowRun(
         kind: WorkflowKind.lnk,
         target: r'C:\Users\Thao\Focus.lnk',
@@ -143,6 +151,7 @@ void main() {
         'nowPlaying',
         'appLaunch',
         'urlOpen',
+        'browserCurrentUrl',
         'workflowRun',
         'permissions',
         'requestPermission',

@@ -47,6 +47,10 @@ class FakeXunaHostChannel implements XunaHostChannel {
   );
   String mediaStateResult = 'playing';
   int currentVolume = 50;
+  BrowserTabSnapshot browserCurrentUrlResult = const BrowserTabSnapshot(
+    url: 'https://github.com/xthao28/xuna_pet',
+    browser: 'edge',
+  );
 
   /// Optional artificial delay before tool calls return (to test deadlines and
   /// cancellation).
@@ -114,6 +118,15 @@ class FakeXunaHostChannel implements XunaHostChannel {
   Future<void> urlOpen(String url) async {
     invokedMethods.add('urlOpen');
     await _delayAndThrowIfConfigured();
+  }
+
+  @override
+  Future<BrowserTabSnapshot> browserCurrentUrl({
+    String browser = 'auto',
+  }) async {
+    invokedMethods.add('browserCurrentUrl:$browser');
+    await _delayAndThrowIfConfigured();
+    return browserCurrentUrlResult;
   }
 
   @override

@@ -354,7 +354,8 @@ class ToolDescriptor {
       throw FormatException('Invalid tool name format: $name');
     }
     final prefix = name.split('.').first;
-    final family = ToolFamily.fromWire(prefix);
+    final family =
+        prefix == 'browser' ? ToolFamily.url : ToolFamily.fromWire(prefix);
     if (expectedFamily != null && family != expectedFamily) {
       throw FormatException(
         'Tool $name prefix ($prefix) does not match policy family (${expectedFamily.wire})',
@@ -472,6 +473,7 @@ Uint8List _decodeB64Flex(String raw, int expectedLen) {
 List<ToolDescriptor> buildMvpToolCatalog({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
   bool includeHostNotify = true,
+  bool includeBrowserCurrentUrl = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -786,8 +788,52 @@ List<ToolDescriptor> buildMvpToolCatalog({
           permission: defaultPermission,
         ),
       ),
+    if (includeBrowserCurrentUrl)
+      buildBrowserCurrentUrlTool(defaultPermission: defaultPermission),
   ];
   return tools;
+}
+
+/// Builds the `browser.current_url` descriptor (`UDC-9` S9.1: R2, `observes: true`,
+/// `reversible: true`, family `url`).
+ToolDescriptor buildBrowserCurrentUrlTool({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return ToolDescriptor(
+    name: 'browser.current_url',
+    description:
+        'Read the active https tab URL from an allowlisted browser (Edge, Chrome, Safari).',
+    inputSchema: const <String, Object?>{
+      'type': 'object',
+      'properties': <String, Object?>{
+        'browser': <String, Object?>{
+          'type': 'string',
+          'enum': <String>['auto', 'edge', 'chrome', 'safari'],
+        },
+      },
+      'additionalProperties': false,
+    },
+    outputSchema: const <String, Object?>{
+      'type': 'object',
+      'properties': <String, Object?>{
+        'url': <String, Object?>{'type': 'string', 'maxLength': 2048},
+        'host': <String, Object?>{'type': 'string', 'maxLength': 255},
+        'browser': <String, Object?>{
+          'type': 'string',
+          'enum': <String>['edge', 'chrome', 'safari'],
+        },
+      },
+      'required': <String>['url', 'host', 'browser'],
+      'additionalProperties': false,
+    },
+    policy: ToolPolicyMeta(
+      family: ToolFamily.url,
+      risk: RiskTier.r2,
+      observes: true,
+      reversible: true,
+      permission: defaultPermission,
+    ),
+  );
 }
 
 /// Normative allowlist of key combinations for `input.key` (`UDC-8` §4.2).

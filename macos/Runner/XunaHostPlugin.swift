@@ -59,6 +59,8 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
         self.handleAppLaunch(args: args, result: result)
       case "urlOpen":
         self.handleUrlOpen(args: args, result: result)
+      case "browserCurrentUrl":
+        self.handleBrowserCurrentUrl(args: args, result: result)
       case "workflowRun":
         self.handleWorkflowRun(args: args, result: result)
       case "permissions":
@@ -627,6 +629,63 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     } else {
       replyError(result, code: "failed", message: "NSWorkspace failed to open URL")
     }
+  }
+
+  private func handleBrowserCurrentUrl(args: [String: Any], result: @escaping FlutterResult) {
+    let requested = (args["browser"] as? String ?? "auto").lowercased()
+    let candidates: [(id: String, bundleId: String, script: String)] = [
+      (
+        "safari",
+        "com.apple.Safari",
+        "tell application \"Safari\" to get URL of current tab of front window"
+      ),
+      (
+        "chrome",
+        "com.google.Chrome",
+        "tell application \"Google Chrome\" to get URL of active tab of front window"
+      ),
+    ]
+
+    let runningBundles = Set(
+      NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
+    )
+
+    for candidate in candidates {
+      if requested != "auto" && requested != candidate.id {
+        continue
+      }
+      if !runningBundles.contains(candidate.bundleId) {
+        continue
+      }
+      let perm = checkAutomationPermission(bundleId: candidate.bundleId, prompt: false)
+      if perm == "denied" {
+        replyError(
+          result,
+          code: "needs_permission",
+          message: "Automation permission denied for \(candidate.id)"
+        )
+        return
+      }
+      var errDict: NSDictionary?
+      if let scriptObj = NSAppleScript(source: candidate.script) {
+        let output = scriptObj.executeAndReturnError(&errDict)
+        if let rawUrl = output.stringValue,
+           rawUrl.lowercased().hasPrefix("https://")
+        {
+          replySuccess(result, [
+            "url": rawUrl,
+            "browser": candidate.id,
+          ])
+          return
+        }
+      }
+    }
+
+    replyError(
+      result,
+      code: "invalid_args",
+      message: "No active https:// browser tab found"
+    )
   }
 
   private func handleWorkflowRun(args: [String: Any], result: @escaping FlutterResult) {

@@ -632,7 +632,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(12));
+        expect(toolsList, hasLength(13));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -1301,6 +1301,152 @@ void main() {
         await lanWs.close();
         await lanServer.stop();
         await client.dispose();
+      },
+    );
+  });
+
+  group('UDC-9 S9.1: browser.current_url tool execution and zero-URL logging', () {
+    test(
+      'reads active https tab across 10/10 Edge/Chrome (Windows) & Safari/Chrome (macOS) cases, rejects non-https/local URLs, and never logs the URL',
+      () async {
+        await policyStore.savePolicy(_sampleHealthyPolicy());
+        final now = DateTime.utc(2026, 10, 31, 10, 0);
+
+        final tenCases = <({String browser, String url, String expectedHost})>[
+          (
+            browser: 'edge',
+            url: 'https://github.com/xthao28/xuna_pet?token=sec01',
+            expectedHost: 'github.com',
+          ),
+          (
+            browser: 'edge',
+            url: 'https://docs.github.com/en/actions?token=sec02',
+            expectedHost: 'docs.github.com',
+          ),
+          (
+            browser: 'edge',
+            url: 'https://jira.example.com/browse/XUNA-9?token=sec03',
+            expectedHost: 'jira.example.com',
+          ),
+          (
+            browser: 'chrome',
+            url: 'https://developer.apple.com/documentation?token=sec04',
+            expectedHost: 'developer.apple.com',
+          ),
+          (
+            browser: 'chrome',
+            url: 'https://learn.microsoft.com/en-us/windows/win32?token=sec05',
+            expectedHost: 'learn.microsoft.com',
+          ),
+          (
+            browser: 'chrome',
+            url: 'https://pub.dev/packages/flutter_test?token=sec06',
+            expectedHost: 'pub.dev',
+          ),
+          (
+            browser: 'safari',
+            url: 'https://news.ycombinator.com/item?id=42001&token=sec07',
+            expectedHost: 'news.ycombinator.com',
+          ),
+          (
+            browser: 'safari',
+            url: 'https://arxiv.org/abs/2410.00001?token=sec08',
+            expectedHost: 'arxiv.org',
+          ),
+          (
+            browser: 'safari',
+            url: 'https://sub.việt.vn/bai-viet?token=sec09',
+            expectedHost: 'sub.xn--vit-5kz.vn',
+          ),
+          (
+            browser: 'chrome',
+            url: 'https://openai.com/index/computer-use?token=sec10',
+            expectedHost: 'openai.com',
+          ),
+        ];
+
+        for (var i = 0; i < tenCases.length; i++) {
+          final tc = tenCases[i];
+          channel.browserCurrentUrlResult = BrowserTabSnapshot(
+            url: tc.url,
+            browser: tc.browser,
+          );
+          final args = <String, Object?>{'browser': tc.browser};
+          final resp = await dispatcher.dispatch(
+            requestId: 500 + i,
+            params: ToolsCallParams(
+              name: 'browser.current_url',
+              arguments: args,
+              invocationId:
+                  '91000000-0000-4000-8000-${(i + 1).toString().padLeft(12, '0')}',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId:
+                    '92000000-0000-4000-8000-${(i + 1).toString().padLeft(12, '0')}',
+                argsSha256: argsSha256(args),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final meta = resp.result['_meta'] as Map<String, Object?>;
+          expect(meta['xuna/status'], equals('ok'));
+          final sc = resp.result['structuredContent'] as Map<String, Object?>;
+          expect(sc['url'], equals(tc.url));
+          expect(sc['host'], equals(tc.expectedHost));
+          expect(sc['browser'], equals(tc.browser));
+          expect(channel.toasts.last.body, equals('XUNA: đã đọc liên kết ${tc.expectedHost}'));
+        }
+
+        // Rejects http://, file://, chrome://, private IP, localhost
+        for (var j = 0; j < 5; j++) {
+          final badUrl = <String>[
+            'http://github.com/insecure',
+            'file:///C:/Users/Thao/secret.txt',
+            'chrome://settings/passwords',
+            'https://192.168.1.1/router',
+            'https://localhost:8080/internal',
+          ][j];
+          channel.browserCurrentUrlResult = BrowserTabSnapshot(
+            url: badUrl,
+            browser: 'edge',
+          );
+          const args = <String, Object?>{'browser': 'edge'};
+          final badResp = await dispatcher.dispatch(
+            requestId: 600 + j,
+            params: ToolsCallParams(
+              name: 'browser.current_url',
+              arguments: args,
+              invocationId:
+                  '93000000-0000-4000-8000-${(j + 1).toString().padLeft(12, '0')}',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId:
+                    '94000000-0000-4000-8000-${(j + 1).toString().padLeft(12, '0')}',
+                argsSha256: argsSha256(args),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final meta = badResp.result['_meta'] as Map<String, Object?>;
+          expect(meta['xuna/status'], equals('invalid_args'));
+          expect(meta['xuna/errorCode'], equals('url_invalid'));
+        }
+
+        // Verify zero URLs or query tokens in ContentFreeLogger and AuditLogStore
+        for (final entry in logger.entries) {
+          final serialized = jsonEncode(entry.fields);
+          expect(serialized, isNot(contains('https://')));
+          expect(serialized, isNot(contains('sec01')));
+          expect(serialized, isNot(contains('xthao28')));
+        }
+        final audits = await auditStore.readRecent();
+        for (final record in audits) {
+          final line = jsonEncode(record.toJson());
+          expect(line, isNot(contains('https://')));
+          expect(line, isNot(contains('sec01')));
+        }
       },
     );
   });

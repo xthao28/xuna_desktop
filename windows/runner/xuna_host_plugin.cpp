@@ -7,6 +7,7 @@
 #include <ncrypt.h>
 #include <shellapi.h>
 #include <shobjidl.h>
+#include <uiautomation.h>
 #include <wincrypt.h>
 
 #if __has_include(<winrt/Windows.Foundation.h>) && \
@@ -479,6 +480,103 @@ bool OpenHttpsUrl(const std::string& url) {
   return ShellExecuteExW(&sei) == TRUE;
 }
 
+bool QueryBrowserCurrentUrlUia(const std::string& requested_browser,
+                               std::string* out_url,
+                               std::string* out_browser) {
+  IUIAutomation* uia = nullptr;
+  HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), nullptr,
+                                CLSCTX_INPROC_SERVER,
+                                __uuidof(IUIAutomation),
+                                reinterpret_cast<void**>(&uia));
+  if (FAILED(hr) || uia == nullptr) {
+    return false;
+  }
+
+  HWND hwnd = GetForegroundWindow();
+  wchar_t class_name[128] = {};
+  if (hwnd != nullptr) {
+    GetClassNameW(hwnd, class_name, 128);
+  }
+  if (wcscmp(class_name, L"Chrome_WidgetWin_1") != 0) {
+    hwnd = FindWindowW(L"Chrome_WidgetWin_1", nullptr);
+  }
+  if (hwnd == nullptr) {
+    uia->Release();
+    return false;
+  }
+
+  wchar_t title_buf[512] = {};
+  GetWindowTextW(hwnd, title_buf, 512);
+  std::string win_title = ToLowerAscii(WideToUtf8(std::wstring(title_buf)));
+  std::string detected_browser =
+      win_title.find("edge") != std::string::npos ? "edge" : "chrome";
+  if (requested_browser != "auto" && !requested_browser.empty() &&
+      requested_browser != detected_browser) {
+    detected_browser = requested_browser;
+  }
+
+  IUIAutomationElement* root = nullptr;
+  hr = uia->ElementFromHandle(hwnd, &root);
+  if (FAILED(hr) || root == nullptr) {
+    uia->Release();
+    return false;
+  }
+
+  VARIANT var_prop;
+  VariantInit(&var_prop);
+  var_prop.vt = VT_I4;
+  var_prop.lVal = UIA_EditControlTypeId;
+  IUIAutomationCondition* edit_cond = nullptr;
+  hr = uia->CreatePropertyCondition(UIA_ControlTypePropertyId, var_prop,
+                                    &edit_cond);
+  if (FAILED(hr) || edit_cond == nullptr) {
+    root->Release();
+    uia->Release();
+    return false;
+  }
+
+  IUIAutomationElementArray* edits = nullptr;
+  hr = root->FindAll(TreeScope_Descendants, edit_cond, &edits);
+  edit_cond->Release();
+  root->Release();
+  if (FAILED(hr) || edits == nullptr) {
+    uia->Release();
+    return false;
+  }
+
+  int length = 0;
+  edits->get_Length(&length);
+  bool found = false;
+  for (int i = 0; i < length; ++i) {
+    IUIAutomationElement* elem = nullptr;
+    if (FAILED(edits->GetElement(i, &elem)) || elem == nullptr) continue;
+    IUIAutomationValuePattern* val_pat = nullptr;
+    if (SUCCEEDED(elem->GetCurrentPatternAs(
+            UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern),
+            reinterpret_cast<void**>(&val_pat))) &&
+        val_pat != nullptr) {
+      BSTR bval = nullptr;
+      if (SUCCEEDED(val_pat->get_CurrentValue(&bval)) && bval != nullptr) {
+        std::string candidate = WideToUtf8(std::wstring(bval, SysStringLen(bval)));
+        SysFreeString(bval);
+        if (candidate.rfind("https://", 0) == 0 ||
+            candidate.rfind("HTTPS://", 0) == 0) {
+          *out_url = candidate;
+          *out_browser = detected_browser;
+          found = true;
+        }
+      }
+      val_pat->Release();
+    }
+    elem->Release();
+    if (found) break;
+  }
+
+  edits->Release();
+  uia->Release();
+  return found;
+}
+
 std::string QueryWindowsOsVersion() {
   HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   if (ntdll != nullptr) {
@@ -643,6 +741,28 @@ void HandleMethodCallOnWorker(
       return;
     }
     result->Success(flutter::EncodableValue(flutter::EncodableMap()));
+    CoUninitialize();
+    return;
+  }
+
+  if (method == "browserCurrentUrl") {
+    const auto* br_val = FindKey(args, "browser");
+    const auto* br_str = br_val ? std::get_if<std::string>(br_val) : nullptr;
+    std::string req_browser = br_str ? *br_str : "auto";
+    std::string active_url;
+    std::string resolved_browser;
+    if (!QueryBrowserCurrentUrlUia(req_browser, &active_url,
+                                   &resolved_browser)) {
+      result->Error("invalid_args",
+                    "No active https:// browser tab found via UIA");
+      CoUninitialize();
+      return;
+    }
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("url")] = flutter::EncodableValue(active_url);
+    out[flutter::EncodableValue("browser")] =
+        flutter::EncodableValue(resolved_browser);
+    result->Success(flutter::EncodableValue(out));
     CoUninitialize();
     return;
   }

@@ -935,6 +935,47 @@ void main() {
       expect(typeNoApproval.allowed, isFalse);
       expect(typeNoApproval.effectiveRisk, equals(RiskTier.r3));
       expect(typeNoApproval.errorCode, equals('approval_required'));
+
+      // UDC-9 S9.1: browser.current_url descriptor and R2 policy evaluation
+      final browserTool = buildBrowserCurrentUrlTool();
+      expect(browserTool.name, equals('browser.current_url'));
+      expect(browserTool.policy.family, equals(ToolFamily.url));
+      expect(browserTool.policy.risk, equals(RiskTier.r2));
+      expect(browserTool.policy.observes, isTrue);
+      expect(browserTool.policy.reversible, isTrue);
+
+      final now = DateTime.utc(2026, 10, 31, 9, 0, 0);
+      const browserArgs = <String, Object?>{'browser': 'edge'};
+      final browserNoApproval = evaluator.evaluateInvocation(
+        toolName: 'browser.current_url',
+        arguments: browserArgs,
+        nowUtc: now,
+      );
+      expect(browserNoApproval.allowed, isFalse);
+      expect(browserNoApproval.effectiveRisk, equals(RiskTier.r2));
+      expect(browserNoApproval.errorCode, equals('approval_required'));
+
+      final browserApproved = evaluator.evaluateInvocation(
+        toolName: 'browser.current_url',
+        arguments: browserArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+          argsSha256: argsSha256(browserArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(browserApproved.allowed, isTrue);
+      expect(browserApproved.effectiveRisk, equals(RiskTier.r2));
+
+      final browserBadArg = evaluator.evaluateInvocation(
+        toolName: 'browser.current_url',
+        arguments: const <String, Object?>{'browser': 'firefox'},
+        nowUtc: now,
+      );
+      expect(browserBadArg.allowed, isFalse);
+      expect(browserBadArg.status, equals(XtpStatus.invalidArgs));
+      expect(browserBadArg.errorCode, equals('schema_mismatch'));
     });
   });
 }

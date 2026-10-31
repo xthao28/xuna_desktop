@@ -221,6 +221,46 @@ class UrlOpenTool extends HostToolHandler {
   }
 }
 
+class BrowserCurrentUrlTool extends HostToolHandler {
+  const BrowserCurrentUrlTool();
+
+  @override
+  String get name => 'browser.current_url';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final requestedBrowser =
+        (context.arguments['browser'] as String?) ?? 'auto';
+    final snap = await context.channel.browserCurrentUrl(
+      browser: requestedBrowser,
+    );
+    final urlCheck = validateHttpsUrlAgainstAllowlist(
+      snap.url,
+      context.policy?.urlDomains ?? const <String>[],
+    );
+    if (!urlCheck.validUrl || urlCheck.asciiHost == null) {
+      throw XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: urlCheck.errorCode ?? 'url_invalid',
+      );
+    }
+    final resolvedBrowser =
+        const <String>{'edge', 'chrome', 'safari'}.contains(snap.browser)
+        ? snap.browser
+        : 'edge';
+    final host = urlCheck.asciiHost!;
+    return ToolHandlerOutput(
+      text: 'Đã đọc liên kết hiện tại từ $resolvedBrowser ($host).',
+      structuredContent: <String, Object?>{
+        'url': snap.url,
+        'host': host,
+        'browser': resolvedBrowser,
+      },
+      toastBody: 'đã đọc liên kết $host',
+    );
+  }
+}
+
 class WorkflowListTool extends HostToolHandler {
   const WorkflowListTool();
 
@@ -323,6 +363,7 @@ class HostToolDispatcher {
           const AppListAllowedTool(),
           const AppLaunchTool(),
           const UrlOpenTool(),
+          const BrowserCurrentUrlTool(),
           const WorkflowListTool(),
           const WorkflowRunTool(),
           const HostStatusTool(),
@@ -361,7 +402,10 @@ class HostToolDispatcher {
     } catch (_) {
       perms = const HostPermissionSnapshot();
     }
-    final mvp = buildMvpToolCatalog(defaultPermission: perms.accessibility);
+    final mvp = buildMvpToolCatalog(
+      defaultPermission: perms.accessibility,
+      includeBrowserCurrentUrl: true,
+    );
     if (computerUseManager == null) {
       return mvp;
     }
