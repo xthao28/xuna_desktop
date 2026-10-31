@@ -63,6 +63,9 @@ class FakeXunaHostChannel implements XunaHostChannel {
   final List<({String title, String body})> toasts =
       <({String title, String body})>[];
 
+  int get displayWakeCount =>
+      invokedMethods.where((m) => m == 'displayWake').length;
+
   @override
   Future<Uint8List> keyEnsure() async {
     invokedMethods.add('keyEnsure');
@@ -136,6 +139,13 @@ class FakeXunaHostChannel implements XunaHostChannel {
   }) async {
     invokedMethods.add('workflowRun:${kind.wire}');
     await _delayAndThrowIfConfigured();
+  }
+
+  @override
+  Future<bool> displayWake() async {
+    invokedMethods.add('displayWake');
+    await _delayAndThrowIfConfigured();
+    return true;
   }
 
   @override

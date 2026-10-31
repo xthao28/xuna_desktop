@@ -14,6 +14,8 @@ import 'package:xuna_desktop/core/controller/desktop_agent_controller.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/single_instance/single_instance_guard.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
+import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
+import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
@@ -632,7 +634,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(13));
+        expect(toolsList, hasLength(17));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -1446,6 +1448,330 @@ void main() {
           final line = jsonEncode(record.toJson());
           expect(line, isNot(contains('https://')));
           expect(line, isNot(contains('sec01')));
+        }
+      },
+    );
+  });
+
+  group('UDC-11 S11.1–S11.3: Zero-config app/workspace discovery, display.wake, workspace.open, workspace.git_summary, and workspace.coding_agent', () {
+    test(
+      'discovers apps/CLIs and workspaces automatically (~/.claude.json, IDE storage.json, .git scan), executes display.wake, workspace.open, workspace.git_summary, and workspace.coding_agent (claude --continue) with zero raw path/prompt logging',
+      () async {
+        // Policy has NO manual apps configured (apps: []) to verify zero-config discovery!
+        final zeroConfigPolicy = HostPolicy(
+          schemaVersion: 1,
+          families: const <ToolFamily, FamilyPolicyDecision>{
+            ToolFamily.media: FamilyPolicyDecision.allow,
+            ToolFamily.app: FamilyPolicyDecision.allow,
+            ToolFamily.url: FamilyPolicyDecision.allow,
+            ToolFamily.workflow: FamilyPolicyDecision.allow,
+          },
+          apps: const <AllowedAppConfig>[],
+          urlDomains: const <String>['github.com'],
+          workflows: const <WorkflowConfig>[],
+          players: const <String>['spotify'],
+        );
+        await policyStore.savePolicy(zeroConfigPolicy);
+
+        // Create fake home & app directories inside tempDir
+        final fakeHome = Directory('${tempDir.path}/home');
+        await fakeHome.create(recursive: true);
+        final fakeAppsDir = Directory('${tempDir.path}/Applications');
+        await fakeAppsDir.create(recursive: true);
+        final fakeBinDir = Directory('${tempDir.path}/bin');
+        await fakeBinDir.create(recursive: true);
+
+        // Create fake macOS bundles + hard-denied app (Terminal.app)
+        await Directory('${fakeAppsDir.path}/Antigravity.app').create();
+        await Directory('${fakeAppsDir.path}/Visual Studio Code.app').create();
+        await Directory('${fakeAppsDir.path}/Terminal.app').create();
+
+        // Create fake CLI binaries (claude, agy)
+        final claudeBin = File('${fakeBinDir.path}/claude');
+        await claudeBin.writeAsString('#!/bin/sh\n', flush: true);
+        final agyBin = File('${fakeBinDir.path}/agy');
+        await agyBin.writeAsString('#!/bin/sh\n', flush: true);
+
+        // Create fake projects in ~/Documents/xuna_pet and ~/Projects/demo_app
+        final xunaDir = Directory('${fakeHome.path}/Documents/xuna_pet');
+        await Directory('${xunaDir.path}/.git').create(recursive: true);
+        await File('${xunaDir.path}/AGENTS.md').writeAsString('# XUNA', flush: true);
+
+        final demoDir = Directory('${fakeHome.path}/Projects/demo_app');
+        await Directory('${demoDir.path}/.git').create(recursive: true);
+
+        // Write ~/.claude.json referencing xuna_pet
+        final claudeJsonFile = File('${fakeHome.path}/.claude.json');
+        await claudeJsonFile.writeAsString(
+          jsonEncode(<String, Object?>{
+            'projects': <String, Object?>{
+              xunaDir.path: <String, Object?>{'hasTrustDialogAccepted': true},
+            },
+          }),
+          flush: true,
+        );
+
+        // Write Antigravity storage.json referencing demo_app
+        final agyStorageDir = Directory(
+          '${fakeHome.path}/Library/Application Support/Antigravity/User/globalStorage',
+        );
+        await agyStorageDir.create(recursive: true);
+        final agyStorageFile = File('${agyStorageDir.path}/storage.json');
+        await agyStorageFile.writeAsString(
+          jsonEncode(<String, Object?>{
+            'backupWorkspaces': <String, Object?>{
+              'folders': <Map<String, Object?>>[
+                <String, Object?>{'folderUri': Uri.directory(demoDir.path).toString()},
+              ],
+            },
+          }),
+          flush: true,
+        );
+
+        final launchedPlans = <CodingAgentLaunchPlan>[];
+
+        final appScanner = AutoAppScanner(
+          seedApps: const <DiscoveredApp>[
+            DiscoveredApp(
+              id: 'antigravity',
+              name: 'Antigravity',
+              kind: AppLaunchKind.bundle,
+              target: 'com.google.antigravity',
+              isCodingAgent: true,
+            ),
+            DiscoveredApp(
+              id: 'vscode',
+              name: 'Visual Studio Code',
+              kind: AppLaunchKind.bundle,
+              target: 'com.microsoft.VSCode',
+              isCodingAgent: true,
+            ),
+            DiscoveredApp(
+              id: 'terminal',
+              name: 'Terminal',
+              kind: AppLaunchKind.bundle,
+              target: 'com.apple.Terminal',
+            ),
+          ],
+          seedAgentBinaries: <String, String>{
+            'claude_code': claudeBin.path,
+            'antigravity': agyBin.path,
+          },
+          scanFileSystem: false,
+        );
+        final workspaceIndexer = AutoWorkspaceIndexer(
+          customScanRoots: <String>[
+            '${fakeHome.path}/Documents',
+            '${fakeHome.path}/Projects',
+          ],
+          customClaudeConfigPaths: <String>[claudeJsonFile.path],
+          customIdeStoragePaths: <String>[agyStorageFile.path],
+          scanDefaultLocations: false,
+          gitRunner: (executable, arguments) async {
+            return ProcessResult(
+              1,
+              0,
+              '## feat/udc-11-dev-resume...origin/feat/udc-11-dev-resume\n'
+              ' M desktop/lib/features/tools/host_tool_dispatcher.dart\n'
+              '?? docs/roadmap/device-control/UDC-11-dev-workspace-resume.md\n',
+              '',
+            );
+          },
+          agentLauncher: (plan) async {
+            launchedPlans.add(plan);
+          },
+        );
+
+        final udc11Dispatcher = HostToolDispatcher(
+          policyStore: policyStore,
+          channel: channel,
+          auditStore: auditStore,
+          stopController: stopController,
+          logger: logger,
+          enrollmentStore: enrollmentStore,
+          appScanner: appScanner,
+          workspaceIndexer: workspaceIndexer,
+        );
+        addTearDown(udc11Dispatcher.dispose);
+
+        // 1. Verify AutoAppScanner found Antigravity, VS Code, Claude Code CLI, and excluded Terminal
+        final installedApps = appScanner.discoverApps();
+        final installedIds = installedApps.map((a) => a.id).toSet();
+        expect(installedIds, containsAll(<String>['antigravity', 'vscode']));
+        expect(installedIds, isNot(contains('terminal')));
+        expect(
+          appScanner.resolveCodingAgent('claude_code')?.executable,
+          equals(claudeBin.path),
+        );
+
+        // 2. Verify AutoWorkspaceIndexer discovered xuna_pet and demo_app and fuzzy matches
+        final workspaces = workspaceIndexer.discoverWorkspaces();
+        expect(
+          workspaces.map((w) => w.alias).toList(),
+          containsAll(<String>['xuna_pet', 'demo_app']),
+        );
+        final matchedFuzzy = workspaceIndexer.resolveWorkspace('xuna');
+        expect(matchedFuzzy?.alias, equals('xuna_pet'));
+        final matchedRecent = workspaceIndexer.resolveWorkspace('recent');
+        expect(matchedRecent, isNotNull);
+
+        final now = DateTime.utc(2026, 10, 31, 12, 0);
+
+        // 3. Execute display.wake (R1)
+        final wakeResp = await udc11Dispatcher.dispatch(
+          requestId: 701,
+          params: const ToolsCallParams(
+            name: 'display.wake',
+            arguments: <String, Object?>{},
+            invocationId: '70100000-0000-4000-8000-000000000001',
+            deadlineMs: 5000,
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (wakeResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+          equals('ok'),
+        );
+        expect(
+          (wakeResp.result['structuredContent'] as Map<String, Object?>)['woken'],
+          isTrue,
+        );
+        expect(channel.displayWakeCount, equals(1));
+
+        // 4. Execute zero-config app.launch for "antigravity" (R2) without manual host-policy.json entry
+        const launchArgs = <String, Object?>{'id': 'antigravity'};
+        final launchResp = await udc11Dispatcher.dispatch(
+          requestId: 702,
+          params: ToolsCallParams(
+            name: 'app.launch',
+            arguments: launchArgs,
+            invocationId: '70200000-0000-4000-8000-000000000002',
+            deadlineMs: 5000,
+            approval: ApprovalToken(
+              approvalId: '70200000-0000-4000-8000-000000000099',
+              argsSha256: argsSha256(launchArgs),
+              expiresAt: now.add(const Duration(minutes: 2)),
+            ),
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (launchResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+          equals('ok'),
+        );
+        expect(
+          (launchResp.result['structuredContent'] as Map<String, Object?>)['id'],
+          equals('antigravity'),
+        );
+
+        // 5. Execute workspace.git_summary (R1)
+        final gitResp = await udc11Dispatcher.dispatch(
+          requestId: 703,
+          params: const ToolsCallParams(
+            name: 'workspace.git_summary',
+            arguments: <String, Object?>{'project': 'xuna_pet'},
+            invocationId: '70300000-0000-4000-8000-000000000003',
+            deadlineMs: 5000,
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (gitResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+          equals('ok'),
+        );
+        final gitSc = gitResp.result['structuredContent'] as Map<String, Object?>;
+        expect(gitSc['workspace'], equals('xuna_pet'));
+        expect(gitSc['branch'], equals('feat/udc-11-dev-resume'));
+        expect(gitSc['clean'], isFalse);
+        expect(gitSc['modifiedCount'], equals(1));
+        expect(gitSc['untrackedCount'], equals(1));
+
+        // 6. Execute workspace.open (R2)
+        const openWsArgs = <String, Object?>{
+          'project': 'xuna',
+          'ide': 'antigravity',
+        };
+        final openWsResp = await udc11Dispatcher.dispatch(
+          requestId: 704,
+          params: ToolsCallParams(
+            name: 'workspace.open',
+            arguments: openWsArgs,
+            invocationId: '70400000-0000-4000-8000-000000000004',
+            deadlineMs: 5000,
+            approval: ApprovalToken(
+              approvalId: '70400000-0000-4000-8000-000000000099',
+              argsSha256: argsSha256(openWsArgs),
+              expiresAt: now.add(const Duration(minutes: 2)),
+            ),
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (openWsResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+          equals('ok'),
+        );
+        expect(launchedPlans.last.executable, equals(agyBin.path));
+        expect(
+          launchedPlans.last.arguments,
+          equals(<String>[xunaDir.absolute.path]),
+        );
+
+        // 7. Execute workspace.coding_agent (R2) -> claude --continue "<prompt>"
+        const secretPrompt =
+            'Tiếp tục làm UDC-11 trên nhánh feat/udc-11-dev-resume (đang sửa 2 tệp).';
+        const agentArgs = <String, Object?>{
+          'project': 'xuna_pet',
+          'agent': 'claude_code',
+          'prompt': secretPrompt,
+          'resumeLast': true,
+        };
+        final agentResp = await udc11Dispatcher.dispatch(
+          requestId: 705,
+          params: ToolsCallParams(
+            name: 'workspace.coding_agent',
+            arguments: agentArgs,
+            invocationId: '70500000-0000-4000-8000-000000000005',
+            deadlineMs: 5000,
+            approval: ApprovalToken(
+              approvalId: '70500000-0000-4000-8000-000000000099',
+              argsSha256: argsSha256(agentArgs),
+              expiresAt: now.add(const Duration(minutes: 2)),
+            ),
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (agentResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+          equals('ok'),
+        );
+        final agentSc =
+            agentResp.result['structuredContent'] as Map<String, Object?>;
+        expect(agentSc['workspace'], equals('xuna_pet'));
+        expect(agentSc['agent'], equals('claude_code'));
+        expect(agentSc['resumed'], isTrue);
+        expect(agentSc['promptSent'], isTrue);
+        expect(launchedPlans.last.executable, equals(claudeBin.path));
+        expect(
+          launchedPlans.last.arguments,
+          equals(<String>['--continue', secretPrompt]),
+        );
+        expect(
+          launchedPlans.last.workingDirectory,
+          equals(xunaDir.absolute.path),
+        );
+
+        // 8. Verify zero raw paths, git commit messages, or prompt text in logs or audit
+        for (final entry in logger.entries) {
+          final serialized = jsonEncode(entry.fields);
+          expect(serialized, isNot(contains(xunaDir.path)));
+          expect(serialized, isNot(contains(secretPrompt)));
+          expect(serialized, isNot(contains('feat/udc-11-dev-resume')));
+        }
+        final audits = await auditStore.readRecent();
+        for (final record in audits) {
+          final line = jsonEncode(record.toJson());
+          expect(line, isNot(contains(xunaDir.path)));
+          expect(line, isNot(contains(secretPrompt)));
         }
       },
     );

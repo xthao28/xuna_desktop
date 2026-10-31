@@ -6,6 +6,8 @@ import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
+import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
+import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
@@ -55,6 +57,8 @@ class ToolExecutionContext {
     required this.evaluation,
     required this.policy,
     required this.channel,
+    required this.appScanner,
+    required this.workspaceIndexer,
     required this.cancellationToken,
     required this.agentVersion,
   });
@@ -63,6 +67,8 @@ class ToolExecutionContext {
   final PolicyEvaluationResult evaluation;
   final HostPolicy? policy;
   final XunaHostChannel channel;
+  final AutoAppScanner appScanner;
+  final AutoWorkspaceIndexer workspaceIndexer;
   final ToolCancellationToken cancellationToken;
   final String agentVersion;
 }
@@ -173,10 +179,19 @@ class AppListAllowedTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final apps = <Map<String, Object?>>[
-      for (final app in context.policy?.apps ?? const <AllowedAppConfig>[])
-        <String, Object?>{'id': app.id, 'name': app.name},
-    ];
+    final seenIds = <String>{};
+    final apps = <Map<String, Object?>>[];
+    for (final app in context.policy?.apps ?? const <AllowedAppConfig>[]) {
+      if (seenIds.add(app.id)) {
+        apps.add(<String, Object?>{'id': app.id, 'name': app.name});
+      }
+    }
+    final discovered = context.appScanner.discoverApps();
+    for (final app in discovered) {
+      if (seenIds.add(app.id)) {
+        apps.add(<String, Object?>{'id': app.id, 'name': app.name});
+      }
+    }
     return ToolHandlerOutput(
       text: 'Có ${apps.length} ứng dụng được phép mở.',
       structuredContent: <String, Object?>{'apps': apps},
@@ -192,12 +207,35 @@ class AppLaunchTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final app = context.evaluation.app!;
-    await context.channel.appLaunch(kind: app.kind, target: app.target);
+    final configured = context.evaluation.app;
+    if (configured != null) {
+      await context.channel.appLaunch(
+        kind: configured.kind,
+        target: configured.target,
+      );
+      return ToolHandlerOutput(
+        text: 'Đã mở ${configured.name}.',
+        structuredContent: <String, Object?>{'id': configured.id},
+        toastBody: 'đã mở ${configured.name}',
+      );
+    }
+
+    final requestedId = context.arguments['id'] as String? ?? '';
+    final discovered = context.appScanner.findApp(requestedId);
+    if (discovered == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'app_not_allowlisted',
+      );
+    }
+    await context.channel.appLaunch(
+      kind: discovered.kind,
+      target: discovered.target,
+    );
     return ToolHandlerOutput(
-      text: 'Đã mở ${app.name}.',
-      structuredContent: <String, Object?>{'id': app.id},
-      toastBody: 'đã mở ${app.name}',
+      text: 'Đã mở ${discovered.name}.',
+      structuredContent: <String, Object?>{'id': discovered.id},
+      toastBody: 'đã mở ${discovered.name}',
     );
   }
 }
@@ -338,7 +376,140 @@ class HostNotifyTool extends HostToolHandler {
   }
 }
 
-/// Registry and dispatcher for all 12 MVP tools (`UDC-3` §5.6.5).
+class DisplayWakeTool extends HostToolHandler {
+  const DisplayWakeTool();
+
+  @override
+  String get name => 'display.wake';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final woken = await context.channel.displayWake();
+    return ToolHandlerOutput(
+      text: 'Đã đánh thức màn hình máy tính.',
+      structuredContent: <String, Object?>{'woken': woken},
+      toastBody: 'đã bật màn hình',
+    );
+  }
+}
+
+class WorkspaceOpenTool extends HostToolHandler {
+  const WorkspaceOpenTool();
+
+  @override
+  String get name => 'workspace.open';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final project = context.arguments['project'] as String;
+    final ide = (context.arguments['ide'] as String?) ?? 'auto';
+    final ws = context.workspaceIndexer.resolveWorkspace(project);
+    if (ws == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'workspace_not_found',
+      );
+    }
+    final resolvedIde = context.appScanner.resolveCodingAgent(
+      ide == 'auto' ? 'antigravity' : ide,
+    ) ??
+        context.appScanner.resolveCodingAgent('auto');
+    if (resolvedIde == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'ide_not_found',
+      );
+    }
+    final plan = await context.workspaceIndexer.launchCodingAgent(
+      workspace: ws,
+      agent: resolvedIde.agent,
+      executable: resolvedIde.executable,
+      resumeLast: false,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã mở dự án ${ws.alias} bằng ${plan.agent}.',
+      structuredContent: <String, Object?>{
+        'workspace': ws.alias,
+        'ide': plan.agent,
+      },
+      toastBody: 'đã mở dự án ${ws.alias}',
+    );
+  }
+}
+
+class WorkspaceGitSummaryTool extends HostToolHandler {
+  const WorkspaceGitSummaryTool();
+
+  @override
+  String get name => 'workspace.git_summary';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final project = (context.arguments['project'] as String?) ?? 'recent';
+    final ws = context.workspaceIndexer.resolveWorkspace(project);
+    if (ws == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'workspace_not_found',
+      );
+    }
+    final summary = await context.workspaceIndexer.readGitSummary(ws);
+    return ToolHandlerOutput(
+      text:
+          'Dự án ${summary.workspace} (nhánh ${summary.branch}, ${summary.modifiedCount + summary.untrackedCount} tệp thay đổi).',
+      structuredContent: summary.toStructuredContent(),
+    );
+  }
+}
+
+class WorkspaceCodingAgentTool extends HostToolHandler {
+  const WorkspaceCodingAgentTool();
+
+  @override
+  String get name => 'workspace.coding_agent';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final project = (context.arguments['project'] as String?) ?? 'recent';
+    final agent = (context.arguments['agent'] as String?) ?? 'auto';
+    final resumeLast = (context.arguments['resumeLast'] as bool?) ?? true;
+    final prompt = context.arguments['prompt'] as String?;
+    final ws = context.workspaceIndexer.resolveWorkspace(project);
+    if (ws == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'workspace_not_found',
+      );
+    }
+    final resolvedAgent = context.appScanner.resolveCodingAgent(agent);
+    if (resolvedAgent == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'coding_agent_not_found',
+      );
+    }
+    final plan = await context.workspaceIndexer.launchCodingAgent(
+      workspace: ws,
+      agent: resolvedAgent.agent,
+      executable: resolvedAgent.executable,
+      resumeLast: resumeLast,
+      prompt: prompt,
+    );
+    return ToolHandlerOutput(
+      text:
+          'Đã mở ${plan.agent} tại dự án ${plan.workspace} và gửi yêu cầu tiếp tục công việc.',
+      structuredContent: <String, Object?>{
+        'workspace': plan.workspace,
+        'agent': plan.agent,
+        'resumed': plan.resumed,
+        'promptSent': plan.promptSent,
+      },
+      toastBody: 'đã mở ${plan.agent} (${plan.workspace})',
+    );
+  }
+}
+
+/// Registry and dispatcher for all MVP and Dev Workspace tools (`UDC-3` §5.6.5, `UDC-11`).
 class HostToolDispatcher {
   HostToolDispatcher({
     required this.policyStore,
@@ -348,10 +519,13 @@ class HostToolDispatcher {
     required this.logger,
     this.enrollmentStore,
     this.computerUseManager,
+    AutoAppScanner? appScanner,
+    AutoWorkspaceIndexer? workspaceIndexer,
     this.agentVersion = '0.1.0',
     this.maxIdempotencyCacheEntries = 256,
     List<HostToolHandler>? handlers,
-  }) {
+  }) : appScanner = appScanner ?? AutoAppScanner(),
+       workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer() {
     final registered =
         handlers ??
         <HostToolHandler>[
@@ -368,6 +542,10 @@ class HostToolDispatcher {
           const WorkflowRunTool(),
           const HostStatusTool(),
           const HostNotifyTool(),
+          const DisplayWakeTool(),
+          const WorkspaceOpenTool(),
+          const WorkspaceGitSummaryTool(),
+          const WorkspaceCodingAgentTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -385,6 +563,8 @@ class HostToolDispatcher {
   final ContentFreeLogger logger;
   final EnrollmentStateStore? enrollmentStore;
   final ComputerUseSessionManager? computerUseManager;
+  final AutoAppScanner appScanner;
+  final AutoWorkspaceIndexer workspaceIndexer;
   final String agentVersion;
   final int maxIdempotencyCacheEntries;
 
@@ -405,6 +585,7 @@ class HostToolDispatcher {
     final mvp = buildMvpToolCatalog(
       defaultPermission: perms.accessibility,
       includeBrowserCurrentUrl: true,
+      includeDevWorkspaceTools: true,
     );
     if (computerUseManager == null) {
       return mvp;
@@ -466,6 +647,7 @@ class HostToolDispatcher {
       pinnedPhonePublicKeys:
           enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
       isInApprovedCuSession: computerUseManager?.hasActiveSession ?? false,
+      allowZeroConfigAppDiscovery: true,
       nowUtc: nowUtc,
     );
 
@@ -530,6 +712,8 @@ class HostToolDispatcher {
         evaluation: evaluation,
         policy: evaluator.policy,
         channel: channel,
+        appScanner: appScanner,
+        workspaceIndexer: workspaceIndexer,
         cancellationToken: cancelToken,
         agentVersion: agentVersion,
       );

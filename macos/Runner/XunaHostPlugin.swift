@@ -71,6 +71,8 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
         self.handleHostInfo(result: result)
       case "showToast":
         self.handleShowToast(args: args, result: result)
+      case "displayWake":
+        self.handleDisplayWake(result: result)
       default:
         DispatchQueue.main.async {
           result(FlutterMethodNotImplemented)
@@ -872,6 +874,25 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
     replySuccess(result, [:])
+  }
+
+  private func handleDisplayWake(result: @escaping FlutterResult) {
+    let caffeinateBin = URL(fileURLWithPath: "/usr/bin/caffeinate")
+    guard FileManager.default.isExecutableFile(atPath: caffeinateBin.path) else {
+      replySuccess(result, ["awake": true])
+      return
+    }
+    let process = Process()
+    process.executableURL = caffeinateBin
+    process.arguments = ["-u", "-t", "2"]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    do {
+      try process.run()
+      replySuccess(result, ["awake": true])
+    } catch {
+      replyError(result, code: "failed", message: "Failed to wake display via caffeinate")
+    }
   }
 
   // MARK: - Helpers

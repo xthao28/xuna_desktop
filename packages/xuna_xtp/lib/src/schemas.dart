@@ -354,8 +354,11 @@ class ToolDescriptor {
       throw FormatException('Invalid tool name format: $name');
     }
     final prefix = name.split('.').first;
-    final family =
-        prefix == 'browser' ? ToolFamily.url : ToolFamily.fromWire(prefix);
+    final family = prefix == 'browser'
+        ? ToolFamily.url
+        : (prefix == 'display' || prefix == 'workspace')
+            ? ToolFamily.app
+            : ToolFamily.fromWire(prefix);
     if (expectedFamily != null && family != expectedFamily) {
       throw FormatException(
         'Tool $name prefix ($prefix) does not match policy family (${expectedFamily.wire})',
@@ -474,6 +477,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
   bool includeHostNotify = true,
   bool includeBrowserCurrentUrl = false,
+  bool includeDevWorkspaceTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -790,8 +794,198 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ),
     if (includeBrowserCurrentUrl)
       buildBrowserCurrentUrlTool(defaultPermission: defaultPermission),
+    if (includeDevWorkspaceTools)
+      ...buildDevWorkspaceTools(defaultPermission: defaultPermission),
   ];
   return tools;
+}
+
+/// Supported IDEs for `workspace.open` (`UDC-11` S11.2).
+const Set<String> supportedWorkspaceIdes = <String>{
+  'auto',
+  'antigravity',
+  'vscode',
+  'cursor',
+};
+
+/// Supported coding agents for `workspace.coding_agent` (`UDC-11` S11.3).
+const Set<String> supportedCodingAgents = <String>{
+  'auto',
+  'claude_code',
+  'antigravity',
+  'cursor',
+  'vscode',
+  'codex',
+};
+
+/// Builds the 4 `UDC-11` developer workspace & wake tool descriptors (`S11.1`–`S11.3`):
+/// - `display.wake` (`R1`, family `app`)
+/// - `workspace.open` (`R2`, family `app`)
+/// - `workspace.git_summary` (`R1`, `observes: true`, family `app`)
+/// - `workspace.coding_agent` (`R2`, family `app`)
+List<ToolDescriptor> buildDevWorkspaceTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'display.wake',
+      description:
+          'Wake the host display from dim/sleep so the desktop is visible.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{},
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'woken': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['woken'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'workspace.open',
+      description:
+          'Find a local project workspace by name/alias and open it in an IDE (Antigravity, VS Code, Cursor).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'project': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'ide': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['auto', 'antigravity', 'vscode', 'cursor'],
+          },
+        },
+        'required': <String>['project'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'workspace': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'ide': <String, Object?>{'type': 'string', 'maxLength': 32},
+        },
+        'required': <String>['workspace', 'ide'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'workspace.git_summary',
+      description:
+          'Read branch name and uncommitted file counts for a local Git workspace (content-free).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'project': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+        },
+        'required': <String>['project'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'workspace': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'branch': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'clean': <String, Object?>{'type': 'boolean'},
+          'modifiedCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'untrackedCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+        },
+        'required': <String>[
+          'workspace',
+          'branch',
+          'clean',
+          'modifiedCount',
+          'untrackedCount',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'workspace.coding_agent',
+      description:
+          'Open a coding agent (Claude Code, Antigravity, Cursor, Codex) in a discovered project and optionally send a continuation prompt.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'project': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'agent': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'auto',
+              'claude_code',
+              'antigravity',
+              'cursor',
+              'vscode',
+              'codex',
+            ],
+          },
+          'resumeLast': <String, Object?>{'type': 'boolean'},
+          'prompt': <String, Object?>{'type': 'string', 'maxLength': 500},
+        },
+        'required': <String>['project'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'workspace': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'agent': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'resumed': <String, Object?>{'type': 'boolean'},
+          'promptSent': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['workspace', 'agent', 'resumed', 'promptSent'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
 }
 
 /// Builds the `browser.current_url` descriptor (`UDC-9` S9.1: R2, `observes: true`,

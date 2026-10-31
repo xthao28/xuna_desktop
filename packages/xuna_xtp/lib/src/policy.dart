@@ -376,6 +376,7 @@ class HostPolicyEvaluator {
     String? hostId,
     List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
     bool isInApprovedCuSession = false,
+    bool allowZeroConfigAppDiscovery = false,
   }) {
     final now = (nowUtc ?? DateTime.now()).toUtc();
     ToolDescriptor.validateToolName(toolName);
@@ -416,8 +417,11 @@ class HostPolicyEvaluator {
 
     final activePolicy = policy!;
     final prefix = toolName.split('.').first;
-    final family =
-        prefix == 'browser' ? ToolFamily.url : ToolFamily.fromWire(prefix);
+    final family = prefix == 'browser'
+        ? ToolFamily.url
+        : (prefix == 'display' || prefix == 'workspace')
+            ? ToolFamily.app
+            : ToolFamily.fromWire(prefix);
     if (!activePolicy.isFamilyAllowed(family)) {
       return const PolicyEvaluationResult(
         allowed: false,
@@ -503,17 +507,96 @@ class HostPolicyEvaluator {
             errorCode: 'schema_mismatch',
           );
         }
-        matchedApp = activePolicy.findApp(appId);
-        if (matchedApp == null) {
+        if (isHardDeniedAppOrProcess(appId)) {
           return const PolicyEvaluationResult(
             allowed: false,
             status: XtpStatus.denied,
             effectiveRisk: RiskTier.r2,
-            errorCode: 'policy_blocked',
+            errorCode: 'denylisted_target_forbidden',
           );
         }
-        effectiveRisk =
-            matchedApp.risk >= RiskTier.r2 ? matchedApp.risk : RiskTier.r2;
+        matchedApp = activePolicy.findApp(appId);
+        if (matchedApp == null) {
+          if (!allowZeroConfigAppDiscovery) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r2,
+              errorCode: 'policy_blocked',
+            );
+          }
+          effectiveRisk = RiskTier.r2;
+        } else {
+          effectiveRisk =
+              matchedApp.risk >= RiskTier.r2 ? matchedApp.risk : RiskTier.r2;
+        }
+      case 'display.wake':
+        if (arguments.isNotEmpty) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'workspace.git_summary':
+        final proj = arguments['project'];
+        if (arguments.length != 1 ||
+            proj is! String ||
+            !isValidWorkspaceQuery(proj)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'workspace.open':
+        final proj = arguments['project'];
+        final ide = arguments['ide'];
+        if (proj is! String ||
+            !isValidWorkspaceQuery(proj) ||
+            arguments.keys
+                .any((k) => k != 'project' && k != 'ide') ||
+            (ide != null &&
+                (ide is! String || !supportedWorkspaceIdes.contains(ide)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'workspace.coding_agent':
+        final proj = arguments['project'];
+        final agent = arguments['agent'];
+        final resumeLast = arguments['resumeLast'];
+        final prompt = arguments['prompt'];
+        const allowedKeys = <String>{
+          'project',
+          'agent',
+          'resumeLast',
+          'prompt',
+        };
+        if (proj is! String ||
+            !isValidWorkspaceQuery(proj) ||
+            arguments.keys.any((k) => !allowedKeys.contains(k)) ||
+            (agent != null &&
+                (agent is! String || !supportedCodingAgents.contains(agent))) ||
+            (resumeLast != null && resumeLast is! bool) ||
+            (prompt != null &&
+                (prompt is! String || !isSafeAgentPrompt(prompt)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
       case 'url.open':
         if (arguments.length != 1 || arguments['url'] is! String) {
           return const PolicyEvaluationResult(
@@ -1547,4 +1630,37 @@ List<Map<String, Object?>> redactUiTreeNodes(
     out.add(redacted);
   }
   return out;
+}
+
+final RegExp _workspaceQueryRe = RegExp(r'^[a-zA-Z0-9_.\- ]{1,64}$');
+
+/// Validates a project/workspace query string (`UDC-11` S11.2):
+/// accepts `1..64` safe name characters and rejects path separators (`/`, `\`),
+/// parent traversal (`..`), drive colons (`:`), home expansion (`~`), and shell
+/// metacharacters.
+bool isValidWorkspaceQuery(String? query) {
+  if (query == null) return false;
+  final trimmed = query.trim();
+  if (trimmed.isEmpty || trimmed.length > 64) return false;
+  if (trimmed.contains('..')) return false;
+  return _workspaceQueryRe.hasMatch(trimmed);
+}
+
+/// Validates a continuation prompt passed to `workspace.coding_agent` (`UDC-11` S11.3):
+/// accepts `0..500` UTF-8 characters without ASCII control characters (`\x00`..`\x08`,
+/// `\x0B`, `\x0C`, `\x0E`..`\x1F`, `\x7F`).
+bool isSafeAgentPrompt(String? prompt) {
+  if (prompt == null) return false;
+  if (prompt.length > 500) return false;
+  for (var i = 0; i < prompt.length; i++) {
+    final code = prompt.codeUnitAt(i);
+    if ((code >= 0x00 && code <= 0x08) ||
+        code == 0x0B ||
+        code == 0x0C ||
+        (code >= 0x0E && code <= 0x1F) ||
+        code == 0x7F) {
+      return false;
+    }
+  }
+  return true;
 }

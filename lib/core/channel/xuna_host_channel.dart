@@ -135,6 +135,9 @@ abstract interface class XunaHostChannel {
 
   /// Shows a brief content-minimal user notification (`"XUNA: đã mở VS Code"`).
   Future<void> showToast({required String title, required String body});
+
+  /// Wakes the host display from dim/sleep (`UDC-11` S11.1).
+  Future<bool> displayWake();
 }
 
 /// MethodChannel implementation of [XunaHostChannel] bound to `'xuna/host'`
@@ -327,6 +330,13 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       'title': title,
       'body': body,
     });
+  }
+
+  @override
+  Future<bool> displayWake() async {
+    final map = await _invokeMap('displayWake');
+    final woken = map['woken'];
+    return woken is bool ? woken : true;
   }
 
   Future<Map<String, Object?>> _invokeMap(

@@ -807,6 +807,19 @@ void HandleMethodCallOnWorker(
     return;
   }
 
+  if (method == "displayWake") {
+    SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+    INPUT mouse_wake = {};
+    mouse_wake.type = INPUT_MOUSE;
+    mouse_wake.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &mouse_wake, sizeof(INPUT));
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("awake")] = flutter::EncodableValue(true);
+    result->Success(flutter::EncodableValue(out));
+    CoUninitialize();
+    return;
+  }
+
   result->NotImplemented();
   CoUninitialize();
 }

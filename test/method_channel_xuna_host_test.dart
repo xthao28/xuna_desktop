@@ -71,6 +71,8 @@ void main() {
               case 'workflowRun':
               case 'showToast':
                 return <String, Object?>{};
+              case 'displayWake':
+                return <String, Object?>{'awake': true};
               case 'browserCurrentUrl':
                 return <String, Object?>{
                   'url': 'https://github.com/xthao28/xuna_pet',
@@ -142,6 +144,7 @@ void main() {
       expect(info.hostname, 'THAO-PC');
 
       await hostChannel.showToast(title: 'XUNA', body: 'XUNA: đã mở VS Code');
+      expect(await hostChannel.displayWake(), isTrue);
 
       expect(recordedCalls.map((c) => c.method).toList(), <String>[
         'keyEnsure',
@@ -157,6 +160,7 @@ void main() {
         'requestPermission',
         'hostInfo',
         'showToast',
+        'displayWake',
       ]);
     },
   );

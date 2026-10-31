@@ -976,6 +976,101 @@ void main() {
       expect(browserBadArg.allowed, isFalse);
       expect(browserBadArg.status, equals(XtpStatus.invalidArgs));
       expect(browserBadArg.errorCode, equals('schema_mismatch'));
+
+      // UDC-11 S11.1-S11.3: display.wake, workspace.open, workspace.git_summary, workspace.coding_agent
+      final devTools = buildDevWorkspaceTools();
+      expect(
+        devTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'display.wake',
+          'workspace.open',
+          'workspace.git_summary',
+          'workspace.coding_agent',
+        ]),
+      );
+
+      expect(isValidWorkspaceQuery('xuna_pet'), isTrue);
+      expect(isValidWorkspaceQuery('my-project.v2'), isTrue);
+      expect(isValidWorkspaceQuery('../secret'), isFalse);
+      expect(isValidWorkspaceQuery(r'C:\Users\Thao'), isFalse);
+      expect(isValidWorkspaceQuery('/etc/passwd'), isFalse);
+      expect(isValidWorkspaceQuery('xuna; rm -rf /'), isFalse);
+
+      expect(
+        isSafeAgentPrompt('Đọc PROCESS.md và PLAN.md rồi tiếp tục UDC-11'),
+        isTrue,
+      );
+      expect(isSafeAgentPrompt('bad\x00prompt'), isFalse);
+
+      // R1 tools (display.wake, workspace.git_summary) succeed when app family is allowed
+      final wakeRes = evaluator.evaluateInvocation(
+        toolName: 'display.wake',
+        arguments: const <String, Object?>{},
+        nowUtc: now,
+      );
+      expect(wakeRes.allowed, isTrue);
+      expect(wakeRes.effectiveRisk, equals(RiskTier.r1));
+
+      final gitRes = evaluator.evaluateInvocation(
+        toolName: 'workspace.git_summary',
+        arguments: const <String, Object?>{'project': 'xuna_pet'},
+        nowUtc: now,
+      );
+      expect(gitRes.allowed, isTrue);
+      expect(gitRes.effectiveRisk, equals(RiskTier.r1));
+
+      // R2 workspace.coding_agent requires approval bound to argsSha256
+      const agentArgs = <String, Object?>{
+        'project': 'xuna_pet',
+        'agent': 'claude_code',
+        'resumeLast': true,
+        'prompt': 'Tiếp tục làm UDC-11',
+      };
+      final agentNoApproval = evaluator.evaluateInvocation(
+        toolName: 'workspace.coding_agent',
+        arguments: agentArgs,
+        nowUtc: now,
+      );
+      expect(agentNoApproval.allowed, isFalse);
+      expect(agentNoApproval.errorCode, equals('approval_required'));
+
+      final agentApproved = evaluator.evaluateInvocation(
+        toolName: 'workspace.coding_agent',
+        arguments: agentArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5e',
+          argsSha256: argsSha256(agentArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(agentApproved.allowed, isTrue);
+      expect(agentApproved.effectiveRisk, equals(RiskTier.r2));
+
+      // Zero-config app discovery allows non-denylisted app with R2 approval, still blocks denylisted
+      const figmaArgs = <String, Object?>{'id': 'figma'};
+      final figmaApproved = evaluator.evaluateInvocation(
+        toolName: 'app.launch',
+        arguments: figmaArgs,
+        allowZeroConfigAppDiscovery: true,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5f',
+          argsSha256: argsSha256(figmaArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(figmaApproved.allowed, isTrue);
+
+      const psArgs = <String, Object?>{'id': 'powershell'};
+      final psDenied = evaluator.evaluateInvocation(
+        toolName: 'app.launch',
+        arguments: psArgs,
+        allowZeroConfigAppDiscovery: true,
+        nowUtc: now,
+      );
+      expect(psDenied.allowed, isFalse);
+      expect(psDenied.errorCode, equals('denylisted_target_forbidden'));
     });
   });
 }
