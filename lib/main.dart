@@ -9,6 +9,7 @@ import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/single_instance/single_instance_guard.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
+import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/desktop_tray_service.dart';
@@ -51,6 +52,14 @@ Future<void> main() async {
     auditStore: auditStore,
     stopController: stopController,
     logger: logger,
+    enrollmentStore: enrollmentStore,
+  );
+
+  final lanServer = LanOfflineServer(
+    channel: channel,
+    enrollmentStore: enrollmentStore,
+    dispatcher: dispatcher,
+    logger: logger,
   );
 
   final sessionClient = XtpSessionClient(
@@ -71,6 +80,7 @@ Future<void> main() async {
       auditStore: auditStore,
       stopController: stopController,
       sessionClient: sessionClient,
+      lanServer: lanServer,
       logger: logger,
     ),
   );

@@ -581,5 +581,200 @@ void main() {
       expect(stoppedRes.status, equals(XtpStatus.denied));
       expect(stoppedRes.errorCode, equals('stopped'));
     });
+
+    test(
+        'enforces phone-signed R3 approval and once scope (UDC-7 S7.1 & S7.5)',
+        () {
+      const r3PolicyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {
+    "media": "allow",
+    "app": "allow",
+    "url": "allow",
+    "workflow": "allow"
+  },
+  "apps": [],
+  "urlDomains": [],
+  "workflows": [
+    {
+      "id": "deploy_prod",
+      "name": "Deploy Production",
+      "kind": "shortcut",
+      "target": "DeployProd",
+      "risk": "R3"
+    }
+  ],
+  "players": ["spotify"]
+}
+''';
+      final evaluator = HostPolicyEvaluator.fromJsonString(r3PolicyJson);
+      expect(evaluator.isHealthy, isTrue);
+
+      final hp = golden['hostProof'] as Map<String, Object?>;
+      final privScalarHex = hp['privateScalarHex'] as String;
+      final pubKeyBytes = _hexToBytes(hp['publicKeyHex'] as String);
+
+      const approvalId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+      const hostId = '11111111-2222-4333-8444-555555555555';
+      const expiresAtWire = '2026-10-30T07:02:00Z';
+      final expiresAt = DateTime.parse(expiresAtWire).toUtc();
+      final now = DateTime.utc(2026, 10, 30, 7, 0, 0);
+      final args = const <String, Object?>{'id': 'deploy_prod'};
+      final sha = argsSha256(args);
+
+      final msg = approvalProofMessage(
+        approvalId: approvalId,
+        argsSha256: sha,
+        hostId: hostId,
+        expiresAt: expiresAtWire,
+      );
+      final validSig = _signP256RawDeterministic(
+        privateScalarHex: privScalarHex,
+        messageBytes: msg,
+      );
+      expect(
+        verifyP256Signature(
+          publicKey: pubKeyBytes,
+          message: msg,
+          signature: validSig,
+        ),
+        isTrue,
+      );
+
+      // 1. R3 with conversation_15m scope -> denied (r3_requires_once_scope)
+      final badScopeApproval = ApprovalToken(
+        approvalId: approvalId,
+        argsSha256: sha,
+        expiresAt: expiresAt,
+        expiresAtRaw: expiresAtWire,
+        scope: 'conversation_15m',
+        signature: validSig,
+        publicKey: pubKeyBytes,
+      );
+      final badScopeRes = evaluator.evaluateInvocation(
+        toolName: 'workflow.run',
+        arguments: args,
+        approval: badScopeApproval,
+        hostId: hostId,
+        pinnedPhonePublicKeys: <Uint8List>[pubKeyBytes],
+        nowUtc: now,
+      );
+      expect(badScopeRes.allowed, isFalse);
+      expect(badScopeRes.errorCode, equals('r3_requires_once_scope'));
+
+      // 2. R3 without signature -> denied (approval_signature_invalid)
+      final unsignedApproval = ApprovalToken(
+        approvalId: approvalId,
+        argsSha256: sha,
+        expiresAt: expiresAt,
+        expiresAtRaw: expiresAtWire,
+      );
+      final unsignedRes = evaluator.evaluateInvocation(
+        toolName: 'workflow.run',
+        arguments: args,
+        approval: unsignedApproval,
+        hostId: hostId,
+        pinnedPhonePublicKeys: <Uint8List>[pubKeyBytes],
+        nowUtc: now,
+      );
+      expect(unsignedRes.allowed, isFalse);
+      expect(unsignedRes.errorCode, equals('approval_signature_invalid'));
+
+      // 3. R3 with unpinned phone key -> denied (approval_signature_invalid)
+      final signedApproval = ApprovalToken(
+        approvalId: approvalId,
+        argsSha256: sha,
+        expiresAt: expiresAt,
+        expiresAtRaw: expiresAtWire,
+        scope: 'once',
+        signature: validSig,
+        publicKey: pubKeyBytes,
+      );
+      final unpinnedRes = evaluator.evaluateInvocation(
+        toolName: 'workflow.run',
+        arguments: args,
+        approval: signedApproval,
+        hostId: hostId,
+        pinnedPhonePublicKeys: const <Uint8List>[],
+        nowUtc: now,
+      );
+      expect(unpinnedRes.allowed, isFalse);
+      expect(unpinnedRes.errorCode, equals('approval_signature_invalid'));
+
+      // 4. R3 with tampered signature -> denied (approval_signature_invalid)
+      final tamperedSig = Uint8List.fromList(validSig)..[0] ^= 0xff;
+      final tamperedApproval = ApprovalToken(
+        approvalId: approvalId,
+        argsSha256: sha,
+        expiresAt: expiresAt,
+        expiresAtRaw: expiresAtWire,
+        scope: 'once',
+        signature: tamperedSig,
+        publicKey: pubKeyBytes,
+      );
+      final tamperedRes = evaluator.evaluateInvocation(
+        toolName: 'workflow.run',
+        arguments: args,
+        approval: tamperedApproval,
+        hostId: hostId,
+        pinnedPhonePublicKeys: <Uint8List>[pubKeyBytes],
+        nowUtc: now,
+      );
+      expect(tamperedRes.allowed, isFalse);
+      expect(tamperedRes.errorCode, equals('approval_signature_invalid'));
+
+      // 5. R3 with valid phone signature and pinned key -> allowed
+      final validRes = evaluator.evaluateInvocation(
+        toolName: 'workflow.run',
+        arguments: args,
+        approval: signedApproval,
+        hostId: hostId,
+        pinnedPhonePublicKeys: <Uint8List>[pubKeyBytes],
+        nowUtc: now,
+      );
+      expect(validRes.allowed, isTrue);
+      expect(validRes.status, equals(XtpStatus.ok));
+      expect(validRes.workflow?.id, equals('deploy_prod'));
+    });
+
+    test('parses xuna/lanPeer notification frames (UDC-7 S7.4)', () {
+      final hp = golden['hostProof'] as Map<String, Object?>;
+      final pubKeyBytes = _hexToBytes(hp['publicKeyHex'] as String);
+      final pubKeyB64 = base64Encode(pubKeyBytes);
+
+      final serverToAgent = XtpFrame.parse(
+        jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'method': 'xuna/lanPeer',
+          'params': <String, Object?>{
+            'phonePublicKeys': <String>[pubKeyB64],
+          },
+        }),
+      );
+      expect(serverToAgent, isA<XtpNotification>());
+      final params1 =
+          (serverToAgent as XtpNotification).typedParams as LanPeerParams;
+      expect(params1.phonePublicKeys, hasLength(1));
+      expect(params1.phonePublicKeys.single, equals(pubKeyBytes));
+
+      final agentToServer = XtpFrame.parse(
+        jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'method': 'xuna/lanPeer',
+          'params': <String, Object?>{
+            'enabled': true,
+            'port': 47821,
+            'certFingerprint': 'abcd1234',
+          },
+        }),
+      );
+      expect(agentToServer, isA<XtpNotification>());
+      final params2 =
+          (agentToServer as XtpNotification).typedParams as LanPeerParams;
+      expect(params2.enabled, isTrue);
+      expect(params2.port, equals(47821));
+      expect(params2.certFingerprint, equals('abcd1234'));
+    });
   });
 }

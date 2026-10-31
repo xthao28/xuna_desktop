@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'canonical_json.dart';
+import 'crypto.dart';
 import 'schemas.dart';
 
 /// Family-level policy decision in `host-policy.json` (`allow` | `block`).
@@ -370,6 +372,8 @@ class HostPolicyEvaluator {
     ApprovalToken? approval,
     bool isStopped = false,
     DateTime? nowUtc,
+    String? hostId,
+    List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
   }) {
     final now = (nowUtc ?? DateTime.now()).toUtc();
     ToolDescriptor.validateToolName(toolName);
@@ -625,6 +629,68 @@ class HostPolicyEvaluator {
           effectiveRisk: effectiveRisk,
           errorCode: 'approval_mismatch',
         );
+      }
+      if (effectiveRisk >= RiskTier.r3) {
+        if (approval.scope != 'once') {
+          return PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: effectiveRisk,
+            errorCode: 'r3_requires_once_scope',
+          );
+        }
+        // UDC-7 S7.5: Verify phone-signed approval for R3 tools against
+        // enrolled owner phone keys; reject missing or invalid signatures.
+        final sig = approval.signature;
+        if (sig == null ||
+            hostId == null ||
+            hostId.isEmpty ||
+            pinnedPhonePublicKeys.isEmpty) {
+          return PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: effectiveRisk,
+            errorCode: 'approval_signature_invalid',
+          );
+        }
+        final proofMsg = approvalProofMessage(
+          approvalId: approval.approvalId,
+          argsSha256: approval.argsSha256,
+          hostId: hostId,
+          expiresAt: approval.expiresAtWire,
+        );
+        final candidateKeys = <Uint8List>[];
+        if (approval.publicKey != null) {
+          final hasMatch = pinnedPhonePublicKeys.any(
+            (k) => _bytesEqual(k, approval.publicKey!),
+          );
+          if (!hasMatch) {
+            return PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: effectiveRisk,
+              errorCode: 'approval_signature_invalid',
+            );
+          }
+          candidateKeys.add(approval.publicKey!);
+        } else {
+          candidateKeys.addAll(pinnedPhonePublicKeys);
+        }
+        if (candidateKeys.isEmpty ||
+            !candidateKeys.any(
+              (k) => verifyP256Signature(
+                publicKey: k,
+                message: proofMsg,
+                signature: sig,
+              ),
+            )) {
+          return PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: effectiveRisk,
+            errorCode: 'approval_signature_invalid',
+          );
+        }
       }
     }
 
@@ -927,6 +993,15 @@ String _punycodeEncode(String input) {
     n++;
   }
   return output.toString();
+}
+
+bool _bytesEqual(Uint8List a, Uint8List b) {
+  if (a.length != b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) {
+    diff |= a[i] ^ b[i];
+  }
+  return diff == 0;
 }
 
 void _requireExactKeys(

@@ -22,6 +22,7 @@ class DesktopAgentWindow extends StatelessWidget {
   static const stopButtonKey = Key('desktop.header.stop');
   static const resumeButtonKey = Key('desktop.header.resume');
   static const sasCodeKey = Key('desktop.enroll.sas');
+  static const lanModeSwitchKey = Key('desktop.enroll.lan_mode');
   static const restorePolicyButtonKey = Key('desktop.policy.restore');
   static const recheckPermissionsButtonKey = Key('desktop.permissions.recheck');
 
@@ -184,6 +185,19 @@ class DesktopAgentWindow extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text('Host ID: ${enrolled.hostId}'),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  key: lanModeSwitchKey,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text(
+                    'Chế độ LAN ngoại tuyến (chỉ điều khiển nhạc)',
+                  ),
+                  subtitle: const Text(
+                    'Cho phép điện thoại đã ghép nối điều khiển nhạc (media.*) trực tiếp qua mạng LAN nội bộ khi mất kết nối máy chủ.',
+                  ),
+                  value: controller.lanModeEnabled.value,
+                  onChanged: controller.toggleLanMode,
+                ),
                 const SizedBox(height: 16),
                 OutlinedButton(
                   onPressed: controller.unpairAndRestartEnrollment,

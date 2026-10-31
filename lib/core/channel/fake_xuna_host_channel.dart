@@ -21,13 +21,18 @@ class FakeXunaHostChannel implements XunaHostChannel {
   }) : _publicKey = publicKey ?? _defaultPublicKey,
        _signer = signer ?? _defaultSigner;
 
-  static final Uint8List _defaultPublicKey = Uint8List.fromList(<int>[
-    0x04,
-    ...List<int>.generate(64, (i) => (i + 1) & 0xff),
-  ]);
+  static final Uint8List defaultPrivateScalar = Uint8List.fromList(
+    List<int>.generate(32, (i) => (i + 11) & 0xff),
+  );
 
-  static Uint8List _defaultSigner(Uint8List message) =>
-      Uint8List.fromList(List<int>.generate(64, (i) => (i + 7) & 0xff));
+  static final Uint8List _defaultPublicKey = deriveP256PublicKey(
+    defaultPrivateScalar,
+  );
+
+  static Uint8List _defaultSigner(Uint8List message) => signP256Deterministic(
+    privateScalar32: defaultPrivateScalar,
+    message: message,
+  );
 
   final Uint8List _publicKey;
   final Uint8List Function(Uint8List message) _signer;

@@ -1,6 +1,9 @@
 /// Core XTP v1 domain enums, forbidden tool set, and descriptor schemas.
 library;
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 final RegExp _toolNamePattern = RegExp(r'^[a-z]+\.[a-z_]+$');
 final RegExp _shortIdPattern = RegExp(r'^[a-z0-9_.-]{1,64}$');
 final RegExp _uuidPattern = RegExp(
@@ -358,18 +361,34 @@ class ToolDescriptor {
   }
 }
 
-/// Single-use approval token in `_meta["xuna/approval"]` (`XUNA_XTP_V1_CONTRACT.md` §4.2.2).
+/// Single-use approval token in `_meta["xuna/approval"]` (`XUNA_XTP_V1_CONTRACT.md` §4.2.2, `UDC-7`).
 class ApprovalToken {
   ApprovalToken({
     required this.approvalId,
     required this.argsSha256,
     required this.expiresAt,
-  }) {
+    this.scope = 'once',
+    this.signature,
+    this.publicKey,
+    String? expiresAtRaw,
+  }) : expiresAtWire = expiresAtRaw ?? expiresAt.toUtc().toIso8601String() {
     if (!isValidUuid(approvalId)) {
       throw FormatException('Invalid approvalId UUID: $approvalId');
     }
     if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(argsSha256)) {
       throw FormatException('Invalid argsSha256 hex: $argsSha256');
+    }
+    if (scope != 'once' && scope != 'conversation_15m') {
+      throw FormatException('Invalid approval scope: $scope');
+    }
+    if (signature != null && signature!.length != 64) {
+      throw const FormatException('Approval signature must be 64 bytes');
+    }
+    if (publicKey != null &&
+        (publicKey!.length != 65 || publicKey![0] != 0x04)) {
+      throw const FormatException(
+        'Approval publicKey must be a 65-byte uncompressed P-256 point',
+      );
     }
   }
 
@@ -377,6 +396,7 @@ class ApprovalToken {
     _requireExactKeys(
       json,
       const <String>{'approvalId', 'argsSha256', 'expiresAt'},
+      optionalKeys: const <String>{'scope', 'signature', 'publicKey'},
       context: 'xuna/approval',
     );
     final expiresRaw = _requireString(json, 'expiresAt');
@@ -385,24 +405,65 @@ class ApprovalToken {
       throw FormatException(
           'Invalid approval expiresAt timestamp: $expiresRaw');
     }
+    final scope = json.containsKey('scope') && json['scope'] != null
+        ? _requireString(json, 'scope')
+        : 'once';
+    Uint8List? sigBytes;
+    if (json.containsKey('signature') && json['signature'] != null) {
+      sigBytes = _decodeB64Flex(_requireString(json, 'signature'), 64);
+    }
+    Uint8List? pubBytes;
+    if (json.containsKey('publicKey') && json['publicKey'] != null) {
+      pubBytes = _decodeB64Flex(_requireString(json, 'publicKey'), 65);
+    }
     return ApprovalToken(
       approvalId: _requireString(json, 'approvalId'),
       argsSha256: _requireString(json, 'argsSha256'),
       expiresAt: parsed.toUtc(),
+      scope: scope,
+      signature: sigBytes,
+      publicKey: pubBytes,
+      expiresAtRaw: expiresRaw,
     );
   }
 
   final String approvalId;
   final String argsSha256;
   final DateTime expiresAt;
+  final String scope;
+  final Uint8List? signature;
+  final Uint8List? publicKey;
+  final String expiresAtWire;
 
   bool isExpiredAt(DateTime nowUtc) => !nowUtc.toUtc().isBefore(expiresAt);
 
   Map<String, Object?> toJson() => <String, Object?>{
         'approvalId': approvalId,
         'argsSha256': argsSha256,
-        'expiresAt': expiresAt.toUtc().toIso8601String(),
+        'expiresAt': expiresAtWire,
+        if (scope != 'once') 'scope': scope,
+        if (signature != null) 'signature': base64.encode(signature!),
+        if (publicKey != null) 'publicKey': base64.encode(publicKey!),
       };
+}
+
+Uint8List _decodeB64Flex(String raw, int expectedLen) {
+  var clean = raw.trim();
+  final rem = clean.length % 4;
+  if (rem == 2) {
+    clean = '$clean==';
+  } else if (rem == 3) {
+    clean = '$clean=';
+  } else if (rem == 1) {
+    throw const FormatException('Invalid base64 length');
+  }
+  final decoded = (clean.contains('-') || clean.contains('_'))
+      ? base64Url.decode(clean)
+      : base64.decode(clean);
+  if (decoded.length != expectedLen) {
+    throw FormatException('Expected $expectedLen bytes in base64 field');
+  }
+  return Uint8List.fromList(decoded);
 }
 
 /// Normative MVP tool descriptors (`XUNA_XTP_V1_CONTRACT.md` §6).

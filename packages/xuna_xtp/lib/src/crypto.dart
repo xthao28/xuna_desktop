@@ -15,6 +15,11 @@ final Uint8List hostSasDomain = Uint8List.fromList(
   ascii.encode('xuna.host.sas.v1'),
 );
 
+/// Domain prefix for `xuna.approval.v1\0` (17 bytes, `UDC-7` S7.5).
+final Uint8List approvalProofDomain = Uint8List.fromList(
+  <int>[...ascii.encode('xuna.approval.v1'), 0x00],
+);
+
 const int hostProofNonceSize = 32;
 const int hostEnrollmentCodeSize = 16;
 const int hostPublicKeySize = 65;
@@ -286,4 +291,212 @@ Uint8List _encodeDerInteger(Uint8List fixed32) {
   }
   out.add(stripped);
   return out.toBytes();
+}
+
+/// Builds the canonical phone-signed R3 approval message (`UDC-7` S7.5):
+/// `b"xuna.approval.v1\x00" || approvalId || "|" || argsSha256 || "|" || hostId || "|" || expiresAt`.
+Uint8List approvalProofMessage({
+  required String approvalId,
+  required String argsSha256,
+  required String hostId,
+  required String expiresAt,
+}) {
+  if (approvalId.isEmpty ||
+      argsSha256.isEmpty ||
+      hostId.isEmpty ||
+      expiresAt.isEmpty) {
+    throw const FormatException('Approval proof fields must not be empty');
+  }
+  final body = utf8.encode('$approvalId|$argsSha256|$hostId|$expiresAt');
+  final builder = BytesBuilder(copy: false)
+    ..add(approvalProofDomain)
+    ..add(body);
+  return builder.toBytes();
+}
+
+// NIST P-256 (secp256r1) curve parameters for pure-Dart ECDSA verification.
+final BigInt _p256P = BigInt.parse(
+  'ffffffff00000001000000000000000000000000ffffffffffffffffffffffff',
+  radix: 16,
+);
+final BigInt _p256A = _p256P - BigInt.from(3);
+final BigInt _p256B = BigInt.parse(
+  '5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b',
+  radix: 16,
+);
+final BigInt _p256N = BigInt.parse(
+  'ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551',
+  radix: 16,
+);
+final BigInt _p256Gx = BigInt.parse(
+  '6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296',
+  radix: 16,
+);
+final BigInt _p256Gy = BigInt.parse(
+  '4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5',
+  radix: 16,
+);
+
+BigInt _bytesToBigInt(Uint8List bytes) {
+  var result = BigInt.zero;
+  for (final b in bytes) {
+    result = (result << 8) | BigInt.from(b);
+  }
+  return result;
+}
+
+bool _isOnP256Curve(BigInt x, BigInt y) {
+  if (x <= BigInt.zero || x >= _p256P || y <= BigInt.zero || y >= _p256P) {
+    return false;
+  }
+  final lhs = (y * y) % _p256P;
+  final rhs = (((x * x) % _p256P) * x + _p256A * x + _p256B) % _p256P;
+  return lhs == rhs;
+}
+
+(BigInt, BigInt)? _p256PointAdd((BigInt, BigInt)? p1, (BigInt, BigInt)? p2) {
+  if (p1 == null) return p2;
+  if (p2 == null) return p1;
+  final (x1, y1) = p1;
+  final (x2, y2) = p2;
+  if (x1 == x2) {
+    if ((y1 + y2) % _p256P == BigInt.zero) {
+      return null;
+    }
+    return _p256PointDouble(p1);
+  }
+  final dx = (x2 - x1) % _p256P;
+  final dy = (y2 - y1) % _p256P;
+  final slope = (dy * dx.modInverse(_p256P)) % _p256P;
+  final x3 = (slope * slope - x1 - x2) % _p256P;
+  final y3 = (slope * (x1 - x3) - y1) % _p256P;
+  return (x3, y3);
+}
+
+(BigInt, BigInt)? _p256PointDouble((BigInt, BigInt)? p) {
+  if (p == null) return null;
+  final (x, y) = p;
+  if (y == BigInt.zero) return null;
+  final num = (BigInt.from(3) * ((x * x) % _p256P) + _p256A) % _p256P;
+  final den = (BigInt.two * y) % _p256P;
+  final slope = (num * den.modInverse(_p256P)) % _p256P;
+  final x3 = (slope * slope - BigInt.two * x) % _p256P;
+  final y3 = (slope * (x - x3) - y) % _p256P;
+  return (x3, y3);
+}
+
+(BigInt, BigInt)? _p256ScalarMul(BigInt k, (BigInt, BigInt) point) {
+  (BigInt, BigInt)? result;
+  (BigInt, BigInt)? addend = point;
+  var scalar = k;
+  while (scalar > BigInt.zero) {
+    if (scalar.isOdd) {
+      result = _p256PointAdd(result, addend);
+    }
+    addend = _p256PointDouble(addend);
+    scalar >>= 1;
+  }
+  return result;
+}
+
+/// Verifies an ECDSA P-256 signature over SHA-256([message]).
+///
+/// [publicKey] must be a 65-byte uncompressed SEC1 point (`0x04 || X || Y`) and
+/// [signature] must be a 64-byte raw `r || s` signature.
+bool verifyP256Signature({
+  required Uint8List publicKey,
+  required Uint8List message,
+  required Uint8List signature,
+}) {
+  if (publicKey.length != hostPublicKeySize || publicKey[0] != 0x04) {
+    return false;
+  }
+  if (signature.length != hostSignatureSize) {
+    return false;
+  }
+  final qx = _bytesToBigInt(publicKey.sublist(1, 33));
+  final qy = _bytesToBigInt(publicKey.sublist(33, 65));
+  if (!_isOnP256Curve(qx, qy)) {
+    return false;
+  }
+  final r = _bytesToBigInt(signature.sublist(0, 32));
+  final s = _bytesToBigInt(signature.sublist(32, 64));
+  if (r <= BigInt.zero || r >= _p256N || s <= BigInt.zero || s >= _p256N) {
+    return false;
+  }
+  final digestBytes = Uint8List.fromList(sha256.convert(message).bytes);
+  final z = _bytesToBigInt(digestBytes);
+  final w = s.modInverse(_p256N);
+  final u1 = (z * w) % _p256N;
+  final u2 = (r * w) % _p256N;
+  final p1 = _p256ScalarMul(u1, (_p256Gx, _p256Gy));
+  final p2 = _p256ScalarMul(u2, (qx, qy));
+  final sum = _p256PointAdd(p1, p2);
+  if (sum == null) {
+    return false;
+  }
+  final (rx, _) = sum;
+  return (rx % _p256N) == r;
+}
+
+Uint8List _bigIntTo32Bytes(BigInt value) {
+  final hex = value.toRadixString(16).padLeft(64, '0');
+  final out = Uint8List(32);
+  for (var i = 0; i < 32; i++) {
+    out[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+  }
+  return out;
+}
+
+/// Derives a 65-byte uncompressed SEC1 P-256 public key (`0x04 || X || Y`) from
+/// a 32-byte private scalar [privateScalar32].
+Uint8List deriveP256PublicKey(Uint8List privateScalar32) {
+  if (privateScalar32.length != 32) {
+    throw const FormatException('privateScalar32 must be 32 bytes');
+  }
+  final d = _bytesToBigInt(privateScalar32) % (_p256N - BigInt.one) + BigInt.one;
+  final pub = _p256ScalarMul(d, (_p256Gx, _p256Gy));
+  if (pub == null) {
+    throw const FormatException('Invalid P-256 scalar');
+  }
+  final (qx, qy) = pub;
+  final out = Uint8List(hostPublicKeySize);
+  out[0] = 0x04;
+  out.setRange(1, 33, _bigIntTo32Bytes(qx));
+  out.setRange(33, 65, _bigIntTo32Bytes(qy));
+  return out;
+}
+
+/// Deterministically signs SHA-256([message]) with a 32-byte P-256 private
+/// scalar [privateScalar32], returning a 64-byte raw `r || s` signature.
+Uint8List signP256Deterministic({
+  required Uint8List privateScalar32,
+  required Uint8List message,
+}) {
+  if (privateScalar32.length != 32) {
+    throw const FormatException('privateScalar32 must be 32 bytes');
+  }
+  final d = _bytesToBigInt(privateScalar32) % (_p256N - BigInt.one) + BigInt.one;
+  final digestBytes = Uint8List.fromList(sha256.convert(message).bytes);
+  final z = _bytesToBigInt(digestBytes);
+  for (var counter = 1; counter < 1000; counter++) {
+    final kSeed = BytesBuilder(copy: false)
+      ..add(privateScalar32)
+      ..add(digestBytes)
+      ..addByte(counter);
+    final kBytes = Uint8List.fromList(sha256.convert(kSeed.toBytes()).bytes);
+    final k = _bytesToBigInt(kBytes) % (_p256N - BigInt.one) + BigInt.one;
+    final pt = _p256ScalarMul(k, (_p256Gx, _p256Gy));
+    if (pt == null) continue;
+    final (rx, _) = pt;
+    final r = rx % _p256N;
+    if (r == BigInt.zero) continue;
+    final s = (k.modInverse(_p256N) * (z + r * d)) % _p256N;
+    if (s == BigInt.zero) continue;
+    final out = Uint8List(hostSignatureSize);
+    out.setRange(0, 32, _bigIntTo32Bytes(r));
+    out.setRange(32, 64, _bigIntTo32Bytes(s));
+    return out;
+  }
+  throw StateError('Failed to generate P-256 signature');
 }

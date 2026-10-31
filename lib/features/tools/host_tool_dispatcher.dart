@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:typed_data';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
+import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -303,6 +305,7 @@ class HostToolDispatcher {
     required this.auditStore,
     required this.stopController,
     required this.logger,
+    this.enrollmentStore,
     this.agentVersion = '0.1.0',
     this.maxIdempotencyCacheEntries = 256,
     List<HostToolHandler>? handlers,
@@ -335,6 +338,7 @@ class HostToolDispatcher {
   final AuditLogStore auditStore;
   final EmergencyStopController stopController;
   final ContentFreeLogger logger;
+  final EnrollmentStateStore? enrollmentStore;
   final String agentVersion;
   final int maxIdempotencyCacheEntries;
 
@@ -396,11 +400,15 @@ class HostToolDispatcher {
 
     final stopwatch = Stopwatch()..start();
     final evaluator = policyStore.evaluator;
+    final enrolled = enrollmentStore?.current;
     final evaluation = evaluator.evaluateInvocation(
       toolName: params.name,
       arguments: params.arguments,
       approval: params.approval,
       isStopped: stopController.isStopped,
+      hostId: enrolled?.hostId,
+      pinnedPhonePublicKeys:
+          enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
       nowUtc: nowUtc,
     );
 

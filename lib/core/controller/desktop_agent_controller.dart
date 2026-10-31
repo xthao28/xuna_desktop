@@ -5,6 +5,7 @@ import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
+import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
@@ -23,6 +24,7 @@ class DesktopAgentController extends GetxController {
     required this.stopController,
     required this.sessionClient,
     required this.logger,
+    this.lanServer,
   });
 
   final XunaHostChannel channel;
@@ -32,6 +34,7 @@ class DesktopAgentController extends GetxController {
   final EmergencyStopController stopController;
   final XtpSessionClient sessionClient;
   final ContentFreeLogger logger;
+  final LanOfflineServer? lanServer;
 
   final activeTab = AgentWindowTab.enrollment.obs;
   final sessionPhase = HostSessionPhase.disconnected.obs;
@@ -41,6 +44,7 @@ class DesktopAgentController extends GetxController {
   final policyBanner = RxnString();
   final activePolicy = Rxn<HostPolicy>();
   final isStopped = false.obs;
+  final lanModeEnabled = false.obs;
   final permissionsSnapshot = const HostPermissionSnapshot().obs;
   final recentAuditRecords = <AuditLogRecord>[].obs;
 
@@ -102,6 +106,7 @@ class DesktopAgentController extends GetxController {
     sessionPhase.value = sessionClient.phase;
     pendingEnrollment.value = sessionClient.enrollmentDisplay;
     enrolledState.value = enrollmentStore.current;
+    lanModeEnabled.value = enrollmentStore.current?.lanEnabled ?? false;
     isPolicyHealthy.value = policyStore.isHealthy;
     policyBanner.value = policyStore.trayBanner;
     activePolicy.value = policyStore.evaluator.policy;
@@ -112,9 +117,33 @@ class DesktopAgentController extends GetxController {
     await enrollmentStore.load();
     await policyStore.reload();
     _syncFromStores();
+    if (lanModeEnabled.value && lanServer != null) {
+      try {
+        await lanServer!.start();
+      } catch (_) {}
+    }
     await refreshPermissions();
     await refreshAudit();
     await sessionClient.connect();
+  }
+
+  Future<void> toggleLanMode(bool enabled) async {
+    await enrollmentStore.updateLanEnabled(enabled);
+    enrolledState.value = enrollmentStore.current;
+    lanModeEnabled.value = enabled;
+    if (lanServer != null) {
+      try {
+        if (enabled) {
+          await lanServer!.start();
+        } else {
+          await lanServer!.stop();
+        }
+      } catch (_) {}
+    }
+    sessionClient.sendLanPeerAdvertisement(
+      enabled: enabled,
+      port: lanServer?.boundPort ?? defaultLanOfflinePort,
+    );
   }
 
   Future<void> refreshPermissions() async {

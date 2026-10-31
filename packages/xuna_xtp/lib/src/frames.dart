@@ -73,6 +73,7 @@ const Set<String> knownXtpNotificationMethods = <String>{
   'notifications/progress',
   'notifications/tools/list_changed',
   'xuna/stop',
+  'xuna/lanPeer',
 };
 
 /// Base class for all JSON-RPC 2.0 frames in XTP v1.
@@ -554,6 +555,21 @@ class StopParams extends XtpNotificationParams {
   final StopReason reason;
 }
 
+/// `xuna/lanPeer` notification params (`UDC-7` S7.4–S7.5).
+class LanPeerParams extends XtpNotificationParams {
+  const LanPeerParams({
+    this.phonePublicKeys = const <Uint8List>[],
+    this.enabled,
+    this.port,
+    this.certFingerprint,
+  });
+
+  final List<Uint8List> phonePublicKeys;
+  final bool? enabled;
+  final int? port;
+  final String? certFingerprint;
+}
+
 XtpRequestParams _parseRequestParams(
   String method,
   Map<String, Object?> params,
@@ -858,6 +874,62 @@ XtpNotificationParams _parseNotificationParams(
           _requireStringParam(params, 'reason'),
         );
         return StopParams(reason: reason);
+      case 'xuna/lanPeer':
+        if (params.containsKey('phonePublicKeys')) {
+          _requireExactParamsKeys(params, const <String>{'phonePublicKeys'});
+          final rawList = params['phonePublicKeys'];
+          if (rawList is! List) {
+            throw const FormatException('phonePublicKeys must be a list');
+          }
+          final keys = <Uint8List>[];
+          for (final item in rawList) {
+            if (item is! String) {
+              throw const FormatException('phonePublicKeys items must be base64 strings');
+            }
+            var clean = item.trim();
+            final rem = clean.length % 4;
+            if (rem == 2) {
+              clean = '$clean==';
+            } else if (rem == 3) {
+              clean = '$clean=';
+            }
+            final kb = Uint8List.fromList(
+              (clean.contains('-') || clean.contains('_'))
+                  ? base64Url.decode(clean)
+                  : base64.decode(clean),
+            );
+            validateP256PublicKey(kb);
+            keys.add(kb);
+          }
+          return LanPeerParams(phonePublicKeys: List.unmodifiable(keys));
+        } else {
+          _requireExactParamsKeys(
+            params,
+            const <String>{'enabled'},
+            optionalKeys: const <String>{'port', 'certFingerprint'},
+          );
+          final enabledVal = params['enabled'];
+          if (enabledVal is! bool) {
+            throw const FormatException('enabled must be a boolean');
+          }
+          int? port;
+          if (params.containsKey('port') && params['port'] != null) {
+            port = _requireIntParam(params, 'port');
+            if (port < 1024 || port > 65535) {
+              throw const FormatException('port must be in 1024..65535');
+            }
+          }
+          String? fp;
+          if (params.containsKey('certFingerprint') &&
+              params['certFingerprint'] != null) {
+            fp = _requireNonEmptyString(params, 'certFingerprint', maxLen: 88);
+          }
+          return LanPeerParams(
+            enabled: enabledVal,
+            port: port,
+            certFingerprint: fp,
+          );
+        }
       default:
         throw const XtpProtocolException(
           jsonRpcCode: JsonRpcErrorCode.methodNotFound,

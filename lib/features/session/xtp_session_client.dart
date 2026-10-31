@@ -78,6 +78,46 @@ class XtpSessionClient {
         );
       }
     });
+    stopController.addCancelListener(_onLocalEmergencyStop);
+  }
+
+  void _onLocalEmergencyStop(StopReason reason) {
+    if (reason != StopReason.ownerHost) return;
+    if (_phase != HostSessionPhase.ready) return;
+    _sendNotification(
+      const XtpNotification(
+        method: 'xuna/stop',
+        params: <String, Object?>{'reason': 'owner_host'},
+        typedParams: StopParams(reason: StopReason.ownerHost),
+      ),
+    );
+  }
+
+  /// Sends an outbound `xuna/lanPeer` advertisement to the backend (`UDC-7` S7.4).
+  void sendLanPeerAdvertisement({
+    required bool enabled,
+    int port = 47821,
+    String? certFingerprint,
+  }) {
+    if (_phase != HostSessionPhase.ready) return;
+    final pubKey = _publicKey;
+    final fp = certFingerprint ??
+        (pubKey != null ? base64UrlNoPadEncode(publicKeyFingerprint(pubKey)) : null);
+    _sendNotification(
+      XtpNotification(
+        method: 'xuna/lanPeer',
+        params: <String, Object?>{
+          'enabled': enabled,
+          'port': port,
+          if (fp != null) 'certFingerprint': fp,
+        },
+        typedParams: LanPeerParams(
+          enabled: enabled,
+          port: port,
+          certFingerprint: fp,
+        ),
+      ),
+    );
   }
 
   final Uri wsUri;
@@ -275,6 +315,16 @@ class XtpSessionClient {
           return;
         }
         stopController.triggerStop(typed.reason);
+      case LanPeerParams():
+        if (typed.phonePublicKeys.isNotEmpty) {
+          final keysB64 = typed.phonePublicKeys
+              .map(base64.encode)
+              .toList(growable: false);
+          await enrollmentStore.updatePhonePublicKeys(keysB64);
+          logger.info('session.lan_peer_keys_updated', <String, Object?>{
+            'count': keysB64.length,
+          });
+        }
       case ProgressParams():
       case ToolsListChangedParams():
         break;
@@ -360,6 +410,10 @@ class XtpSessionClient {
     _setEnrollmentDisplay(null);
     _setPhase(HostSessionPhase.ready);
     logger.info('session.ready');
+
+    if (enrollmentStore.current?.lanEnabled == true) {
+      sendLanPeerAdvertisement(enabled: true);
+    }
 
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(
@@ -494,6 +548,7 @@ class XtpSessionClient {
 
   Future<void> dispose() async {
     _disposed = true;
+    stopController.removeCancelListener(_onLocalEmergencyStop);
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
     await _policySub?.cancel();

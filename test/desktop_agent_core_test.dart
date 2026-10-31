@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +15,7 @@ import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/single_instance/single_instance_guard.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
+import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
@@ -160,6 +162,7 @@ void main() {
       auditStore: auditStore,
       stopController: stopController,
       logger: logger,
+      enrollmentStore: enrollmentStore,
     );
   });
 
@@ -960,6 +963,343 @@ void main() {
           expect(auditDump, isNot(contains(forbidden)));
         }
 
+        await client.dispose();
+      },
+    );
+
+    test(
+      'UDC-7 S7.3, S7.4, S7.5: upstream emergency stop, xuna/lanPeer phone key pinning, R3 phone-signed approval, and LAN offline server mutual proof & media-only enforcement',
+      () async {
+        const hostId = '9b2f7e4a-5c11-4d8e-9a30-1f6d8c2e4b10';
+        await enrollmentStore.save(hostId: hostId, alias: 'PC Phòng Khách');
+
+        // Configure policy with an R3 workflow
+        final r3Policy = HostPolicy(
+          schemaVersion: 1,
+          families: const <ToolFamily, FamilyPolicyDecision>{
+            ToolFamily.media: FamilyPolicyDecision.allow,
+            ToolFamily.app: FamilyPolicyDecision.allow,
+            ToolFamily.url: FamilyPolicyDecision.allow,
+            ToolFamily.workflow: FamilyPolicyDecision.allow,
+          },
+          apps: const <AllowedAppConfig>[],
+          urlDomains: const <String>['github.com'],
+          workflows: <WorkflowConfig>[
+            WorkflowConfig(
+              id: 'deploy_prod',
+              name: 'Deploy Prod',
+              kind: WorkflowKind.shortcut,
+              target: 'DeployProd',
+              risk: RiskTier.r3,
+            ),
+          ],
+          players: const <String>['spotify'],
+        );
+        await policyStore.savePolicy(r3Policy);
+
+        // Phone test P-256 keypair
+        final phonePrivateScalar = Uint8List.fromList(
+          List<int>.generate(32, (i) => (i + 33) & 0xff),
+        );
+        final phonePublicKey = deriveP256PublicKey(phonePrivateScalar);
+        final phonePublicKeyB64 = base64Encode(phonePublicKey);
+
+        late _FakeWebSocketChannel fakeWs;
+        final sentFrames = <XtpFrame>[];
+        final client = XtpSessionClient(
+          wsUri: Uri.parse('ws://127.0.0.1:8000/v1/hosts/connect'),
+          channel: channel,
+          enrollmentStore: enrollmentStore,
+          policyStore: policyStore,
+          dispatcher: dispatcher,
+          stopController: stopController,
+          logger: logger,
+          enableAutoReconnect: false,
+          connector: (_) {
+            fakeWs = _FakeWebSocketChannel();
+            fakeWs.outboundFrames.listen((raw) {
+              sentFrames.add(XtpFrame.parse(raw));
+            });
+            return fakeWs;
+          },
+        );
+
+        await client.connect();
+        fakeWs.inbound.add(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'method': 'xuna/ready',
+            'params': <String, Object?>{
+              'serverTime': '2026-10-31T08:00:00Z',
+              'heartbeatS': 30,
+            },
+          }),
+        );
+        // S7.4 / S7.5: Backend sends xuna/lanPeer with owner phonePublicKeys
+        fakeWs.inbound.add(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'method': 'xuna/lanPeer',
+            'params': <String, Object?>{
+              'phonePublicKeys': <String>[phonePublicKeyB64],
+            },
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(
+          enrollmentStore.current?.pinnedPhonePublicKeys,
+          equals(<String>[phonePublicKeyB64]),
+        );
+
+        // S7.5: Dispatch R3 workflow.run without phone signature -> denied (approval_signature_invalid)
+        final now = DateTime.utc(2026, 10, 31, 8, 0, 0);
+        const expiresWire = '2026-10-31T08:02:00Z';
+        final expiresAt = DateTime.parse(expiresWire).toUtc();
+        const wfArgs = <String, Object?>{'id': 'deploy_prod'};
+        final wfSha = argsSha256(wfArgs);
+        const approvalId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+
+        final unsignedR3 = await dispatcher.dispatch(
+          requestId: 201,
+          params: ToolsCallParams(
+            name: 'workflow.run',
+            arguments: wfArgs,
+            invocationId: '20111111-1111-4111-8111-111111111111',
+            deadlineMs: 5000,
+            approval: ApprovalToken(
+              approvalId: approvalId,
+              argsSha256: wfSha,
+              expiresAt: expiresAt,
+              expiresAtRaw: expiresWire,
+            ),
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (unsignedR3.result['_meta']
+              as Map<String, Object?>)['xuna/errorCode'],
+          equals('approval_signature_invalid'),
+        );
+
+        // S7.5: Dispatch R3 workflow.run with valid phone signature -> ok
+        final proofMsg = approvalProofMessage(
+          approvalId: approvalId,
+          argsSha256: wfSha,
+          hostId: hostId,
+          expiresAt: expiresWire,
+        );
+        final phoneSig = signP256Deterministic(
+          privateScalar32: phonePrivateScalar,
+          message: proofMsg,
+        );
+        final signedR3 = await dispatcher.dispatch(
+          requestId: 202,
+          params: ToolsCallParams(
+            name: 'workflow.run',
+            arguments: wfArgs,
+            invocationId: '20222222-2222-4222-8222-222222222222',
+            deadlineMs: 5000,
+            approval: ApprovalToken(
+              approvalId: approvalId,
+              argsSha256: wfSha,
+              expiresAt: expiresAt,
+              expiresAtRaw: expiresWire,
+              scope: 'once',
+              signature: phoneSig,
+              publicKey: phonePublicKey,
+            ),
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (signedR3.result['_meta'] as Map<String, Object?>)['xuna/status'],
+          equals('ok'),
+        );
+
+        // S7.3: Local emergency stop sends xuna/stop {reason: "owner_host"} upstream
+        sentFrames.clear();
+        stopController.triggerStop(StopReason.ownerHost);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(
+          sentFrames.whereType<XtpNotification>().any(
+            (n) =>
+                n.method == 'xuna/stop' && n.params['reason'] == 'owner_host',
+          ),
+          isTrue,
+        );
+        stopController.resumeFromTray();
+
+        // S7.4: Start LanOfflineServer on an ephemeral loopback port and test mutual proof + media-only enforcement
+        HttpOverrides.global = null;
+        final lanServer = LanOfflineServer(
+          channel: channel,
+          enrollmentStore: enrollmentStore,
+          dispatcher: dispatcher,
+          logger: logger,
+          bindAddress: '127.0.0.1',
+          port: 0,
+          enableMdns: false,
+        );
+        await lanServer.start();
+        final lanPort = lanServer.boundPort!;
+        expect(lanPort, greaterThan(0));
+
+        // 1. Browser Origin header is rejected with 403 Forbidden
+        final httpClient = HttpClient();
+        final badOriginReq = await httpClient.getUrl(
+          Uri.parse('http://127.0.0.1:$lanPort/xuna-lan'),
+        );
+        badOriginReq.headers.set('Origin', 'https://evil.example.com');
+        final badOriginResp = await badOriginReq.close();
+        expect(badOriginResp.statusCode, HttpStatus.forbidden);
+        httpClient.close(force: true);
+
+        // 2. Connect phone WebSocket client and complete mutual P-256 proof
+        final lanWs = await WebSocket.connect(
+          'ws://127.0.0.1:$lanPort/xuna-lan',
+        );
+        final lanInbound = <XtpFrame>[];
+        final readyCompleter = Completer<void>();
+        final hostProofCompleter = Completer<ProofParams>();
+        final callResponses = <Object, XtpResponse>{};
+
+        final clientNonce = Uint8List.fromList(
+          List<int>.generate(32, (i) => (i + 77) & 0xff),
+        );
+
+        lanWs.listen((raw) {
+          if (raw is! String) return;
+          final frame = XtpFrame.parse(raw);
+          lanInbound.add(frame);
+          if (frame is XtpNotification) {
+            final typed = frame.typedParams;
+            if (typed is ChallengeParams) {
+              // Phone signs server's challenge nonce
+              final msg = hostProofMessage(
+                nonce: typed.nonceBytes,
+                purpose: HostProofPurpose.session,
+                payload: phonePublicKey,
+                hostIdUuid: hostId,
+              );
+              final sig = signP256Deterministic(
+                privateScalar32: phonePrivateScalar,
+                message: msg,
+              );
+              lanWs.add(
+                XtpRequest(
+                  id: 1,
+                  method: 'xuna/proof',
+                  params: <String, Object?>{
+                    'purpose': 2,
+                    'signature': base64.encode(sig),
+                  },
+                  typedParams: ProofParams(
+                    purpose: HostProofPurpose.session,
+                    signatureBytes: sig,
+                  ),
+                ).encode(),
+              );
+              // Phone also challenges host for mutual proof
+              lanWs.add(
+                XtpNotification(
+                  method: 'xuna/challenge',
+                  params: <String, Object?>{
+                    'purpose': 2,
+                    'nonce': base64.encode(clientNonce),
+                    'expiresIn': 60,
+                  },
+                  typedParams: ChallengeParams(
+                    purpose: HostProofPurpose.session,
+                    nonceBytes: clientNonce,
+                    expiresIn: 60,
+                  ),
+                ).encode(),
+              );
+            } else if (typed is ReadyParams && !readyCompleter.isCompleted) {
+              readyCompleter.complete();
+            }
+          } else if (frame is XtpRequest &&
+              frame.typedParams is ProofParams &&
+              !hostProofCompleter.isCompleted) {
+            hostProofCompleter.complete(frame.typedParams as ProofParams);
+          } else if (frame is XtpResponse) {
+            callResponses[frame.id] = frame;
+          }
+        });
+
+        await readyCompleter.future.timeout(const Duration(seconds: 2));
+        final hostProof = await hostProofCompleter.future.timeout(
+          const Duration(seconds: 2),
+        );
+        final hostPubKey = await channel.keyEnsure();
+        expect(
+          verifyP256Signature(
+            publicKey: hostPubKey,
+            message: hostProofMessage(
+              nonce: clientNonce,
+              purpose: HostProofPurpose.session,
+              payload: hostPubKey,
+              hostIdUuid: hostId,
+            ),
+            signature: hostProof.signatureBytes,
+          ),
+          isTrue,
+        );
+
+        // 3. Call media.play_pause over LAN -> ok
+        lanWs.add(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': 10,
+            'method': 'tools/call',
+            'params': <String, Object?>{
+              'name': 'media.play_pause',
+              'arguments': <String, Object?>{},
+              '_meta': <String, Object?>{
+                'xuna/invocationId': '30111111-1111-4111-8111-111111111111',
+                'xuna/deadlineMs': 5000,
+              },
+            },
+          }),
+        );
+        // 4. Call workflow.run over LAN -> denied (lan_media_only)
+        lanWs.add(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': 11,
+            'method': 'tools/call',
+            'params': <String, Object?>{
+              'name': 'workflow.run',
+              'arguments': <String, Object?>{'id': 'deploy_prod'},
+              '_meta': <String, Object?>{
+                'xuna/invocationId': '30222222-2222-4222-8222-222222222222',
+                'xuna/deadlineMs': 5000,
+              },
+            },
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(callResponses[10], isNotNull);
+        expect(
+          (callResponses[10]!.result['_meta']
+              as Map<String, Object?>)['xuna/status'],
+          equals('ok'),
+        );
+        expect(callResponses[11], isNotNull);
+        expect(
+          (callResponses[11]!.result['_meta']
+              as Map<String, Object?>)['xuna/status'],
+          equals('denied'),
+        );
+        expect(
+          (callResponses[11]!.result['_meta']
+              as Map<String, Object?>)['xuna/errorCode'],
+          equals('lan_media_only'),
+        );
+
+        await lanWs.close();
+        await lanServer.stop();
         await client.dispose();
       },
     );
