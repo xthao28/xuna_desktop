@@ -7,6 +7,7 @@ import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
+import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
@@ -59,6 +60,7 @@ class ToolExecutionContext {
     required this.channel,
     required this.appScanner,
     required this.workspaceIndexer,
+    required this.mcpBridge,
     required this.cancellationToken,
     required this.agentVersion,
   });
@@ -69,6 +71,7 @@ class ToolExecutionContext {
   final XunaHostChannel channel;
   final AutoAppScanner appScanner;
   final AutoWorkspaceIndexer workspaceIndexer;
+  final AutoMcpBridge mcpBridge;
   final ToolCancellationToken cancellationToken;
   final String agentVersion;
 }
@@ -509,7 +512,135 @@ class WorkspaceCodingAgentTool extends HostToolHandler {
   }
 }
 
-/// Registry and dispatcher for all MVP and Dev Workspace tools (`UDC-3` §5.6.5, `UDC-11`).
+class SelectionReadTool extends HostToolHandler {
+  const SelectionReadTool();
+
+  @override
+  String get name => 'selection.read';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final maxChars = (context.arguments['maxChars'] as int?) ?? 1200;
+    final raw = await context.channel.clipboardReadText();
+    final redacted = redactSensitiveSelectionText(raw, maxChars: maxChars);
+    return ToolHandlerOutput(
+      text: redacted.text.isEmpty
+          ? 'Không có văn bản đang chọn trong bộ nhớ tạm.'
+          : 'Đã đọc đoạn văn bản đang chọn (${redacted.text.length} ký tự, ẩn ${redacted.redactedCount} mã nhạy cảm).',
+      structuredContent: <String, Object?>{
+        'text': redacted.text,
+        'truncated': redacted.truncated,
+        'redactedCount': redacted.redactedCount,
+      },
+      toastBody: 'đã đọc đoạn văn bản đang chọn',
+    );
+  }
+}
+
+class HostLockScreenTool extends HostToolHandler {
+  const HostLockScreenTool();
+
+  @override
+  String get name => 'host.lock_screen';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final locked = await context.channel.lockScreen();
+    return ToolHandlerOutput(
+      text: 'Đã khóa màn hình máy tính.',
+      structuredContent: <String, Object?>{'locked': locked},
+      toastBody: 'đã khóa màn hình',
+    );
+  }
+}
+
+class WorkspaceWatchTaskTool extends HostToolHandler {
+  const WorkspaceWatchTaskTool();
+
+  @override
+  String get name => 'workspace.watch_task';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final project = (context.arguments['project'] as String?) ?? 'recent';
+    final ws = context.workspaceIndexer.resolveWorkspace(project);
+    if (ws == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'workspace_not_found',
+      );
+    }
+    final snap = await context.workspaceIndexer.inspectWorkspaceTask(ws);
+    return ToolHandlerOutput(
+      text: snap.summary,
+      structuredContent: snap.toStructuredContent(),
+    );
+  }
+}
+
+class McpListServersTool extends HostToolHandler {
+  const McpListServersTool();
+
+  @override
+  String get name => 'mcp.list_servers';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final servers = context.mcpBridge
+        .discoverServers()
+        .map((s) => s.toWireJson())
+        .toList();
+    return ToolHandlerOutput(
+      text: 'Có ${servers.length} máy chủ MCP cục bộ khả dụng.',
+      structuredContent: <String, Object?>{'servers': servers},
+    );
+  }
+}
+
+class McpCallTool extends HostToolHandler {
+  const McpCallTool();
+
+  @override
+  String get name => 'mcp.call';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final serverId = context.arguments['server'] as String;
+    final toolName = context.arguments['tool'] as String;
+    final payloadJson = context.arguments['payloadJson'] as String?;
+    final server = context.mcpBridge.findServer(serverId);
+    if (server == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_found',
+      );
+    }
+    final String summary;
+    try {
+      summary = await context.mcpBridge.callTool(
+        server: server,
+        toolName: toolName,
+        payloadJson: payloadJson,
+      );
+    } on FormatException {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'schema_mismatch',
+      );
+    }
+    return ToolHandlerOutput(
+      text: summary,
+      structuredContent: <String, Object?>{
+        'server': server.id,
+        'tool': toolName,
+        'summary': summary,
+      },
+      toastBody: 'đã gọi MCP ${server.id}.$toolName',
+    );
+  }
+}
+
+/// Registry and dispatcher for all MVP and Dev Workspace tools (`UDC-3` §5.6.5, `UDC-11`, `UDC-12`).
 class HostToolDispatcher {
   HostToolDispatcher({
     required this.policyStore,
@@ -521,11 +652,13 @@ class HostToolDispatcher {
     this.computerUseManager,
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
+    AutoMcpBridge? mcpBridge,
     this.agentVersion = '0.1.0',
     this.maxIdempotencyCacheEntries = 256,
     List<HostToolHandler>? handlers,
   }) : appScanner = appScanner ?? AutoAppScanner(),
-       workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer() {
+       workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer(),
+       mcpBridge = mcpBridge ?? AutoMcpBridge() {
     final registered =
         handlers ??
         <HostToolHandler>[
@@ -546,6 +679,11 @@ class HostToolDispatcher {
           const WorkspaceOpenTool(),
           const WorkspaceGitSummaryTool(),
           const WorkspaceCodingAgentTool(),
+          const SelectionReadTool(),
+          const HostLockScreenTool(),
+          const WorkspaceWatchTaskTool(),
+          const McpListServersTool(),
+          const McpCallTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -565,6 +703,7 @@ class HostToolDispatcher {
   final ComputerUseSessionManager? computerUseManager;
   final AutoAppScanner appScanner;
   final AutoWorkspaceIndexer workspaceIndexer;
+  final AutoMcpBridge mcpBridge;
   final String agentVersion;
   final int maxIdempotencyCacheEntries;
 
@@ -586,6 +725,7 @@ class HostToolDispatcher {
       defaultPermission: perms.accessibility,
       includeBrowserCurrentUrl: true,
       includeDevWorkspaceTools: true,
+      includeDeskCopilotTools: true,
     );
     if (computerUseManager == null) {
       return mvp;
@@ -714,6 +854,7 @@ class HostToolDispatcher {
         channel: channel,
         appScanner: appScanner,
         workspaceIndexer: workspaceIndexer,
+        mcpBridge: mcpBridge,
         cancellationToken: cancelToken,
         agentVersion: agentVersion,
       );

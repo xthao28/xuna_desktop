@@ -356,7 +356,10 @@ class ToolDescriptor {
     final prefix = name.split('.').first;
     final family = prefix == 'browser'
         ? ToolFamily.url
-        : (prefix == 'display' || prefix == 'workspace')
+        : (prefix == 'display' ||
+                prefix == 'workspace' ||
+                prefix == 'selection' ||
+                prefix == 'mcp')
             ? ToolFamily.app
             : ToolFamily.fromWire(prefix);
     if (expectedFamily != null && family != expectedFamily) {
@@ -478,6 +481,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeHostNotify = true,
   bool includeBrowserCurrentUrl = false,
   bool includeDevWorkspaceTools = false,
+  bool includeDeskCopilotTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -796,6 +800,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       buildBrowserCurrentUrlTool(defaultPermission: defaultPermission),
     if (includeDevWorkspaceTools)
       ...buildDevWorkspaceTools(defaultPermission: defaultPermission),
+    if (includeDeskCopilotTools)
+      ...buildDeskCopilotTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -975,6 +981,203 @@ List<ToolDescriptor> buildDevWorkspaceTools({
           'promptSent': <String, Object?>{'type': 'boolean'},
         },
         'required': <String>['workspace', 'agent', 'resumed', 'promptSent'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Builds the 5 `UDC-12` Desk Co-Pilot tool descriptors (`S12.2` & `S12.3`):
+/// - `selection.read` (`R1`, `observes: true`, family `app`)
+/// - `host.lock_screen` (`R1`, family `host`)
+/// - `workspace.watch_task` (`R1`, `observes: true`, family `app`)
+/// - `mcp.list_servers` (`R1`, family `app`)
+/// - `mcp.call` (`R2`, family `app`)
+List<ToolDescriptor> buildDeskCopilotTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'selection.read',
+      description:
+          'Read selected or clipboard text (<= 1200 chars) with automatic secret/token redaction.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'maxChars': <String, Object?>{
+            'type': 'integer',
+            'minimum': 80,
+            'maximum': 1200,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'text': <String, Object?>{'type': 'string', 'maxLength': 1200},
+          'truncated': <String, Object?>{'type': 'boolean'},
+          'redactedCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+        },
+        'required': <String>['text', 'truncated', 'redactedCount'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'host.lock_screen',
+      description: 'Lock the host workstation or put the display to sleep.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{},
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'locked': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['locked'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.host,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'workspace.watch_task',
+      description:
+          'Inspect coding agent / build / test task status in a discovered project workspace.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'project': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+        },
+        'required': <String>['project'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'workspace': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'status': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['completed', 'running', 'failed', 'idle'],
+          },
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 200},
+        },
+        'required': <String>['workspace', 'status', 'summary'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'mcp.list_servers',
+      description:
+          'List locally configured MCP servers (names and transports only; never secrets or env vars).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{},
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'servers': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'id': <String, Object?>{
+                  'type': 'string',
+                  'pattern': r'^[a-z0-9_.-]{1,64}$',
+                },
+                'transport': <String, Object?>{
+                  'type': 'string',
+                  'enum': <String>['stdio', 'http'],
+                },
+                'source': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 32,
+                },
+              },
+              'required': <String>['id', 'transport', 'source'],
+              'additionalProperties': false,
+            },
+          },
+        },
+        'required': <String>['servers'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'mcp.call',
+      description:
+          'Invoke a tool on a locally discovered MCP server with owner R2 approval.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'server': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-z0-9_.-]{1,64}$',
+          },
+          'tool': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-zA-Z0-9_.-]{1,64}$',
+          },
+          'payloadJson': <String, Object?>{
+            'type': 'string',
+            'maxLength': 1000,
+          },
+        },
+        'required': <String>['server', 'tool'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'server': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'tool': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 400},
+        },
+        'required': <String>['server', 'tool', 'summary'],
         'additionalProperties': false,
       },
       policy: ToolPolicyMeta(

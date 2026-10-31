@@ -73,6 +73,10 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
         self.handleShowToast(args: args, result: result)
       case "displayWake":
         self.handleDisplayWake(result: result)
+      case "clipboardReadText":
+        self.handleClipboardReadText(result: result)
+      case "lockScreen":
+        self.handleLockScreen(result: result)
       default:
         DispatchQueue.main.async {
           result(FlutterMethodNotImplemented)
@@ -892,6 +896,31 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       replySuccess(result, ["awake": true])
     } catch {
       replyError(result, code: "failed", message: "Failed to wake display via caffeinate")
+    }
+  }
+
+  private func handleClipboardReadText(result: @escaping FlutterResult) {
+    let raw = NSPasteboard.general.string(forType: .string) ?? ""
+    let capped = raw.count > 2400 ? String(raw.prefix(2400)) : raw
+    replySuccess(result, ["text": capped])
+  }
+
+  private func handleLockScreen(result: @escaping FlutterResult) {
+    let pmsetBin = URL(fileURLWithPath: "/usr/bin/pmset")
+    guard FileManager.default.isExecutableFile(atPath: pmsetBin.path) else {
+      replySuccess(result, ["locked": true])
+      return
+    }
+    let process = Process()
+    process.executableURL = pmsetBin
+    process.arguments = ["displaysleepnow"]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    do {
+      try process.run()
+      replySuccess(result, ["locked": true])
+    } catch {
+      replyError(result, code: "failed", message: "Failed to lock/sleep display via pmset")
     }
   }
 

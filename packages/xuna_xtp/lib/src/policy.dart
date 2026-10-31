@@ -419,7 +419,10 @@ class HostPolicyEvaluator {
     final prefix = toolName.split('.').first;
     final family = prefix == 'browser'
         ? ToolFamily.url
-        : (prefix == 'display' || prefix == 'workspace')
+        : (prefix == 'display' ||
+                prefix == 'workspace' ||
+                prefix == 'selection' ||
+                prefix == 'mcp')
             ? ToolFamily.app
             : ToolFamily.fromWire(prefix);
     if (!activePolicy.isFamilyAllowed(family)) {
@@ -541,6 +544,7 @@ class HostPolicyEvaluator {
         }
         effectiveRisk = RiskTier.r1;
       case 'workspace.git_summary':
+      case 'workspace.watch_task':
         final proj = arguments['project'];
         if (arguments.length != 1 ||
             proj is! String ||
@@ -553,6 +557,52 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r1;
+      case 'selection.read':
+        final maxChars = arguments['maxChars'];
+        if (arguments.keys.any((k) => k != 'maxChars') ||
+            (maxChars != null &&
+                (maxChars is! int || maxChars < 80 || maxChars > 1200))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'host.lock_screen':
+      case 'mcp.list_servers':
+        if (arguments.isNotEmpty) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'mcp.call':
+        final server = arguments['server'];
+        final tool = arguments['tool'];
+        final payloadJson = arguments['payloadJson'];
+        const allowedMcpKeys = <String>{'server', 'tool', 'payloadJson'};
+        if (server is! String ||
+            !isValidShortId(server) ||
+            tool is! String ||
+            !RegExp(r'^[a-zA-Z0-9_.-]{1,64}$').hasMatch(tool) ||
+            arguments.keys.any((k) => !allowedMcpKeys.contains(k)) ||
+            (payloadJson != null &&
+                (payloadJson is! String ||
+                    payloadJson.length > 1000 ||
+                    !isSafeAgentPrompt(payloadJson)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
       case 'workspace.open':
         final proj = arguments['project'];
         final ide = arguments['ide'];
@@ -1664,3 +1714,53 @@ bool isSafeAgentPrompt(String? prompt) {
   }
   return true;
 }
+
+final List<RegExp> _sensitiveTokenPatterns = <RegExp>[
+  RegExp(r'sk-[a-zA-Z0-9_\-]{12,}'),
+  RegExp(r'gh[pousr]_[a-zA-Z0-9_]{12,}'),
+  RegExp(r'github_pat_[a-zA-Z0-9_]{12,}'),
+  RegExp(r'AIza[0-9A-Za-z\-_]{16,}'),
+  RegExp(r'xox[baprs]-[a-zA-Z0-9\-]{10,}'),
+  RegExp(r'Bearer\s+[a-zA-Z0-9\-._~+/]+=*', caseSensitive: false),
+  RegExp(
+    r'(?:password|passwd|secret|api_key|apikey|token|access_token)\s*[:=]\s*["\x27]?[^\s"\x27,;]{4,}["\x27]?',
+    caseSensitive: false,
+  ),
+  RegExp(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----'),
+];
+
+/// Result of redacting secrets/tokens in selected or clipboard text (`UDC-12` S12.2).
+typedef RedactedSelectionResult = ({
+  String text,
+  bool truncated,
+  int redactedCount,
+});
+
+/// Redacts common API keys, Bearer tokens, private keys, and password assignments
+/// from [rawText] and truncates the result to [maxChars] (`80..1200`).
+RedactedSelectionResult redactSensitiveSelectionText(
+  String rawText, {
+  int maxChars = 1200,
+}) {
+  final clampedMax = maxChars < 80 ? 80 : (maxChars > 1200 ? 1200 : maxChars);
+  var working = rawText.trim();
+  var count = 0;
+  for (final pattern in _sensitiveTokenPatterns) {
+    working = working.replaceAllMapped(pattern, (_) {
+      count++;
+      return '[REDACTED]';
+    });
+  }
+  final truncated = working.length > clampedMax;
+  final finalString =
+      truncated ? working.substring(0, clampedMax) : working;
+  return (
+    text: finalString,
+    truncated: truncated,
+    redactedCount: count,
+  );
+}
+
+/// Convenience helper returning only the redacted string (`UDC-12` S12.2).
+String redactSensitiveTokens(String rawText, {int maxChars = 1200}) =>
+    redactSensitiveSelectionText(rawText, maxChars: maxChars).text;

@@ -51,6 +51,7 @@ class FakeXunaHostChannel implements XunaHostChannel {
     url: 'https://github.com/xthao28/xuna_pet',
     browser: 'edge',
   );
+  String clipboardTextResult = '';
 
   /// Optional artificial delay before tool calls return (to test deadlines and
   /// cancellation).
@@ -65,6 +66,9 @@ class FakeXunaHostChannel implements XunaHostChannel {
 
   int get displayWakeCount =>
       invokedMethods.where((m) => m == 'displayWake').length;
+
+  int get lockScreenCount =>
+      invokedMethods.where((m) => m == 'lockScreen').length;
 
   @override
   Future<Uint8List> keyEnsure() async {
@@ -144,6 +148,20 @@ class FakeXunaHostChannel implements XunaHostChannel {
   @override
   Future<bool> displayWake() async {
     invokedMethods.add('displayWake');
+    await _delayAndThrowIfConfigured();
+    return true;
+  }
+
+  @override
+  Future<String> clipboardReadText() async {
+    invokedMethods.add('clipboardReadText');
+    await _delayAndThrowIfConfigured();
+    return clipboardTextResult;
+  }
+
+  @override
+  Future<bool> lockScreen() async {
+    invokedMethods.add('lockScreen');
     await _delayAndThrowIfConfigured();
     return true;
   }

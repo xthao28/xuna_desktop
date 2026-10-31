@@ -138,6 +138,12 @@ abstract interface class XunaHostChannel {
 
   /// Wakes the host display from dim/sleep (`UDC-11` S11.1).
   Future<bool> displayWake();
+
+  /// Reads selected or clipboard text from the host OS (`UDC-12` S12.2).
+  Future<String> clipboardReadText();
+
+  /// Locks the host screen or puts the display to sleep (`UDC-12` S12.2).
+  Future<bool> lockScreen();
 }
 
 /// MethodChannel implementation of [XunaHostChannel] bound to `'xuna/host'`
@@ -335,8 +341,22 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
   @override
   Future<bool> displayWake() async {
     final map = await _invokeMap('displayWake');
-    final woken = map['woken'];
+    final woken = map['woken'] ?? map['awake'];
     return woken is bool ? woken : true;
+  }
+
+  @override
+  Future<String> clipboardReadText() async {
+    final map = await _invokeMap('clipboardReadText');
+    final text = map['text'];
+    return text is String ? text : '';
+  }
+
+  @override
+  Future<bool> lockScreen() async {
+    final map = await _invokeMap('lockScreen');
+    final locked = map['locked'];
+    return locked is bool ? locked : true;
   }
 
   Future<Map<String, Object?>> _invokeMap(

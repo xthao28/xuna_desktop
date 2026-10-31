@@ -1071,6 +1071,89 @@ void main() {
       );
       expect(psDenied.allowed, isFalse);
       expect(psDenied.errorCode, equals('denylisted_target_forbidden'));
+
+      // UDC-12 S12.2 & S12.3: Desk Co-Pilot tools (selection.read, host.lock_screen, workspace.watch_task, mcp.list_servers, mcp.call)
+      final copilotTools = buildDeskCopilotTools();
+      expect(
+        copilotTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'selection.read',
+          'host.lock_screen',
+          'workspace.watch_task',
+          'mcp.list_servers',
+          'mcp.call',
+        ]),
+      );
+
+      final redactedRes = redactSensitiveSelectionText(
+        'Error with key sk-proj1234567890abcdef and token ghp_1234567890abcdef and AIzaSyD1234567890abcdef1234 and Authorization: Bearer eyJhbGciOiJIUzI1NiJ9 and password="mySecretPassword!"',
+      );
+      expect(redactedRes.redactedCount, equals(5));
+      expect(redactedRes.text, isNot(contains('sk-proj')));
+      expect(redactedRes.text, isNot(contains('ghp_')));
+      expect(redactedRes.text, isNot(contains('AIzaSyD')));
+      expect(redactedRes.text, isNot(contains('eyJhbGci')));
+      expect(redactedRes.text, isNot(contains('mySecretPassword')));
+      expect(redactedRes.text, contains('[REDACTED]'));
+
+      final selOk = evaluator.evaluateInvocation(
+        toolName: 'selection.read',
+        arguments: const <String, Object?>{'maxChars': 400},
+        nowUtc: now,
+      );
+      expect(selOk.allowed, isTrue);
+      expect(selOk.effectiveRisk, equals(RiskTier.r1));
+
+      final lockOk = evaluator.evaluateInvocation(
+        toolName: 'host.lock_screen',
+        arguments: const <String, Object?>{},
+        nowUtc: now,
+      );
+      expect(lockOk.allowed, isTrue);
+      expect(lockOk.effectiveRisk, equals(RiskTier.r1));
+
+      final watchOk = evaluator.evaluateInvocation(
+        toolName: 'workspace.watch_task',
+        arguments: const <String, Object?>{'project': 'xuna_pet'},
+        nowUtc: now,
+      );
+      expect(watchOk.allowed, isTrue);
+      expect(watchOk.effectiveRisk, equals(RiskTier.r1));
+
+      final mcpListOk = evaluator.evaluateInvocation(
+        toolName: 'mcp.list_servers',
+        arguments: const <String, Object?>{},
+        nowUtc: now,
+      );
+      expect(mcpListOk.allowed, isTrue);
+      expect(mcpListOk.effectiveRisk, equals(RiskTier.r1));
+
+      const mcpCallArgs = <String, Object?>{
+        'server': 'github',
+        'tool': 'list_pull_requests',
+        'payloadJson': '{"repo":"xthao28/xuna_pet"}',
+      };
+      final mcpNoApproval = evaluator.evaluateInvocation(
+        toolName: 'mcp.call',
+        arguments: mcpCallArgs,
+        nowUtc: now,
+      );
+      expect(mcpNoApproval.allowed, isFalse);
+      expect(mcpNoApproval.effectiveRisk, equals(RiskTier.r2));
+      expect(mcpNoApproval.errorCode, equals('approval_required'));
+
+      final mcpApproved = evaluator.evaluateInvocation(
+        toolName: 'mcp.call',
+        arguments: mcpCallArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c60',
+          argsSha256: argsSha256(mcpCallArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(mcpApproved.allowed, isTrue);
+      expect(mcpApproved.effectiveRisk, equals(RiskTier.r2));
     });
   });
 }

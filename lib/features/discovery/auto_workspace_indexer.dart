@@ -46,6 +46,25 @@ class GitSummarySnapshot {
       };
 }
 
+/// Content-free task status snapshot for `workspace.watch_task` (`UDC-12` S12.2).
+class WorkspaceTaskSnapshot {
+  const WorkspaceTaskSnapshot({
+    required this.workspace,
+    required this.status,
+    required this.summary,
+  });
+
+  final String workspace;
+  final String status; // 'completed' | 'running' | 'failed' | 'idle'
+  final String summary;
+
+  Map<String, Object?> toStructuredContent() => <String, Object?>{
+        'workspace': workspace,
+        'status': status,
+        'summary': summary,
+      };
+}
+
 /// Command plan executed by `workspace.coding_agent` (`UDC-11` S11.3).
 class CodingAgentLaunchPlan {
   const CodingAgentLaunchPlan({
@@ -330,6 +349,52 @@ class AutoWorkspaceIndexer {
       clean: modified == 0 && untracked == 0,
       modifiedCount: modified,
       untrackedCount: untracked,
+    );
+  }
+
+  /// Inspects recent task/build/agent state in [ws] (`UDC-12` S12.2 `workspace.watch_task`).
+  Future<WorkspaceTaskSnapshot> inspectWorkspaceTask(
+    DiscoveredWorkspace ws,
+  ) async {
+    final sep = Platform.pathSeparator;
+    final processFile = File('${ws.path}${sep}PROCESS.md');
+    String status = 'idle';
+    if (processFile.existsSync()) {
+      try {
+        final raw = processFile.readAsStringSync();
+        final lower = raw.toLowerCase();
+        if (lower.contains('status: in progress') ||
+            lower.contains('status: **in progress')) {
+          status = 'running';
+        } else if (lower.contains('failed') && lower.contains('status:')) {
+          status = 'failed';
+        } else if (lower.contains('status: done') ||
+            lower.contains('status: **done') ||
+            lower.contains('pass')) {
+          status = 'completed';
+        }
+      } catch (_) {}
+    }
+    final git = await readGitSummary(ws);
+    if (status == 'idle' && !git.clean) {
+      status = 'running';
+    } else if (status == 'idle' && git.clean) {
+      status = 'completed';
+    }
+    final changed = git.modifiedCount + git.untrackedCount;
+    final summary = switch (status) {
+      'completed' =>
+        'Dự án ${ws.alias} (nhánh ${git.branch}): đã hoàn tất, $changed tệp đang mở.',
+      'running' =>
+        'Dự án ${ws.alias} (nhánh ${git.branch}): đang chạy tác vụ ($changed tệp đang sửa).',
+      'failed' =>
+        'Dự án ${ws.alias} (nhánh ${git.branch}): phát hiện lỗi cần kiểm tra.',
+      _ => 'Dự án ${ws.alias} (nhánh ${git.branch}): đang nghỉ.',
+    };
+    return WorkspaceTaskSnapshot(
+      workspace: ws.alias,
+      status: status,
+      summary: summary.length > 200 ? summary.substring(0, 200) : summary,
     );
   }
 

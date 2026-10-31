@@ -820,6 +820,36 @@ void HandleMethodCallOnWorker(
     return;
   }
 
+  if (method == "clipboardReadText") {
+    std::string text;
+    if (OpenClipboard(nullptr)) {
+      HANDLE h_data = GetClipboardData(CF_UNICODETEXT);
+      if (h_data != nullptr) {
+        const auto* wstr = static_cast<const wchar_t*>(GlobalLock(h_data));
+        if (wstr != nullptr) {
+          text = TruncateUtf8(WideToUtf8(std::wstring(wstr)), 2400);
+          GlobalUnlock(h_data);
+        }
+      }
+      CloseClipboard();
+    }
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("text")] = flutter::EncodableValue(text);
+    result->Success(flutter::EncodableValue(out));
+    CoUninitialize();
+    return;
+  }
+
+  if (method == "lockScreen") {
+    const BOOL locked = LockWorkStation();
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("locked")] =
+        flutter::EncodableValue(locked != FALSE);
+    result->Success(flutter::EncodableValue(out));
+    CoUninitialize();
+    return;
+  }
+
   result->NotImplemented();
   CoUninitialize();
 }

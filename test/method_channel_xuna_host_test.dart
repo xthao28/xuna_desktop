@@ -73,6 +73,10 @@ void main() {
                 return <String, Object?>{};
               case 'displayWake':
                 return <String, Object?>{'awake': true};
+              case 'clipboardReadText':
+                return <String, Object?>{'text': 'Exception: stack overflow'};
+              case 'lockScreen':
+                return <String, Object?>{'locked': true};
               case 'browserCurrentUrl':
                 return <String, Object?>{
                   'url': 'https://github.com/xthao28/xuna_pet',
@@ -145,6 +149,8 @@ void main() {
 
       await hostChannel.showToast(title: 'XUNA', body: 'XUNA: đã mở VS Code');
       expect(await hostChannel.displayWake(), isTrue);
+      expect(await hostChannel.clipboardReadText(), 'Exception: stack overflow');
+      expect(await hostChannel.lockScreen(), isTrue);
 
       expect(recordedCalls.map((c) => c.method).toList(), <String>[
         'keyEnsure',
@@ -161,6 +167,8 @@ void main() {
         'hostInfo',
         'showToast',
         'displayWake',
+        'clipboardReadText',
+        'lockScreen',
       ]);
     },
   );

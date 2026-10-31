@@ -15,6 +15,7 @@ import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/single_instance/single_instance_guard.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
+import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
@@ -634,7 +635,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(17));
+        expect(toolsList, hasLength(22));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -1773,6 +1774,188 @@ void main() {
           expect(line, isNot(contains(xunaDir.path)));
           expect(line, isNot(contains(secretPrompt)));
         }
+      },
+    );
+  });
+
+  group('UDC-12 S12.2–S12.3: selection.read (secret redaction), host.lock_screen, workspace.watch_task, and AutoMcpBridge', () {
+    test(
+      'executes selection.read with secret redaction, host.lock_screen, workspace.watch_task, and AutoMcpBridge (mcp.list_servers & mcp.call) without exposing MCP env secrets',
+      () async {
+        final zeroConfigPolicy = HostPolicy(
+          schemaVersion: 1,
+          families: const <ToolFamily, FamilyPolicyDecision>{
+            ToolFamily.media: FamilyPolicyDecision.allow,
+            ToolFamily.app: FamilyPolicyDecision.allow,
+            ToolFamily.url: FamilyPolicyDecision.allow,
+            ToolFamily.workflow: FamilyPolicyDecision.allow,
+          },
+          apps: const <AllowedAppConfig>[],
+          urlDomains: const <String>['github.com'],
+          workflows: const <WorkflowConfig>[],
+          players: const <String>['spotify'],
+        );
+        await policyStore.savePolicy(zeroConfigPolicy);
+
+        final fakeHome = Directory('${tempDir.path}/udc12_home');
+        await fakeHome.create(recursive: true);
+        final xunaDir = Directory('${fakeHome.path}/Documents/xuna_pet');
+        await Directory('${xunaDir.path}/.git').create(recursive: true);
+        await File('${xunaDir.path}/PROCESS.md').writeAsString(
+          '# PROCESS\nStatus: **Done** — all tests PASS\n',
+          flush: true,
+        );
+
+        final mcpConfigFile = File('${fakeHome.path}/.claude.json');
+        await mcpConfigFile.writeAsString(
+          jsonEncode(<String, Object?>{
+            'mcpServers': <String, Object?>{
+              'github': <String, Object?>{
+                'command': 'npx',
+                'args': <String>['-y', '@modelcontextprotocol/server-github'],
+                'env': <String, Object?>{
+                  'GITHUB_PERSONAL_ACCESS_TOKEN':
+                      'ghp_SuperSecretToken9876543210abcdef',
+                },
+              },
+              'bad_shell': <String, Object?>{
+                'command': 'powershell.exe',
+              },
+            },
+          }),
+          flush: true,
+        );
+
+        final mcpBridge = AutoMcpBridge(
+          customConfigPaths: <String>[mcpConfigFile.path],
+          scanDefaultLocations: false,
+          invoker: (server, toolName, payload) async {
+            return 'PR #42 (${payload['repo']}): CI passed, token sk-1234567890abcdef1234';
+          },
+        );
+        final workspaceIndexer = AutoWorkspaceIndexer(
+          customScanRoots: <String>['${fakeHome.path}/Documents'],
+          scanDefaultLocations: false,
+          gitRunner: (executable, arguments) async {
+            return ProcessResult(
+              1,
+              0,
+              '## main...origin/main\n',
+              '',
+            );
+          },
+        );
+
+        final udc12Dispatcher = HostToolDispatcher(
+          policyStore: policyStore,
+          channel: channel,
+          auditStore: auditStore,
+          stopController: stopController,
+          logger: logger,
+          enrollmentStore: enrollmentStore,
+          workspaceIndexer: workspaceIndexer,
+          mcpBridge: mcpBridge,
+        );
+        addTearDown(udc12Dispatcher.dispose);
+
+        final now = DateTime.utc(2026, 10, 31, 13, 0);
+
+        // 1. selection.read redacts secrets and logs zero clipboard text
+        channel.clipboardTextResult =
+            'NullPointerException at Auth.kt:42 with OPENAI_API_KEY=sk-projabcdef1234567890 and Bearer eyJhbGciOiJIUzI1NiJ9';
+        final selResp = await udc12Dispatcher.dispatch(
+          requestId: 801,
+          params: const ToolsCallParams(
+            name: 'selection.read',
+            arguments: <String, Object?>{'maxChars': 500},
+            invocationId: '80100000-0000-4000-8000-000000000001',
+            deadlineMs: 5000,
+          ),
+          nowUtc: now,
+        );
+        final selSc =
+            selResp.result['structuredContent'] as Map<String, Object?>;
+        expect(selSc['redactedCount'], greaterThanOrEqualTo(2));
+        expect(selSc['text'] as String, contains('[REDACTED]'));
+        expect(selSc['text'] as String, isNot(contains('sk-projabcdef')));
+        expect(selSc['text'] as String, isNot(contains('eyJhbGci')));
+
+        // 2. host.lock_screen locks the workstation
+        final lockResp = await udc12Dispatcher.dispatch(
+          requestId: 802,
+          params: const ToolsCallParams(
+            name: 'host.lock_screen',
+            arguments: <String, Object?>{},
+            invocationId: '80200000-0000-4000-8000-000000000002',
+            deadlineMs: 5000,
+          ),
+          nowUtc: now,
+        );
+        expect(
+          (lockResp.result['structuredContent'] as Map<String, Object?>)['locked'],
+          isTrue,
+        );
+        expect(channel.lockScreenCount, equals(1));
+
+        // 3. workspace.watch_task inspects task status
+        final watchResp = await udc12Dispatcher.dispatch(
+          requestId: 803,
+          params: const ToolsCallParams(
+            name: 'workspace.watch_task',
+            arguments: <String, Object?>{'project': 'xuna'},
+            invocationId: '80300000-0000-4000-8000-000000000003',
+            deadlineMs: 5000,
+          ),
+          nowUtc: now,
+        );
+        final watchSc =
+            watchResp.result['structuredContent'] as Map<String, Object?>;
+        expect(watchSc['workspace'], equals('xuna_pet'));
+        expect(watchSc['status'], equals('completed'));
+
+        // 4. mcp.list_servers returns github server without env secrets and excludes powershell
+        final mcpListResp = await udc12Dispatcher.dispatch(
+          requestId: 804,
+          params: const ToolsCallParams(
+            name: 'mcp.list_servers',
+            arguments: <String, Object?>{},
+            invocationId: '80400000-0000-4000-8000-000000000004',
+            deadlineMs: 5000,
+          ),
+          nowUtc: now,
+        );
+        final listJson = jsonEncode(mcpListResp.result);
+        expect(listJson, contains('"id":"github"'));
+        expect(listJson, isNot(contains('bad_shell')));
+        expect(listJson, isNot(contains('ghp_SuperSecretToken')));
+
+        // 5. mcp.call executes with R2 approval and redacts any leaked token in output
+        const mcpCallArgs = <String, Object?>{
+          'server': 'github',
+          'tool': 'get_pull_request',
+          'payloadJson': '{"repo":"xthao28/xuna_pet"}',
+        };
+        final mcpCallResp = await udc12Dispatcher.dispatch(
+          requestId: 805,
+          params: ToolsCallParams(
+            name: 'mcp.call',
+            arguments: mcpCallArgs,
+            invocationId: '80500000-0000-4000-8000-000000000005',
+            deadlineMs: 5000,
+            approval: ApprovalToken(
+              approvalId: '80500000-0000-4000-8000-000000000099',
+              argsSha256: argsSha256(mcpCallArgs),
+              expiresAt: now.add(const Duration(minutes: 2)),
+            ),
+          ),
+          nowUtc: now,
+        );
+        final mcpCallSc =
+            mcpCallResp.result['structuredContent'] as Map<String, Object?>;
+        expect(mcpCallSc['server'], equals('github'));
+        expect(mcpCallSc['tool'], equals('get_pull_request'));
+        expect(mcpCallSc['summary'] as String, contains('PR #42'));
+        expect(mcpCallSc['summary'] as String, isNot(contains('sk-123456')));
       },
     );
   });
