@@ -16,6 +16,8 @@ import 'package:xuna_desktop/core/single_instance/single_instance_guard.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
+import 'package:xuna_desktop/features/discovery/auto_smart_home_bridge.dart';
+import 'package:xuna_desktop/features/discovery/auto_tv_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
@@ -635,7 +637,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(27));
+        expect(toolsList, hasLength(33));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -2257,6 +2259,233 @@ void main() {
           expect(undoSc['undoneTool'], equals('media.volume_set'));
           expect(undoSc['restored'], isTrue);
           expect(channel.currentVolume, equals(50));
+        },
+      );
+    },
+  );
+
+  group(
+    'UDC-14 S14.1–S14.5: Smart TV LAN Bridge (tv.list_devices, tv.control + WoL, tv.launch_app, tv.cast_media) & Smart Home Bridge (smarthome.*, UDC-T36 lock/alarm/camera hard-denylist & undo)',
+    () {
+      test(
+        'discovers Smart TVs, wakes via WoL, launches apps, casts https URLs, controls allowlisted appliances, hard-denies locks/alarms/cameras, and undoes TV/smart-home changes',
+        () async {
+          await policyStore.savePolicy(_sampleHealthyPolicy());
+          final now = DateTime.utc(2026, 10, 31, 15, 0, 0);
+
+          final wokenMacs = <String>[];
+          final tvCommands = <Map<String, Object?>>[];
+          final tvScanner = AutoTvScanner(
+            seedDevices: const <DiscoveredSmartTv>[
+              DiscoveredSmartTv(
+                id: 'tv-lg-living',
+                name: 'TV phòng khách',
+                brand: 'lg',
+                protocol: 'webos',
+                hostAddress: '192.168.1.88',
+                port: 3000,
+                online: false,
+                macAddress: 'AA:BB:CC:11:22:33',
+                volume: 20,
+              ),
+            ],
+            wolSender: (mac) async {
+              wokenMacs.add(mac);
+              return true;
+            },
+            commandTransport: ({
+              required tv,
+              required operation,
+              required payload,
+            }) async {
+              tvCommands.add(<String, Object?>{
+                'tvId': tv.id,
+                'operation': operation,
+                ...payload,
+              });
+              return const <String, Object?>{'ok': true};
+            },
+          );
+
+          final smartHomeBridge = AutoSmartHomeBridge(
+            seedEntities: const <SmartHomeEntity>[
+              SmartHomeEntity(
+                entityId: 'light.living_room',
+                domain: 'light',
+                name: 'Đèn phòng khách',
+                state: 'on',
+                value: 80,
+              ),
+              SmartHomeEntity(
+                entityId: 'climate.bedroom_ac',
+                domain: 'climate',
+                name: 'Điều hòa phòng ngủ',
+                state: 'cool',
+                value: 26,
+              ),
+            ],
+          );
+
+          final udc14Dispatcher = HostToolDispatcher(
+            policyStore: policyStore,
+            channel: channel,
+            auditStore: auditStore,
+            stopController: stopController,
+            logger: logger,
+            enrollmentStore: enrollmentStore,
+            tvScanner: tvScanner,
+            smartHomeBridge: smartHomeBridge,
+          );
+          addTearDown(udc14Dispatcher.dispose);
+
+          // 1. S14.1: tv.list_devices returns discovered TV without raw MAC
+          final listTvResp = await udc14Dispatcher.dispatch(
+            requestId: 1001,
+            params: const ToolsCallParams(
+              name: 'tv.list_devices',
+              arguments: <String, Object?>{},
+              invocationId: '10010000-0000-4000-8000-000000000001',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final tvListSc =
+              listTvResp.result['structuredContent'] as Map<String, Object?>;
+          final devices = tvListSc['devices'] as List<Object?>;
+          expect(devices, hasLength(1));
+          final tvJson = devices.single as Map<String, Object?>;
+          expect(tvJson['name'], equals('TV phòng khách'));
+          expect(tvJson['supportsWakeOnLan'], isTrue);
+          expect(tvJson.containsKey('macAddress'), isFalse);
+
+          // 2. S14.2: tv.control power_wake sends WoL and marks TV online
+          final wakeTvResp = await udc14Dispatcher.dispatch(
+            requestId: 1002,
+            params: const ToolsCallParams(
+              name: 'tv.control',
+              arguments: <String, Object?>{
+                'device': 'TV phòng khách',
+                'action': 'power_wake',
+              },
+              invocationId: '10020000-0000-4000-8000-000000000002',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          expect(wokenMacs, equals(<String>['AA:BB:CC:11:22:33']));
+          expect(
+            (wakeTvResp.result['structuredContent']
+                as Map<String, Object?>)['state'],
+            equals('awake'),
+          );
+
+          // Set TV volume to 45 -> records reversible entry (previous was 20)
+          await udc14Dispatcher.dispatch(
+            requestId: 1003,
+            params: const ToolsCallParams(
+              name: 'tv.control',
+              arguments: <String, Object?>{
+                'device': 'TV phòng khách',
+                'action': 'volume_set',
+                'level': 45,
+              },
+              invocationId: '10030000-0000-4000-8000-000000000003',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          expect(tvScanner.resolveDevice('lg')?.volume, equals(45));
+
+          // Undo restores TV volume back to 20!
+          await udc14Dispatcher.dispatch(
+            requestId: 1004,
+            params: const ToolsCallParams(
+              name: 'action.undo',
+              arguments: <String, Object?>{},
+              invocationId: '10040000-0000-4000-8000-000000000004',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now.add(const Duration(seconds: 5)),
+          );
+          expect(tvScanner.resolveDevice('lg')?.volume, equals(20));
+
+          // 3. S14.2 & S14.3: tv.launch_app and tv.cast_media (R2)
+          const castArgs = <String, Object?>{
+            'device': 'TV phòng khách',
+            'url': 'https://www.youtube.com/watch?v=xuna_demo_123',
+            'title': 'XUNA Demo',
+          };
+          final castResp = await udc14Dispatcher.dispatch(
+            requestId: 1005,
+            params: ToolsCallParams(
+              name: 'tv.cast_media',
+              arguments: castArgs,
+              invocationId: '10050000-0000-4000-8000-000000000005',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '10050000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(castArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final castSc =
+              castResp.result['structuredContent'] as Map<String, Object?>;
+          expect(castSc['appId'], equals('youtube'));
+          expect(castSc['host'], equals('www.youtube.com'));
+          expect(castSc['casted'], isTrue);
+
+          // 4. S14.4: smarthome.control dims light and blocks lock.front_door (UDC-T36)
+          const dimArgs = <String, Object?>{
+            'entityId': 'light.living_room',
+            'action': 'set_brightness',
+            'value': 15,
+          };
+          final dimResp = await udc14Dispatcher.dispatch(
+            requestId: 1006,
+            params: ToolsCallParams(
+              name: 'smarthome.control',
+              arguments: dimArgs,
+              invocationId: '10060000-0000-4000-8000-000000000006',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '10060000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(dimArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final dimSc =
+              dimResp.result['structuredContent'] as Map<String, Object?>;
+          expect(dimSc['state'], equals('on'));
+          expect(dimSc['value'], equals(15));
+
+          const lockArgs = <String, Object?>{
+            'entityId': 'lock.front_door',
+            'action': 'turn_on',
+          };
+          final lockDeniedResp = await udc14Dispatcher.dispatch(
+            requestId: 1007,
+            params: ToolsCallParams(
+              name: 'smarthome.control',
+              arguments: lockArgs,
+              invocationId: '10070000-0000-4000-8000-000000000007',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '10070000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(lockArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          expect(
+            (lockDeniedResp.result['_meta']
+                as Map<String, Object?>)['xuna/errorCode'],
+            equals('smarthome_domain_forbidden'),
+          );
         },
       );
     },

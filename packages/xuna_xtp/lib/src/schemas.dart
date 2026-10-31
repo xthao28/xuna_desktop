@@ -354,17 +354,21 @@ class ToolDescriptor {
       throw FormatException('Invalid tool name format: $name');
     }
     final prefix = name.split('.').first;
-    final family = prefix == 'browser'
+    final family = (prefix == 'browser' || name == 'tv.cast_media')
         ? ToolFamily.url
-        : (prefix == 'display' ||
-                prefix == 'workspace' ||
-                prefix == 'selection' ||
-                prefix == 'mcp' ||
-                prefix == 'window' ||
-                prefix == 'beam' ||
-                prefix == 'action')
-            ? ToolFamily.app
-            : ToolFamily.fromWire(prefix);
+        : (name == 'tv.list_devices' || name == 'tv.control')
+            ? ToolFamily.media
+            : (prefix == 'display' ||
+                    prefix == 'workspace' ||
+                    prefix == 'selection' ||
+                    prefix == 'mcp' ||
+                    prefix == 'window' ||
+                    prefix == 'beam' ||
+                    prefix == 'action' ||
+                    prefix == 'smarthome' ||
+                    name == 'tv.launch_app')
+                ? ToolFamily.app
+                : ToolFamily.fromWire(prefix);
     if (expectedFamily != null && family != expectedFamily) {
       throw FormatException(
         'Tool $name prefix ($prefix) does not match policy family (${expectedFamily.wire})',
@@ -486,6 +490,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeDevWorkspaceTools = false,
   bool includeDeskCopilotTools = false,
   bool includeAmbientCopilotTools = false,
+  bool includeSmartTvHomeTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -808,6 +813,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildDeskCopilotTools(defaultPermission: defaultPermission),
     if (includeAmbientCopilotTools)
       ...buildAmbientCopilotTools(defaultPermission: defaultPermission),
+    if (includeSmartTvHomeTools)
+      ...buildSmartTvHomeTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -1434,6 +1441,380 @@ List<ToolDescriptor> buildAmbientCopilotTools({
       policy: ToolPolicyMeta(
         family: ToolFamily.app,
         risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Allowed actions for `tv.control` (`UDC-14` S14.2).
+const Set<String> allowedTvActions = <String>{
+  'power_wake',
+  'power_off',
+  'play_pause',
+  'mute_toggle',
+  'volume_up',
+  'volume_down',
+  'volume_set',
+  'nav_up',
+  'nav_down',
+  'nav_left',
+  'nav_right',
+  'nav_select',
+  'nav_back',
+  'nav_home',
+  'input_hdmi1',
+  'input_hdmi2',
+  'input_hdmi3',
+};
+
+/// Allowed streaming / media app IDs for `tv.launch_app` (`UDC-14` S14.2).
+const Set<String> allowedTvAppIds = <String>{
+  'youtube',
+  'netflix',
+  'spotify',
+  'prime_video',
+  'disney_plus',
+  'apple_tv',
+  'plex',
+  'browser',
+};
+
+/// Safe smart-home domains allowed for `smarthome.control` (`UDC-14` S14.4).
+const Set<String> allowedSmartHomeDomains = <String>{
+  'light',
+  'switch',
+  'fan',
+  'climate',
+  'cover',
+  'media_player',
+  'scene',
+};
+
+/// Physical security smart-home domains that are permanently hard-denied (`UDC-T36`).
+const Set<String> hardDeniedSmartHomeDomains = <String>{
+  'lock',
+  'alarm_control_panel',
+  'camera',
+  'garage_door',
+  'siren',
+};
+
+/// Allowed actions for `smarthome.control` (`UDC-14` S14.4).
+const Set<String> allowedSmartHomeActions = <String>{
+  'turn_on',
+  'turn_off',
+  'toggle',
+  'set_brightness',
+  'set_temperature',
+  'activate_scene',
+};
+
+/// Builds the 6 `UDC-14` Smart TV LAN Bridge & Smart Home tool descriptors (`S14.1`–`S14.4`):
+/// - `tv.list_devices` (`R1`, `observes: true`, family `media`)
+/// - `tv.control` (`R1`, `reversible: true`, family `media`)
+/// - `tv.launch_app` (`R2`, `reversible: true`, family `app`)
+/// - `tv.cast_media` (`R2`, `reversible: true`, family `url`)
+/// - `smarthome.list_entities` (`R1`, `observes: true`, family `app`)
+/// - `smarthome.control` (`R2`, `reversible: true`, family `app`)
+List<ToolDescriptor> buildSmartTvHomeTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'tv.list_devices',
+      description:
+          'List Smart TVs discovered on the local LAN (LG WebOS, Samsung Tizen, Android TV / Chromecast, Roku).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{},
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'devices': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'id': <String, Object?>{'type': 'string', 'maxLength': 64},
+                'name': <String, Object?>{'type': 'string', 'maxLength': 80},
+                'brand': <String, Object?>{'type': 'string', 'maxLength': 32},
+                'protocol': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 32,
+                },
+                'online': <String, Object?>{'type': 'boolean'},
+                'supportsWakeOnLan': <String, Object?>{'type': 'boolean'},
+              },
+              'required': <String>[
+                'id',
+                'name',
+                'brand',
+                'protocol',
+                'online',
+                'supportsWakeOnLan',
+              ],
+              'additionalProperties': false,
+            },
+          },
+        },
+        'required': <String>['devices'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.media,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'tv.control',
+      description:
+          'Send a remote control command (power/wake, volume, navigation, HDMI input) to a Smart TV on the LAN.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'device': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'power_wake',
+              'power_off',
+              'play_pause',
+              'mute_toggle',
+              'volume_up',
+              'volume_down',
+              'volume_set',
+              'nav_up',
+              'nav_down',
+              'nav_left',
+              'nav_right',
+              'nav_select',
+              'nav_back',
+              'nav_home',
+              'input_hdmi1',
+              'input_hdmi2',
+              'input_hdmi3',
+            ],
+          },
+          'level': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'deviceId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'name': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'state': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'level': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+        },
+        'required': <String>['deviceId', 'name', 'action', 'state'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.media,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'tv.launch_app',
+      description:
+          'Launch an allowlisted streaming/media application on a Smart TV over the LAN.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'device': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'appId': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'youtube',
+              'netflix',
+              'spotify',
+              'prime_video',
+              'disney_plus',
+              'apple_tv',
+              'plex',
+              'browser',
+            ],
+          },
+        },
+        'required': <String>['appId'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'deviceId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'name': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'appId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'launched': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['deviceId', 'name', 'appId', 'launched'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'tv.cast_media',
+      description:
+          'Cast an allowlisted https media URL (YouTube / stream) onto a Smart TV over the LAN.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'device': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'url': <String, Object?>{'type': 'string', 'maxLength': 2048},
+          'title': <String, Object?>{'type': 'string', 'maxLength': 120},
+        },
+        'required': <String>['url'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'deviceId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'name': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'appId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'host': <String, Object?>{'type': 'string', 'maxLength': 255},
+          'casted': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['deviceId', 'name', 'appId', 'host', 'casted'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.url,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'smarthome.list_entities',
+      description:
+          'List allowlisted smart-home appliances (lights, switches, fans, AC, blinds, scenes) from the local bridge.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'domain': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'light',
+              'switch',
+              'fan',
+              'climate',
+              'cover',
+              'media_player',
+              'scene',
+            ],
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'entities': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'entityId': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 80,
+                },
+                'domain': <String, Object?>{'type': 'string', 'maxLength': 32},
+                'name': <String, Object?>{'type': 'string', 'maxLength': 80},
+                'state': <String, Object?>{'type': 'string', 'maxLength': 32},
+              },
+              'required': <String>['entityId', 'domain', 'name', 'state'],
+              'additionalProperties': false,
+            },
+          },
+        },
+        'required': <String>['entities'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'smarthome.control',
+      description:
+          'Control an allowlisted smart-home appliance (light, switch, fan, AC, cover, scene) on the local bridge; locks/alarms/cameras are strictly denied.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'entityId': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'turn_on',
+              'turn_off',
+              'toggle',
+              'set_brightness',
+              'set_temperature',
+              'activate_scene',
+            ],
+          },
+          'value': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+        },
+        'required': <String>['entityId', 'action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'entityId': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'domain': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'state': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'value': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+        },
+        'required': <String>['entityId', 'domain', 'action', 'state'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
         observes: false,
         reversible: true,
         permission: defaultPermission,

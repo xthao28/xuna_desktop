@@ -1329,6 +1329,132 @@ void main() {
       );
       expect(undoOk.allowed, isTrue);
       expect(undoOk.effectiveRisk, equals(RiskTier.r1));
+
+      // UDC-14 S14.1–S14.4: Smart TV LAN Bridge & Smart Home policy evaluation
+      final tvHomeTools = buildSmartTvHomeTools();
+      expect(
+        tvHomeTools.map((t) => t.name),
+        containsAll(<String>[
+          'tv.list_devices',
+          'tv.control',
+          'tv.launch_app',
+          'tv.cast_media',
+          'smarthome.list_entities',
+          'smarthome.control',
+        ]),
+      );
+
+      final tvListOk = evaluator.evaluateInvocation(
+        toolName: 'tv.list_devices',
+        arguments: const <String, Object?>{},
+        nowUtc: now,
+      );
+      expect(tvListOk.allowed, isTrue);
+      expect(tvListOk.effectiveRisk, equals(RiskTier.r1));
+
+      final tvCtrlOk = evaluator.evaluateInvocation(
+        toolName: 'tv.control',
+        arguments: const <String, Object?>{
+          'device': 'TV phòng khách',
+          'action': 'volume_set',
+          'level': 30,
+        },
+        nowUtc: now,
+      );
+      expect(tvCtrlOk.allowed, isTrue);
+      expect(tvCtrlOk.effectiveRisk, equals(RiskTier.r1));
+
+      // tv.launch_app requires R2 approval and allowlisted appId
+      const tvLaunchArgs = <String, Object?>{
+        'device': 'TV phòng khách',
+        'appId': 'netflix',
+      };
+      final tvLaunchNoApproval = evaluator.evaluateInvocation(
+        toolName: 'tv.launch_app',
+        arguments: tvLaunchArgs,
+        nowUtc: now,
+      );
+      expect(tvLaunchNoApproval.allowed, isFalse);
+      expect(tvLaunchNoApproval.errorCode, equals('approval_required'));
+
+      final tvLaunchApproved = evaluator.evaluateInvocation(
+        toolName: 'tv.launch_app',
+        arguments: tvLaunchArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c64',
+          argsSha256: argsSha256(tvLaunchArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(tvLaunchApproved.allowed, isTrue);
+
+      // tv.cast_media requires https:// URL and R2 approval
+      const tvCastArgs = <String, Object?>{
+        'device': 'TV phòng khách',
+        'url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      };
+      final tvCastApproved = evaluator.evaluateInvocation(
+        toolName: 'tv.cast_media',
+        arguments: tvCastArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c65',
+          argsSha256: argsSha256(tvCastArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(tvCastApproved.allowed, isTrue);
+      expect(tvCastApproved.normalizedUrlHost, equals('www.youtube.com'));
+
+      final tvCastHttpBlocked = evaluator.evaluateInvocation(
+        toolName: 'tv.cast_media',
+        arguments: const <String, Object?>{
+          'url': 'http://192.168.1.50/video.mp4',
+        },
+        nowUtc: now,
+      );
+      expect(tvCastHttpBlocked.allowed, isFalse);
+      expect(tvCastHttpBlocked.errorCode, equals('url_invalid'));
+
+      // UDC-T36: smarthome.control hard-denies lock.*, alarm_control_panel.*, camera.*
+      for (final forbiddenEntity in const <String>[
+        'lock.front_door',
+        'alarm_control_panel.home_alarm',
+        'camera.living_room',
+        'garage_door.main',
+      ]) {
+        final shDenied = evaluator.evaluateInvocation(
+          toolName: 'smarthome.control',
+          arguments: <String, Object?>{
+            'entityId': forbiddenEntity,
+            'action': 'turn_on',
+          },
+          nowUtc: now,
+        );
+        expect(shDenied.allowed, isFalse);
+        expect(shDenied.status, equals(XtpStatus.denied));
+        expect(shDenied.errorCode, equals('smarthome_domain_forbidden'));
+      }
+
+      // Safe light / climate entity is allowed with R2 approval
+      const lightArgs = <String, Object?>{
+        'entityId': 'light.living_room',
+        'action': 'set_brightness',
+        'value': 25,
+      };
+      final lightApproved = evaluator.evaluateInvocation(
+        toolName: 'smarthome.control',
+        arguments: lightArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c66',
+          argsSha256: argsSha256(lightArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(lightApproved.allowed, isTrue);
+      expect(lightApproved.effectiveRisk, equals(RiskTier.r2));
     });
   });
 }

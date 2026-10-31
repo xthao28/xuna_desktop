@@ -417,17 +417,21 @@ class HostPolicyEvaluator {
 
     final activePolicy = policy!;
     final prefix = toolName.split('.').first;
-    final family = prefix == 'browser'
+    final family = (prefix == 'browser' || toolName == 'tv.cast_media')
         ? ToolFamily.url
-        : (prefix == 'display' ||
-                prefix == 'workspace' ||
-                prefix == 'selection' ||
-                prefix == 'mcp' ||
-                prefix == 'window' ||
-                prefix == 'beam' ||
-                prefix == 'action')
-            ? ToolFamily.app
-            : ToolFamily.fromWire(prefix);
+        : (toolName == 'tv.list_devices' || toolName == 'tv.control')
+            ? ToolFamily.media
+            : (prefix == 'display' ||
+                    prefix == 'workspace' ||
+                    prefix == 'selection' ||
+                    prefix == 'mcp' ||
+                    prefix == 'window' ||
+                    prefix == 'beam' ||
+                    prefix == 'action' ||
+                    prefix == 'smarthome' ||
+                    toolName == 'tv.launch_app')
+                ? ToolFamily.app
+                : ToolFamily.fromWire(prefix);
     if (!activePolicy.isFamilyAllowed(family)) {
       return const PolicyEvaluationResult(
         allowed: false,
@@ -577,6 +581,7 @@ class HostPolicyEvaluator {
       case 'host.lock_screen':
       case 'mcp.list_servers':
       case 'action.undo':
+      case 'tv.list_devices':
         if (arguments.isNotEmpty) {
           return const PolicyEvaluationResult(
             allowed: false,
@@ -586,6 +591,144 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r1;
+      case 'tv.control':
+        final device = arguments['device'];
+        final action = arguments['action'];
+        final level = arguments['level'];
+        const allowedTvCtrlKeys = <String>{'device', 'action', 'level'};
+        if (arguments.keys.any((k) => !allowedTvCtrlKeys.contains(k)) ||
+            action is! String ||
+            !allowedTvActions.contains(action) ||
+            (device != null &&
+                (device is! String || !isValidTvDeviceQuery(device))) ||
+            (level != null && (level is! int || level < 0 || level > 100)) ||
+            (action == 'volume_set' && level == null)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'tv.launch_app':
+        final device = arguments['device'];
+        final appId = arguments['appId'];
+        const allowedTvLaunchKeys = <String>{'device', 'appId'};
+        if (arguments.keys.any((k) => !allowedTvLaunchKeys.contains(k)) ||
+            appId is! String ||
+            !allowedTvAppIds.contains(appId) ||
+            (device != null &&
+                (device is! String || !isValidTvDeviceQuery(device)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'tv.cast_media':
+        final device = arguments['device'];
+        final rawUrl = arguments['url'];
+        final title = arguments['title'];
+        const allowedCastKeys = <String>{'device', 'url', 'title'};
+        if (arguments.keys.any((k) => !allowedCastKeys.contains(k)) ||
+            rawUrl is! String ||
+            (device != null &&
+                (device is! String || !isValidTvDeviceQuery(device))) ||
+            (title != null &&
+                (title is! String ||
+                    title.length > 120 ||
+                    !isSafeAgentPrompt(title)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (!isAllowedHttpsCurrentUrl(rawUrl)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'url_invalid',
+          );
+        }
+        normalizedUrlHost = Uri.parse(rawUrl.trim()).host.toLowerCase();
+        effectiveRisk = RiskTier.r2;
+      case 'smarthome.list_entities':
+        final domain = arguments['domain'];
+        if (arguments.keys.any((k) => k != 'domain')) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (domain != null) {
+          if (domain is! String) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r1,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          if (hardDeniedSmartHomeDomains.contains(domain.toLowerCase())) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r1,
+              errorCode: 'smarthome_domain_forbidden',
+            );
+          }
+          if (!allowedSmartHomeDomains.contains(domain)) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r1,
+              errorCode: 'schema_mismatch',
+            );
+          }
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'smarthome.control':
+        final entityId = arguments['entityId'];
+        final action = arguments['action'];
+        final value = arguments['value'];
+        const allowedShKeys = <String>{'entityId', 'action', 'value'};
+        if (arguments.keys.any((k) => !allowedShKeys.contains(k)) ||
+            entityId is! String ||
+            action is! String ||
+            !allowedSmartHomeActions.contains(action) ||
+            (value != null && (value is! int || value < 0 || value > 100))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (isHardDeniedSmartHomeEntity(entityId)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'smarthome_domain_forbidden',
+          );
+        }
+        if (!isValidSmartHomeEntityId(entityId)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
       case 'beam.transfer':
         final direction = arguments['direction'];
         final kind = arguments['kind'];
@@ -1446,6 +1589,11 @@ UrlValidationResult validateHttpsUrlAgainstAllowlist(
   );
 }
 
+/// Returns `true` if [rawUrl] is a valid public `https://` URL (rejecting
+/// `http://`, `file://`, loopback/private IPs, `localhost`, `.local`).
+bool isAllowedHttpsCurrentUrl(String rawUrl) =>
+    validateHttpsUrlAgainstAllowlist(rawUrl, const <String>[]).validUrl;
+
 bool _isForbiddenLiteralOrLocalHost(String host) {
   final lower = host.toLowerCase();
   if (lower == 'localhost' ||
@@ -2009,4 +2157,59 @@ bool isValidBeamFileName(String? fileName) {
   final ext = trimmed.substring(dotIdx + 1).toLowerCase();
   if (forbiddenBeamExtensions.contains(ext)) return false;
   return true;
+}
+
+final RegExp _smartHomeEntityRe =
+    RegExp(r'^[a-z0-9_]{2,32}\.[a-z0-9_]{1,64}$');
+
+/// Returns `true` if [entityId] belongs to a hard-denied physical security
+/// smart-home domain (`lock.*`, `alarm_control_panel.*`, `camera.*`,
+/// `garage_door.*`, `siren.*`, `UDC-T36`).
+bool isHardDeniedSmartHomeEntity(String? entityId) {
+  if (entityId == null) return false;
+  final trimmed = entityId.trim().toLowerCase();
+  final dotIdx = trimmed.indexOf('.');
+  final domain = dotIdx > 0 ? trimmed.substring(0, dotIdx) : trimmed;
+  if (hardDeniedSmartHomeDomains.contains(domain)) {
+    return true;
+  }
+  final namePart = dotIdx > 0 ? trimmed.substring(dotIdx + 1) : '';
+  if (namePart.contains('door_lock') ||
+      namePart.contains('front_door') ||
+      namePart.contains('garage') ||
+      namePart.contains('alarm')) {
+    return true;
+  }
+  return false;
+}
+
+/// Validates a Home Assistant entity ID (`<domain>.<object_id>`) against
+/// [allowedSmartHomeDomains] and [hardDeniedSmartHomeDomains] (`UDC-14` S14.4).
+bool isValidSmartHomeEntityId(String? entityId) {
+  if (entityId == null) return false;
+  final trimmed = entityId.trim().toLowerCase();
+  if (trimmed != entityId || !_smartHomeEntityRe.hasMatch(trimmed)) {
+    return false;
+  }
+  if (isHardDeniedSmartHomeEntity(trimmed)) {
+    return false;
+  }
+  final domain = trimmed.split('.').first;
+  return allowedSmartHomeDomains.contains(domain);
+}
+
+/// Validates a Smart TV device name or ID query (`1..64` UTF-8 characters,
+/// allowing Vietnamese names like `'TV phòng khách'`, rejecting control chars
+/// and path separators).
+bool isValidTvDeviceQuery(String? query) {
+  if (query == null) return false;
+  final trimmed = query.trim();
+  if (trimmed.isEmpty ||
+      trimmed.length > 64 ||
+      trimmed.contains('..') ||
+      trimmed.contains('/') ||
+      trimmed.contains(r'\')) {
+    return false;
+  }
+  return isSafeAgentPrompt(trimmed);
 }
