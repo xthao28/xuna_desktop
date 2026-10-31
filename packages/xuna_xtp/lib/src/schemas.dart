@@ -92,13 +92,14 @@ enum RiskTier implements Comparable<RiskTier> {
       };
 }
 
-/// Canonical tool families (`UDC-3` §5.4).
+/// Canonical tool families (`UDC-3` §5.4, `UDC-8` §4.2).
 enum ToolFamily {
   media('media'),
   app('app'),
   url('url'),
   workflow('workflow'),
   host('host'),
+  cu('cu'),
   screen('screen'),
   ui('ui'),
   input('input'),
@@ -113,6 +114,7 @@ enum ToolFamily {
         'url' => ToolFamily.url,
         'workflow' => ToolFamily.workflow,
         'host' => ToolFamily.host,
+        'cu' => ToolFamily.cu,
         'screen' => ToolFamily.screen,
         'ui' => ToolFamily.ui,
         'input' => ToolFamily.input,
@@ -786,6 +788,347 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ),
   ];
   return tools;
+}
+
+/// Normative allowlist of key combinations for `input.key` (`UDC-8` §4.2).
+const Set<String> allowedInputKeyCombos = <String>{
+  'Enter',
+  'Tab',
+  'Esc',
+  'Ctrl+S',
+  'Cmd+S',
+  '⌘S',
+  'Ctrl+F',
+  'Cmd+F',
+  '⌘F',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'PageUp',
+  'PageDown',
+};
+
+/// Builds the 8 computer-use tool descriptors (`UDC-8` §4.2).
+List<ToolDescriptor> buildComputerUseTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  const effectOutputSchema = <String, Object?>{
+    'type': 'object',
+    'properties': <String, Object?>{
+      'effect': <String, Object?>{
+        'type': 'string',
+        'enum': <String>['changed', 'no_change'],
+      },
+    },
+    'required': <String>['effect'],
+    'additionalProperties': false,
+  };
+
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'cu.session_start',
+      description:
+          'Start a bounded desktop computer-use session with declared goal and allowlists.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'goal': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 200,
+          },
+          'apps': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'string',
+              'pattern': r'^[a-z0-9_.-]{1,64}$',
+            },
+          },
+          'domains': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 253},
+          },
+          'maxSteps': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 20,
+          },
+          'maxMinutes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 10,
+          },
+        },
+        'required': <String>[
+          'goal',
+          'apps',
+          'domains',
+          'maxSteps',
+          'maxMinutes',
+        ],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'sessionId': <String, Object?>{'type': 'string', 'maxLength': 64},
+        },
+        'required': <String>['sessionId'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.cu,
+        risk: RiskTier.r3,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'screen.capture',
+      description:
+          'Capture active window or screen JPEG for an active computer-use session.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'scope': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['active_window', 'screen'],
+          },
+          'maxEdge': <String, Object?>{
+            'type': 'integer',
+            'minimum': 320,
+            'maximum': 1280,
+          },
+        },
+        'required': <String>['scope', 'maxEdge'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mimeType': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['image/jpeg'],
+          },
+          'width': <String, Object?>{'type': 'integer'},
+          'height': <String, Object?>{'type': 'integer'},
+          'dataBase64': <String, Object?>{'type': 'string'},
+        },
+        'required': <String>['mimeType', 'width', 'height', 'dataBase64'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.screen,
+        risk: RiskTier.r2,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'ui.inspect',
+      description:
+          'Inspect active window UI tree with password fields redacted.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'scope': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['active_window'],
+          },
+          'maxNodes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 300,
+          },
+        },
+        'required': <String>['scope', 'maxNodes'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'appId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'nodes': <String, Object?>{'type': 'array'},
+        },
+        'required': <String>['appId', 'windowTitle', 'nodes'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.ui,
+        risk: RiskTier.r2,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'input.click',
+      description:
+          'Click a UI element by elementId or coordinates inside an allowlisted app.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'elementId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'elementName': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'x': <String, Object?>{'type': 'integer'},
+          'y': <String, Object?>{'type': 'integer'},
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: effectOutputSchema,
+      policy: ToolPolicyMeta(
+        family: ToolFamily.input,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'input.type_text',
+      description:
+          'Type text into a non-password UI element (always R3 phone-signed).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'elementId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'elementName': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'text': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 200,
+          },
+        },
+        'required': <String>['elementId', 'text'],
+        'additionalProperties': false,
+      },
+      outputSchema: effectOutputSchema,
+      policy: ToolPolicyMeta(
+        family: ToolFamily.input,
+        risk: RiskTier.r3,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'input.key',
+      description: 'Send an allowlisted key combination to the active window.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'combo': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'Enter',
+              'Tab',
+              'Esc',
+              'Ctrl+S',
+              'Cmd+S',
+              '⌘S',
+              'Ctrl+F',
+              'Cmd+F',
+              '⌘F',
+              'ArrowUp',
+              'ArrowDown',
+              'ArrowLeft',
+              'ArrowRight',
+              'PageUp',
+              'PageDown',
+            ],
+          },
+          'inForm': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['combo'],
+        'additionalProperties': false,
+      },
+      outputSchema: effectOutputSchema,
+      policy: ToolPolicyMeta(
+        family: ToolFamily.input,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'input.scroll',
+      description: 'Scroll inside the active allowlisted window.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'elementId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'direction': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['up', 'down', 'left', 'right'],
+          },
+          'amount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 10,
+          },
+        },
+        'required': <String>['direction', 'amount'],
+        'additionalProperties': false,
+      },
+      outputSchema: effectOutputSchema,
+      policy: ToolPolicyMeta(
+        family: ToolFamily.input,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'cu.session_end',
+      description: 'End an active computer-use session.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'sessionId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'outcome': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'completed',
+              'stopped',
+              'budget_exceeded',
+              'failed',
+            ],
+          },
+        },
+        'required': <String>['sessionId', 'outcome'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'ended': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['ended'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.cu,
+        risk: RiskTier.r0,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
 }
 
 void _requireExactKeys(

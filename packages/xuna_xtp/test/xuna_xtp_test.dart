@@ -776,5 +776,165 @@ void main() {
       expect(params2.port, equals(47821));
       expect(params2.certFingerprint, equals('abcd1234'));
     });
+
+    test(
+        'evaluates UDC-8 computer-use tools, lexicon escalation, hard denylist and password redaction',
+        () {
+      const cuPolicyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {
+    "media": "allow",
+    "app": "allow",
+    "url": "allow",
+    "workflow": "allow",
+    "cu": "allow",
+    "screen": "allow",
+    "ui": "allow",
+    "input": "allow"
+  },
+  "apps": [
+    {
+      "id": "vscode",
+      "name": "VS Code",
+      "kind": "exe",
+      "target": "C:\\\\Program Files\\\\Microsoft VS Code\\\\Code.exe",
+      "risk": "R2"
+    },
+    {
+      "id": "explorer",
+      "name": "File Explorer",
+      "kind": "exe",
+      "target": "C:\\\\Windows\\\\explorer.exe",
+      "risk": "R2"
+    }
+  ],
+  "urlDomains": ["github.com", "calendar.google.com"],
+  "workflows": [],
+  "players": ["spotify"]
+}
+''';
+      final evaluator = HostPolicyEvaluator.fromJsonString(cuPolicyJson);
+      expect(evaluator.isHealthy, isTrue);
+
+      final cuTools = buildComputerUseTools();
+      expect(cuTools, hasLength(8));
+      expect(
+        cuTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'cu.session_start',
+          'screen.capture',
+          'ui.inspect',
+          'input.click',
+          'input.type_text',
+          'input.key',
+          'input.scroll',
+          'cu.session_end',
+        ]),
+      );
+
+      // Consequential lexicon (Vietnamese + English)
+      expect(isConsequentialElementName('Gửi email'), isTrue);
+      expect(isConsequentialElementName('Xóa tệp'), isTrue);
+      expect(isConsequentialElementName('Thanh toán ngay'), isTrue);
+      expect(isConsequentialElementName('Submit Form'), isTrue);
+      expect(isConsequentialElementName('Buy Now'), isTrue);
+      expect(isConsequentialElementName('Mở thư mục Reports'), isFalse);
+
+      // Hard-denied apps and processes
+      expect(isHardDeniedAppOrProcess('powershell.exe'), isTrue);
+      expect(isHardDeniedAppOrProcess('cmd'), isTrue);
+      expect(isHardDeniedAppOrProcess('com.apple.terminal'), isTrue);
+      expect(isHardDeniedAppOrProcess('1password'), isTrue);
+      expect(isHardDeniedAppOrProcess('systemsettings.exe'), isTrue);
+      expect(isHardDeniedAppOrProcess('vscode'), isFalse);
+
+      // Password field redaction
+      final redacted = redactUiTreeNodes(<Map<String, Object?>>[
+        <String, Object?>{
+          'id': 's00000001:1',
+          'role': 'textfield',
+          'name': 'Họ và tên',
+          'value': 'Thảo',
+          'enabled': true,
+        },
+        <String, Object?>{
+          'id': 's00000001:2',
+          'role': 'password',
+          'name': 'Nhập mật khẩu ngân hàng',
+          'value': 'secret123!',
+          'enabled': true,
+        },
+      ]);
+      expect(redacted, hasLength(2));
+      expect(redacted[0]['name'], equals('Họ và tên'));
+      expect(redacted[0].containsKey('value'), isFalse);
+      expect(redacted[1]['role'], equals('password'));
+      expect(redacted[1]['name'], equals('•••'));
+      expect(redacted[1].containsKey('value'), isFalse);
+      expect(redacted[1]['isPassword'], isTrue);
+
+      // Calling observation/input tools outside an active CU session -> denied
+      final outsideSession = evaluator.evaluateInvocation(
+        toolName: 'ui.inspect',
+        arguments: const <String, Object?>{
+          'scope': 'active_window',
+          'maxNodes': 100,
+        },
+        isInApprovedCuSession: false,
+      );
+      expect(outsideSession.allowed, isFalse);
+      expect(outsideSession.errorCode, equals('cu_session_required'));
+
+      // Inside an active CU session, R2 ui.inspect and non-consequential input.click
+      // do not require per-call approval
+      final inspectInside = evaluator.evaluateInvocation(
+        toolName: 'ui.inspect',
+        arguments: const <String, Object?>{
+          'scope': 'active_window',
+          'maxNodes': 100,
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(inspectInside.allowed, isTrue);
+      expect(inspectInside.effectiveRisk, equals(RiskTier.r2));
+
+      final safeClick = evaluator.evaluateInvocation(
+        toolName: 'input.click',
+        arguments: const <String, Object?>{
+          'elementId': 's00000001:1',
+          'elementName': 'Thư mục Reports',
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(safeClick.allowed, isTrue);
+      expect(safeClick.effectiveRisk, equals(RiskTier.r2));
+
+      // Consequential click escalates to R3 and requires phone-signed approval
+      final dangerClickNoApproval = evaluator.evaluateInvocation(
+        toolName: 'input.click',
+        arguments: const <String, Object?>{
+          'elementId': 's00000001:9',
+          'elementName': 'Xóa báo cáo',
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(dangerClickNoApproval.allowed, isFalse);
+      expect(dangerClickNoApproval.effectiveRisk, equals(RiskTier.r3));
+      expect(dangerClickNoApproval.errorCode, equals('approval_required'));
+
+      // input.type_text is always R3
+      final typeNoApproval = evaluator.evaluateInvocation(
+        toolName: 'input.type_text',
+        arguments: const <String, Object?>{
+          'elementId': 's00000001:3',
+          'text': 'Họp nhóm',
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(typeNoApproval.allowed, isFalse);
+      expect(typeNoApproval.effectiveRisk, equals(RiskTier.r3));
+      expect(typeNoApproval.errorCode, equals('approval_required'));
+    });
   });
 }

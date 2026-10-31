@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
+import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
@@ -25,6 +26,7 @@ class DesktopAgentController extends GetxController {
     required this.sessionClient,
     required this.logger,
     this.lanServer,
+    this.computerUseManager,
   });
 
   final XunaHostChannel channel;
@@ -35,6 +37,7 @@ class DesktopAgentController extends GetxController {
   final XtpSessionClient sessionClient;
   final ContentFreeLogger logger;
   final LanOfflineServer? lanServer;
+  final ComputerUseSessionManager? computerUseManager;
 
   final activeTab = AgentWindowTab.enrollment.obs;
   final sessionPhase = HostSessionPhase.disconnected.obs;
@@ -45,6 +48,7 @@ class DesktopAgentController extends GetxController {
   final activePolicy = Rxn<HostPolicy>();
   final isStopped = false.obs;
   final lanModeEnabled = false.obs;
+  final activeCuSession = Rxn<ComputerUseSessionState>();
   final permissionsSnapshot = const HostPermissionSnapshot().obs;
   final recentAuditRecords = <AuditLogRecord>[].obs;
 
@@ -63,6 +67,10 @@ class DesktopAgentController extends GetxController {
     }
     if (isStopped.value) {
       return 'Đã dừng khẩn cấp';
+    }
+    final cu = activeCuSession.value;
+    if (cu != null) {
+      return 'Đang điều khiển màn hình (Bước ${cu.stepsExecuted}/${cu.maxSteps})';
     }
     return switch (sessionPhase.value) {
       HostSessionPhase.ready => 'Đang kết nối',
@@ -100,6 +108,15 @@ class DesktopAgentController extends GetxController {
         isStopped.value = stopped;
       }),
     );
+    if (computerUseManager != null) {
+      activeCuSession.value = computerUseManager!.activeSession;
+      _subs.add(
+        computerUseManager!.sessionChanges.listen((session) {
+          activeCuSession.value = session;
+          activeCuSession.refresh();
+        }),
+      );
+    }
   }
 
   void _syncFromStores() {

@@ -358,14 +358,15 @@ class HostPolicyEvaluator {
   String? get trayBanner => isHealthy ? null : 'Cấu hình lỗi';
 
   /// Evaluates a `tools/call` invocation following the normative order in
-  /// `UDC-3` §5.6.5:
+  /// `UDC-3` §5.6.5 and `UDC-8` §4.2:
   /// 1. `host.status` is always allowed if arguments are `{}` (even when
   ///    policy is corrupted or e-stop is active).
   /// 2. If suspended by e-stop (`isStopped == true`), deny with `stopped`.
   /// 3. Validate tool arguments against schema/URL rules (`invalid_args`).
   /// 4. Check fail-closed policy health and family/entry allowlist (`denied`).
-  /// 5. If effective risk `>= R2`, verify `approval` is present, unexpired at
-  ///    [nowUtc], and `approval.argsSha256 == argsSha256(arguments)`.
+  /// 5. If effective risk `>= R2` (or `>= R3` inside an active computer-use
+  ///    session), verify `approval` is present, unexpired at [nowUtc], and
+  ///    `approval.argsSha256 == argsSha256(arguments)`.
   PolicyEvaluationResult evaluateInvocation({
     required String toolName,
     required Map<String, Object?> arguments,
@@ -374,6 +375,7 @@ class HostPolicyEvaluator {
     DateTime? nowUtc,
     String? hostId,
     List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
+    bool isInApprovedCuSession = false,
   }) {
     final now = (nowUtc ?? DateTime.now()).toUtc();
     ToolDescriptor.validateToolName(toolName);
@@ -595,6 +597,262 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r1;
+      case 'cu.session_start':
+        final goal = arguments['goal'];
+        final apps = arguments['apps'];
+        final domains = arguments['domains'];
+        final maxSteps = arguments['maxSteps'];
+        final maxMinutes = arguments['maxMinutes'];
+        if (arguments.length != 5 ||
+            goal is! String ||
+            goal.trim().isEmpty ||
+            goal.length > 200 ||
+            apps is! List ||
+            domains is! List ||
+            maxSteps is! int ||
+            maxSteps < 1 ||
+            maxSteps > 20 ||
+            maxMinutes is! int ||
+            maxMinutes < 1 ||
+            maxMinutes > 10) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r3,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        for (final appItem in apps) {
+          if (appItem is! String || !isValidShortId(appItem)) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          if (isHardDeniedAppOrProcess(appItem)) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'denylisted_target_forbidden',
+            );
+          }
+          if (activePolicy.findApp(appItem) == null) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'policy_blocked',
+            );
+          }
+        }
+        for (final domainItem in domains) {
+          if (domainItem is! String) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          final String asciiDomain;
+          try {
+            asciiDomain = normalizeDomainAllowlistEntry(domainItem);
+          } on FormatException {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'url_invalid',
+            );
+          }
+          final domainAllowed = activePolicy.urlDomains.any(
+            (allowed) =>
+                asciiDomain == allowed || asciiDomain.endsWith('.$allowed'),
+          );
+          if (!domainAllowed) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'domain_not_allowed',
+            );
+          }
+        }
+        effectiveRisk = RiskTier.r3;
+      case 'cu.session_end':
+        final sessionId = arguments['sessionId'];
+        final outcome = arguments['outcome'];
+        if (arguments.length != 2 ||
+            sessionId is! String ||
+            sessionId.isEmpty ||
+            sessionId.length > 64 ||
+            outcome is! String ||
+            !<String>{'completed', 'stopped', 'budget_exceeded', 'failed'}
+                .contains(outcome)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r0,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r0;
+      case 'screen.capture':
+        if (!isInApprovedCuSession) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'cu_session_required',
+          );
+        }
+        final scope = arguments['scope'];
+        final maxEdge = arguments['maxEdge'];
+        if (arguments.length != 2 ||
+            scope is! String ||
+            !<String>{'active_window', 'screen'}.contains(scope) ||
+            maxEdge is! int ||
+            maxEdge < 320 ||
+            maxEdge > 1280) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'ui.inspect':
+        if (!isInApprovedCuSession) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'cu_session_required',
+          );
+        }
+        final scope = arguments['scope'];
+        final maxNodes = arguments['maxNodes'];
+        if (arguments.length != 2 ||
+            scope != 'active_window' ||
+            maxNodes is! int ||
+            maxNodes < 1 ||
+            maxNodes > 300) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'input.click':
+        if (!isInApprovedCuSession) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'cu_session_required',
+          );
+        }
+        final elementId = arguments['elementId'];
+        final elementName = arguments['elementName'];
+        final x = arguments['x'];
+        final y = arguments['y'];
+        final hasElement = elementId is String && elementId.isNotEmpty;
+        final hasCoords = x is int && y is int;
+        if ((!hasElement && !hasCoords) ||
+            (elementName != null && elementName is! String)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = isConsequentialElementName(elementName as String?)
+            ? RiskTier.r3
+            : RiskTier.r2;
+      case 'input.type_text':
+        if (!isInApprovedCuSession) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r3,
+            errorCode: 'cu_session_required',
+          );
+        }
+        final elementId = arguments['elementId'];
+        final text = arguments['text'];
+        final elementName = arguments['elementName'];
+        if (elementId is! String ||
+            elementId.isEmpty ||
+            elementId.length > 64 ||
+            text is! String ||
+            text.isEmpty ||
+            text.length > 200 ||
+            (elementName != null && elementName is! String)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r3,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r3;
+      case 'input.key':
+        if (!isInApprovedCuSession) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'cu_session_required',
+          );
+        }
+        final combo = arguments['combo'];
+        final inForm = arguments['inForm'];
+        if (combo is! String ||
+            !allowedInputKeyCombos.contains(combo) ||
+            (inForm != null && inForm is! bool)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = (combo == 'Enter' && inForm == true)
+            ? RiskTier.r3
+            : RiskTier.r2;
+      case 'input.scroll':
+        if (!isInApprovedCuSession) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'cu_session_required',
+          );
+        }
+        final direction = arguments['direction'];
+        final amount = arguments['amount'];
+        final elementId = arguments['elementId'];
+        if (direction is! String ||
+            !<String>{'up', 'down', 'left', 'right'}.contains(direction) ||
+            amount is! int ||
+            amount < 1 ||
+            amount > 10 ||
+            (elementId != null && elementId is! String)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
       default:
         return const PolicyEvaluationResult(
           allowed: false,
@@ -604,7 +862,19 @@ class HostPolicyEvaluator {
         );
     }
 
-    if (effectiveRisk >= RiskTier.r2) {
+    // UDC-8 §4.2: Inside an already-approved computer-use session, R2
+    // observation/input tools do not require per-call approval; R3 tools
+    // ALWAYS require a phone-signed single-use approval.
+    final requiresApproval = isInApprovedCuSession &&
+            const <ToolFamily>{
+              ToolFamily.screen,
+              ToolFamily.ui,
+              ToolFamily.input,
+            }.contains(family)
+        ? effectiveRisk >= RiskTier.r3
+        : effectiveRisk >= RiskTier.r2;
+
+    if (requiresApproval) {
       if (approval == null) {
         return PolicyEvaluationResult(
           allowed: false,
@@ -1055,6 +1325,210 @@ Map<String, Object?> _castObjectMap(Object? raw, String context) {
       throw FormatException('Expected string key in $context');
     }
     out[entry.key as String] = entry.value;
+  }
+  return out;
+}
+
+/// Consequential UI element lexicon (`UDC-8` §4.2) in Vietnamese and English.
+/// Clicking an element whose name matches any token here escalates `input.click`
+/// from `R2` to `R3` (requiring a phone-signed single-use approval).
+const List<String> consequentialElementKeywords = <String>[
+  'send',
+  'submit',
+  'delete',
+  'remove',
+  'erase',
+  'buy',
+  'pay',
+  'checkout',
+  'purchase',
+  'post',
+  'publish',
+  'transfer',
+  'wire',
+  'confirm payment',
+  'place order',
+  'gửi',
+  'nộp',
+  'xóa',
+  'xoá',
+  'gỡ bỏ',
+  'mua',
+  'thanh toán',
+  'chuyển khoản',
+  'đặt hàng',
+  'đăng',
+  'xuất bản',
+];
+
+final RegExp _wordSplitRe = RegExp(
+  r'[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]+',
+);
+
+/// Returns `true` when [elementName] matches the consequential action lexicon
+/// (`send`, `submit`, `delete`, `buy`, `pay`, `post` in Vietnamese or English).
+bool isConsequentialElementName(String? elementName) {
+  if (elementName == null || elementName.trim().isEmpty) return false;
+  final normalized = elementName.trim().toLowerCase();
+  final words = normalized
+      .split(_wordSplitRe)
+      .where((w) => w.isNotEmpty)
+      .toSet();
+  for (final keyword in consequentialElementKeywords) {
+    if (keyword.contains(' ')) {
+      if (normalized.contains(keyword)) return true;
+    } else if (words.contains(keyword)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Built-in hard-refusal denylist for computer use (`UDC-8` §4.2):
+/// terminals, password managers, banking apps, and system/security settings
+/// are refused regardless of the session allowlist.
+const Set<String> hardDeniedAppsAndProcesses = <String>{
+  // Terminals
+  'cmd',
+  'cmd.exe',
+  'powershell',
+  'powershell.exe',
+  'pwsh',
+  'pwsh.exe',
+  'wt',
+  'wt.exe',
+  'windowsterminal',
+  'windowsterminal.exe',
+  'terminal',
+  'terminal.app',
+  'com.apple.terminal',
+  'iterm',
+  'iterm2',
+  'iterm.app',
+  'com.googlecode.iterm2',
+  'bash',
+  'bash.exe',
+  'zsh',
+  'wsl',
+  'wsl.exe',
+  'conhost',
+  'conhost.exe',
+  // Password managers & credential stores
+  '1password',
+  '1password.exe',
+  'com.1password.1password',
+  'bitwarden',
+  'bitwarden.exe',
+  'com.bitwarden.desktop',
+  'keepass',
+  'keepass.exe',
+  'keepassxc',
+  'keepassxc.exe',
+  'org.keepassxc.keepassxc',
+  'lastpass',
+  'dashlane',
+  'keychain',
+  'keychain access',
+  'com.apple.keychainaccess',
+  // System & security settings
+  'systemsettings',
+  'systemsettings.exe',
+  'control',
+  'control.exe',
+  'regedit',
+  'regedit.exe',
+  'mmc',
+  'mmc.exe',
+  'taskmgr',
+  'taskmgr.exe',
+  'secpol',
+  'secpol.msc',
+  'gpedit',
+  'gpedit.msc',
+  'system settings',
+  'system preferences',
+  'com.apple.systempreferences',
+  'com.apple.settings',
+  // Banking / financial keywords
+  'banking',
+  'vietcombank',
+  'techcombank',
+  'mbbank',
+  'tpbank',
+  'vpbank',
+  'bidv',
+  'agribank',
+  'acb',
+  'momo',
+  'zalopay',
+  'vnpay',
+};
+
+/// Returns `true` if [appIdOrProcess] is on XUNA's hard-refusal denylist
+/// (terminals, password managers, banking apps, or system security panes).
+bool isHardDeniedAppOrProcess(String? appIdOrProcess) {
+  if (appIdOrProcess == null || appIdOrProcess.trim().isEmpty) return true;
+  final raw = appIdOrProcess.trim().toLowerCase();
+  final baseName = raw.split(RegExp(r'[/\\]')).last;
+  if (hardDeniedAppsAndProcesses.contains(raw) ||
+      hardDeniedAppsAndProcesses.contains(baseName)) {
+    return true;
+  }
+  final withoutExt = baseName.endsWith('.exe')
+      ? baseName.substring(0, baseName.length - 4)
+      : (baseName.endsWith('.app')
+          ? baseName.substring(0, baseName.length - 4)
+          : baseName);
+  if (hardDeniedAppsAndProcesses.contains(withoutExt)) {
+    return true;
+  }
+  return false;
+}
+
+/// Returns `true` if a UI node represents a password field (`UDC-8` §4.2).
+bool isPasswordUiNode(Map<String, Object?> node) {
+  if (node['isPassword'] == true || node['password'] == true) {
+    return true;
+  }
+  final role = (node['role'] as String?)?.toLowerCase() ?? '';
+  if (role.contains('password') ||
+      role.contains('securetext') ||
+      role == 'axsecuretextfield') {
+    return true;
+  }
+  final name = (node['name'] as String?)?.toLowerCase() ?? '';
+  if (name.contains('password') ||
+      name.contains('mật khẩu') ||
+      name.contains('passcode') ||
+      name.contains('mã pin')) {
+    return true;
+  }
+  return false;
+}
+
+/// Redacts password fields in a list of UI tree nodes (`UDC-8` §4.2):
+/// replaces `name` with `'•••'` and removes `value`.
+List<Map<String, Object?>> redactUiTreeNodes(
+  List<Map<String, Object?>> nodes, {
+  int maxNodes = 300,
+}) {
+  final out = <Map<String, Object?>>[];
+  for (final node in nodes) {
+    if (out.length >= maxNodes) break;
+    final isPwd = isPasswordUiNode(node);
+    final rawName = (node['name'] as String?) ?? '';
+    final truncatedName = isPwd
+        ? '•••'
+        : (rawName.length > 60 ? rawName.substring(0, 60) : rawName);
+    final redacted = <String, Object?>{
+      'id': (node['id'] as String?) ?? '',
+      'role': isPwd ? 'password' : ((node['role'] as String?) ?? 'unknown'),
+      'name': truncatedName,
+      'enabled': node['enabled'] != false,
+      if (node['bounds'] is Map) 'bounds': node['bounds'],
+      if (isPwd) 'isPassword': true,
+    };
+    out.add(redacted);
   }
   return out;
 }

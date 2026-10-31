@@ -19,6 +19,7 @@ class DesktopAgentWindow extends StatelessWidget {
   const DesktopAgentWindow({super.key, required this.controller});
 
   static const statusBadgeKey = Key('desktop.header.status');
+  static const cuOverlayBannerKey = Key('desktop.cu.overlay_banner');
   static const stopButtonKey = Key('desktop.header.stop');
   static const resumeButtonKey = Key('desktop.header.resume');
   static const sasCodeKey = Key('desktop.enroll.sas');
@@ -32,26 +33,68 @@ class DesktopAgentWindow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF6F2E8),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildHeader(),
-          _buildTabBar(),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Obx(
-                () => switch (controller.activeTab.value) {
-                  AgentWindowTab.enrollment => _buildEnrollmentTab(),
-                  AgentWindowTab.policy => _buildPolicyTab(),
-                  AgentWindowTab.permissions => _buildPermissionsTab(),
-                  AgentWindowTab.audit => _buildAuditTab(),
-                },
+      body: Obx(() {
+        final cuSession = controller.activeCuSession.value;
+        return Container(
+          decoration: cuSession != null
+              ? BoxDecoration(
+                  border: Border.all(
+                    color: const Color(0xFFE67E22),
+                    width: 4,
+                  ),
+                )
+              : null,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildHeader(),
+              if (cuSession != null)
+                Container(
+                  key: cuOverlayBannerKey,
+                  color: const Color(0xFFE67E22),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.visibility,
+                        size: 16,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'XUNA đang quan sát và điều khiển màn hình · Bước ${cuSession.stepsExecuted}/${cuSession.maxSteps} · ${cuSession.goal}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              _buildTabBar(),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: switch (controller.activeTab.value) {
+                    AgentWindowTab.enrollment => _buildEnrollmentTab(),
+                    AgentWindowTab.policy => _buildPolicyTab(),
+                    AgentWindowTab.permissions => _buildPermissionsTab(),
+                    AgentWindowTab.audit => _buildAuditTab(),
+                  },
+                ),
               ),
-            ),
+            ],
           ),
-        ],
-      ),
+        );
+      }),
     );
   }
 

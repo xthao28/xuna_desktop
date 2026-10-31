@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
+import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
@@ -306,25 +307,28 @@ class HostToolDispatcher {
     required this.stopController,
     required this.logger,
     this.enrollmentStore,
+    this.computerUseManager,
     this.agentVersion = '0.1.0',
     this.maxIdempotencyCacheEntries = 256,
     List<HostToolHandler>? handlers,
   }) {
     final registered =
         handlers ??
-        const <HostToolHandler>[
-          MediaPlayPauseTool(),
-          MediaNextTool(),
-          MediaPreviousTool(),
-          MediaVolumeSetTool(),
-          MediaNowPlayingTool(),
-          AppListAllowedTool(),
-          AppLaunchTool(),
-          UrlOpenTool(),
-          WorkflowListTool(),
-          WorkflowRunTool(),
-          HostStatusTool(),
-          HostNotifyTool(),
+        <HostToolHandler>[
+          const MediaPlayPauseTool(),
+          const MediaNextTool(),
+          const MediaPreviousTool(),
+          const MediaVolumeSetTool(),
+          const MediaNowPlayingTool(),
+          const AppListAllowedTool(),
+          const AppLaunchTool(),
+          const UrlOpenTool(),
+          const WorkflowListTool(),
+          const WorkflowRunTool(),
+          const HostStatusTool(),
+          const HostNotifyTool(),
+          if (computerUseManager != null)
+            ...computerUseManager!.buildHandlers(),
         ];
     for (final handler in registered) {
       ToolDescriptor.validateToolName(handler.name);
@@ -339,6 +343,7 @@ class HostToolDispatcher {
   final EmergencyStopController stopController;
   final ContentFreeLogger logger;
   final EnrollmentStateStore? enrollmentStore;
+  final ComputerUseSessionManager? computerUseManager;
   final String agentVersion;
   final int maxIdempotencyCacheEntries;
 
@@ -356,7 +361,14 @@ class HostToolDispatcher {
     } catch (_) {
       perms = const HostPermissionSnapshot();
     }
-    return buildMvpToolCatalog(defaultPermission: perms.accessibility);
+    final mvp = buildMvpToolCatalog(defaultPermission: perms.accessibility);
+    if (computerUseManager == null) {
+      return mvp;
+    }
+    return <ToolDescriptor>[
+      ...mvp,
+      ...buildComputerUseTools(defaultPermission: perms.accessibility),
+    ];
   }
 
   /// Cancels an in-flight `tools/call` when `notifications/cancelled` arrives.
@@ -409,6 +421,7 @@ class HostToolDispatcher {
       hostId: enrolled?.hostId,
       pinnedPhonePublicKeys:
           enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
+      isInApprovedCuSession: computerUseManager?.hasActiveSession ?? false,
       nowUtc: nowUtc,
     );
 
