@@ -11,6 +11,7 @@ import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
 import 'package:xuna_desktop/features/discovery/auto_smart_home_bridge.dart';
+import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
 import 'package:xuna_desktop/features/discovery/auto_tv_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
@@ -176,6 +177,7 @@ class ToolExecutionContext {
     required this.mcpBridge,
     required this.tvScanner,
     required this.smartHomeBridge,
+    required this.symbioticService,
     required this.actionLedger,
     required this.cancellationToken,
     required this.agentVersion,
@@ -193,6 +195,7 @@ class ToolExecutionContext {
   final AutoMcpBridge mcpBridge;
   final AutoTvScanner tvScanner;
   final AutoSmartHomeBridge smartHomeBridge;
+  final AutoSymbioticService symbioticService;
   final ReversibleActionLedger actionLedger;
   final ToolCancellationToken cancellationToken;
   final String agentVersion;
@@ -1254,7 +1257,126 @@ class SmartHomeControlTool extends HostToolHandler {
   }
 }
 
-/// Registry and dispatcher for all MVP, Dev Workspace, Desk Co-Pilot, Ambient Co-Pilot, and Smart TV/Home tools (`UDC-3` §5.6.5, `UDC-11`..`UDC-14`).
+class ClipboardWriteTool extends HostToolHandler {
+  const ClipboardWriteTool();
+
+  @override
+  String get name => 'clipboard.write';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawText = context.arguments['text'] as String;
+    final res = await context.symbioticService.writeClipboardText(rawText);
+    return ToolHandlerOutput(
+      text: 'Đã chép ${res.charCount} ký tự vào clipboard.',
+      structuredContent: <String, Object?>{
+        'written': res.written,
+        'charCount': res.charCount,
+        'redactedCount': res.redactedCount,
+      },
+      toastBody: 'đã chép ${res.charCount} ký tự vào clipboard',
+    );
+  }
+}
+
+class MeetingStatusTool extends HostToolHandler {
+  const MeetingStatusTool();
+
+  @override
+  String get name => 'meeting.status';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final snap = await context.symbioticService.getMeetingStatus();
+    final micDesc = snap.micMuted ? 'đã tắt mic' : 'mic đang bật';
+    final text = snap.inMeeting
+        ? 'Đang họp trên ${snap.app} ($micDesc).'
+        : 'Không có cuộc họp nào ($micDesc).';
+    return ToolHandlerOutput(
+      text: text,
+      structuredContent: snap.toWireJson(),
+    );
+  }
+}
+
+class MeetingControlTool extends HostToolHandler {
+  const MeetingControlTool();
+
+  @override
+  String get name => 'meeting.control';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final res = await context.symbioticService.controlMeeting(action);
+    context.actionLedger.pushEntry(
+      ReversibleActionEntry(
+        originalTool: 'meeting.control',
+        inverseTool: 'meeting.control',
+        inverseArgs: <String, Object?>{'action': res.inverseAction},
+        description: res.previousMicMuted ? 'tắt lại mic' : 'bật lại mic',
+        recordedAt: context.nowUtc,
+      ),
+    );
+    final label = res.micMuted ? 'Đã tắt mic' : 'Đã bật mic';
+    return ToolHandlerOutput(
+      text: '$label (${res.app}).',
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'micMuted': res.micMuted,
+        'app': res.app,
+      },
+      toastBody: res.micMuted ? 'đã tắt mic' : 'đã bật mic',
+    );
+  }
+}
+
+class DevPortsTool extends HostToolHandler {
+  const DevPortsTool();
+
+  @override
+  String get name => 'dev.ports';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawPorts = context.arguments['ports'];
+    List<int>? ports;
+    if (rawPorts is List) {
+      ports = rawPorts.whereType<int>().toList(growable: false);
+    }
+    final res = await context.symbioticService.scanDevPorts(ports: ports);
+    return ToolHandlerOutput(
+      text: res.activePorts.isEmpty
+          ? 'Không có cổng dev localhost nào đang chạy.'
+          : 'Phát hiện ${res.activePorts.length} cổng dev trên ${res.lanIp}.',
+      structuredContent: <String, Object?>{
+        'lanIp': res.lanIp,
+        'activePorts':
+            res.activePorts.map((e) => e.toWireJson()).toList(growable: false),
+      },
+    );
+  }
+}
+
+class SystemVitalsTool extends HostToolHandler {
+  const SystemVitalsTool();
+
+  @override
+  String get name => 'system.vitals';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final snap = await context.symbioticService.readSystemVitals();
+    final chargeLabel = snap.isCharging ? 'đang sạc' : 'dùng pin';
+    return ToolHandlerOutput(
+      text:
+          'Pin ${snap.batteryPercent}% ($chargeLabel), RAM ${snap.memoryUsedPercent}%, trống ${snap.diskFreeGb} GB (${snap.healthStatus}).',
+      structuredContent: snap.toWireJson(),
+    );
+  }
+}
+
+/// Registry and dispatcher for all MVP, Dev Workspace, Desk Co-Pilot, Ambient Co-Pilot, Smart TV/Home, and Symbiotic Co-Pilot tools (`UDC-3` §5.6.5, `UDC-11`..`UDC-15`).
 class HostToolDispatcher {
   HostToolDispatcher({
     required this.policyStore,
@@ -1269,6 +1391,7 @@ class HostToolDispatcher {
     AutoMcpBridge? mcpBridge,
     AutoTvScanner? tvScanner,
     AutoSmartHomeBridge? smartHomeBridge,
+    AutoSymbioticService? symbioticService,
     ReversibleActionLedger? actionLedger,
     this.beamDirectoryPath,
     this.agentVersion = '0.1.0',
@@ -1279,6 +1402,7 @@ class HostToolDispatcher {
        mcpBridge = mcpBridge ?? AutoMcpBridge(),
        tvScanner = tvScanner ?? AutoTvScanner(),
        smartHomeBridge = smartHomeBridge ?? AutoSmartHomeBridge(),
+       symbioticService = symbioticService ?? AutoSymbioticService(),
        actionLedger = actionLedger ?? ReversibleActionLedger() {
     final registered =
         handlers ??
@@ -1316,6 +1440,11 @@ class HostToolDispatcher {
           const TvCastMediaTool(),
           const SmartHomeListEntitiesTool(),
           const SmartHomeControlTool(),
+          const ClipboardWriteTool(),
+          const MeetingStatusTool(),
+          const MeetingControlTool(),
+          const DevPortsTool(),
+          const SystemVitalsTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -1338,6 +1467,7 @@ class HostToolDispatcher {
   final AutoMcpBridge mcpBridge;
   final AutoTvScanner tvScanner;
   final AutoSmartHomeBridge smartHomeBridge;
+  final AutoSymbioticService symbioticService;
   final ReversibleActionLedger actionLedger;
   final String? beamDirectoryPath;
   final String agentVersion;
@@ -1364,6 +1494,7 @@ class HostToolDispatcher {
       includeDeskCopilotTools: true,
       includeAmbientCopilotTools: true,
       includeSmartTvHomeTools: true,
+      includeSymbioticCopilotTools: true,
     );
     if (computerUseManager == null) {
       return mvp;
@@ -1531,6 +1662,7 @@ class HostToolDispatcher {
           mcpBridge: mcpBridge,
           tvScanner: tvScanner,
           smartHomeBridge: smartHomeBridge,
+          symbioticService: symbioticService,
           actionLedger: actionLedger,
           cancellationToken: cancelToken,
           agentVersion: agentVersion,
@@ -1556,6 +1688,7 @@ class HostToolDispatcher {
         mcpBridge: mcpBridge,
         tvScanner: tvScanner,
         smartHomeBridge: smartHomeBridge,
+        symbioticService: symbioticService,
         actionLedger: actionLedger,
         cancellationToken: cancelToken,
         agentVersion: agentVersion,

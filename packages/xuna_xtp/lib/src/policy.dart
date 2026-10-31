@@ -419,19 +419,25 @@ class HostPolicyEvaluator {
     final prefix = toolName.split('.').first;
     final family = (prefix == 'browser' || toolName == 'tv.cast_media')
         ? ToolFamily.url
-        : (toolName == 'tv.list_devices' || toolName == 'tv.control')
+        : (toolName == 'tv.list_devices' ||
+                toolName == 'tv.control' ||
+                prefix == 'meeting')
             ? ToolFamily.media
-            : (prefix == 'display' ||
-                    prefix == 'workspace' ||
-                    prefix == 'selection' ||
-                    prefix == 'mcp' ||
-                    prefix == 'window' ||
-                    prefix == 'beam' ||
-                    prefix == 'action' ||
-                    prefix == 'smarthome' ||
-                    toolName == 'tv.launch_app')
-                ? ToolFamily.app
-                : ToolFamily.fromWire(prefix);
+            : (prefix == 'system')
+                ? ToolFamily.host
+                : (prefix == 'display' ||
+                        prefix == 'workspace' ||
+                        prefix == 'selection' ||
+                        prefix == 'mcp' ||
+                        prefix == 'window' ||
+                        prefix == 'beam' ||
+                        prefix == 'action' ||
+                        prefix == 'smarthome' ||
+                        prefix == 'clipboard' ||
+                        prefix == 'dev' ||
+                        toolName == 'tv.launch_app')
+                    ? ToolFamily.app
+                    : ToolFamily.fromWire(prefix);
     if (!activePolicy.isFamilyAllowed(family)) {
       return const PolicyEvaluationResult(
         allowed: false,
@@ -729,6 +735,80 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r2;
+      case 'clipboard.write':
+        final text = arguments['text'];
+        final label = arguments['label'];
+        const allowedClipKeys = <String>{'text', 'label'};
+        if (arguments.keys.any((k) => !allowedClipKeys.contains(k)) ||
+            text is! String ||
+            !isSafeClipboardWriteText(text) ||
+            (label != null &&
+                (label is! String ||
+                    label.length > 80 ||
+                    !isSafeAgentPrompt(label)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'meeting.status':
+      case 'system.vitals':
+        if (arguments.isNotEmpty) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'meeting.control':
+        final action = arguments['action'];
+        if (arguments.length != 1 ||
+            action is! String ||
+            !allowedMeetingActions.contains(action)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'dev.ports':
+        final ports = arguments['ports'];
+        if (arguments.keys.any((k) => k != 'ports')) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (ports != null) {
+          if (ports is! List || ports.length > 16) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r1,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          for (final p in ports) {
+            if (p is! int || p < 1024 || p > 65535) {
+              return const PolicyEvaluationResult(
+                allowed: false,
+                status: XtpStatus.invalidArgs,
+                effectiveRisk: RiskTier.r1,
+                errorCode: 'schema_mismatch',
+              );
+            }
+          }
+        }
+        effectiveRisk = RiskTier.r1;
       case 'beam.transfer':
         final direction = arguments['direction'];
         final kind = arguments['kind'];
@@ -2212,4 +2292,24 @@ bool isValidTvDeviceQuery(String? query) {
     return false;
   }
   return isSafeAgentPrompt(trimmed);
+}
+
+/// Validates text passed to `clipboard.write` (`UDC-15` S15.1, `UDC-T37`):
+/// accepts `1..4000` UTF-8 characters without ASCII null/control bytes (allows
+/// `\n`, `\r`, `\t` for multiline code snippets).
+bool isSafeClipboardWriteText(String? text) {
+  if (text == null) return false;
+  final trimmed = text.trim();
+  if (trimmed.isEmpty || text.length > 4000) return false;
+  for (var i = 0; i < text.length; i++) {
+    final code = text.codeUnitAt(i);
+    if ((code >= 0x00 && code <= 0x08) ||
+        code == 0x0B ||
+        code == 0x0C ||
+        (code >= 0x0E && code <= 0x1F) ||
+        code == 0x7F) {
+      return false;
+    }
+  }
+  return true;
 }

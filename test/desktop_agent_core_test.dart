@@ -17,6 +17,7 @@ import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
 import 'package:xuna_desktop/features/discovery/auto_smart_home_bridge.dart';
+import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
 import 'package:xuna_desktop/features/discovery/auto_tv_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
@@ -637,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(33));
+        expect(toolsList, hasLength(38));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -2486,6 +2487,185 @@ void main() {
                 as Map<String, Object?>)['xuna/errorCode'],
             equals('smarthome_domain_forbidden'),
           );
+        },
+      );
+    },
+  );
+
+  group(
+    'UDC-15 S15.1–S15.4: Live Symbiotic Co-Pilot (clipboard.write, meeting.status/control, dev.ports, system.vitals)',
+    () {
+      test(
+        'executes clipboard.write with secret redaction, meeting.status, meeting.control (+ undo), dev.ports, and system.vitals without logging secrets',
+        () async {
+          await policyStore.savePolicy(_sampleHealthyPolicy());
+          final writtenClipboards = <String>[];
+          bool fakeMicMuted = false;
+
+          final symbioticService = AutoSymbioticService(
+            clipboardWriter: (text) async {
+              writtenClipboards.add(text);
+            },
+            meetingDetector: () async => MeetingStatusSnapshot(
+              inMeeting: true,
+              app: 'zoom',
+              micMuted: fakeMicMuted,
+            ),
+            micMuteSetter: (mute) async {
+              fakeMicMuted = mute;
+              return fakeMicMuted;
+            },
+            lanIpResolver: () async => '192.168.1.42',
+            portProbe: (ports) async => <({int port, String process})>[
+              (port: 3000, process: 'next-dev'),
+              (port: 5173, process: 'vite'),
+            ],
+            vitalsReader: () async => const SystemVitalsSnapshot(
+              batteryPercent: 78,
+              isCharging: true,
+              memoryUsedPercent: 61,
+              diskFreeGb: 95,
+              thermalState: 'nominal',
+              healthStatus: 'healthy',
+            ),
+          );
+
+          final udc15Dispatcher = HostToolDispatcher(
+            policyStore: policyStore,
+            channel: channel,
+            auditStore: auditStore,
+            stopController: stopController,
+            logger: logger,
+            enrollmentStore: enrollmentStore,
+            symbioticService: symbioticService,
+          );
+          addTearDown(udc15Dispatcher.dispose);
+
+          final now = DateTime.utc(2026, 10, 31, 9, 0);
+
+          // 1. S15.1: clipboard.write (R2) redacts secret tokens and never logs clipboard text
+          const rawSecretSnippet =
+              'export OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef && npm run dev';
+          const clipArgs = <String, Object?>{'text': rawSecretSnippet};
+          final clipResp = await udc15Dispatcher.dispatch(
+            requestId: 1101,
+            params: ToolsCallParams(
+              name: 'clipboard.write',
+              arguments: clipArgs,
+              invocationId: '11010000-0000-4000-8000-000000000001',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '11010000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(clipArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final clipSc =
+              clipResp.result['structuredContent'] as Map<String, Object?>;
+          expect(clipSc['written'], isTrue);
+          expect(clipSc['redactedCount'], greaterThanOrEqualTo(1));
+          expect(writtenClipboards, hasLength(1));
+          expect(writtenClipboards.single, contains('[REDACTED]'));
+          expect(
+            writtenClipboards.single,
+            isNot(contains('sk-proj-1234567890abcdef')),
+          );
+
+          // 2. S15.2: meeting.status & meeting.control (R1) + action.undo
+          final meetStatusResp = await udc15Dispatcher.dispatch(
+            requestId: 1102,
+            params: const ToolsCallParams(
+              name: 'meeting.status',
+              arguments: <String, Object?>{},
+              invocationId: '11020000-0000-4000-8000-000000000002',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final meetStatusSc =
+              meetStatusResp.result['structuredContent'] as Map<String, Object?>;
+          expect(meetStatusSc['inMeeting'], isTrue);
+          expect(meetStatusSc['app'], equals('zoom'));
+          expect(meetStatusSc['micMuted'], isFalse);
+
+          final muteResp = await udc15Dispatcher.dispatch(
+            requestId: 1103,
+            params: const ToolsCallParams(
+              name: 'meeting.control',
+              arguments: <String, Object?>{'action': 'mute_mic'},
+              invocationId: '11030000-0000-4000-8000-000000000003',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          expect(
+            (muteResp.result['structuredContent']
+                as Map<String, Object?>)['micMuted'],
+            isTrue,
+          );
+          expect(fakeMicMuted, isTrue);
+
+          // Undo restores microphone back to unmuted!
+          await udc15Dispatcher.dispatch(
+            requestId: 1104,
+            params: const ToolsCallParams(
+              name: 'action.undo',
+              arguments: <String, Object?>{},
+              invocationId: '11040000-0000-4000-8000-000000000004',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now.add(const Duration(seconds: 10)),
+          );
+          expect(fakeMicMuted, isFalse);
+
+          // 3. S15.3: dev.ports (R1) returns LAN IP and active localhost dev ports
+          final devPortsResp = await udc15Dispatcher.dispatch(
+            requestId: 1105,
+            params: const ToolsCallParams(
+              name: 'dev.ports',
+              arguments: <String, Object?>{},
+              invocationId: '11050000-0000-4000-8000-000000000005',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final devPortsSc =
+              devPortsResp.result['structuredContent'] as Map<String, Object?>;
+          expect(devPortsSc['lanIp'], equals('192.168.1.42'));
+          final activePorts = devPortsSc['activePorts'] as List<Object?>;
+          expect(activePorts, hasLength(2));
+          expect(
+            (activePorts.first as Map<String, Object?>)['url'],
+            equals('http://192.168.1.42:3000'),
+          );
+
+          // 4. S15.4: system.vitals (R1) returns battery, memory, disk, and health
+          final vitalsResp = await udc15Dispatcher.dispatch(
+            requestId: 1106,
+            params: const ToolsCallParams(
+              name: 'system.vitals',
+              arguments: <String, Object?>{},
+              invocationId: '11060000-0000-4000-8000-000000000006',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final vitalsSc =
+              vitalsResp.result['structuredContent'] as Map<String, Object?>;
+          expect(vitalsSc['batteryPercent'], equals(78));
+          expect(vitalsSc['isCharging'], isTrue);
+          expect(vitalsSc['memoryUsedPercent'], equals(61));
+          expect(vitalsSc['diskFreeGb'], equals(95));
+          expect(vitalsSc['healthStatus'], equals('healthy'));
+
+          // 5. Verify zero clipboard text or LAN URLs in logger or audit log (UDC-T37, UDC-T38)
+          for (final entry in logger.entries) {
+            final line = jsonEncode(entry.fields);
+            expect(line, isNot(contains('npm run dev')));
+            expect(line, isNot(contains('192.168.1.42')));
+          }
         },
       );
     },

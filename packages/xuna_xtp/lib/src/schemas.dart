@@ -356,19 +356,25 @@ class ToolDescriptor {
     final prefix = name.split('.').first;
     final family = (prefix == 'browser' || name == 'tv.cast_media')
         ? ToolFamily.url
-        : (name == 'tv.list_devices' || name == 'tv.control')
+        : (name == 'tv.list_devices' ||
+                name == 'tv.control' ||
+                prefix == 'meeting')
             ? ToolFamily.media
-            : (prefix == 'display' ||
-                    prefix == 'workspace' ||
-                    prefix == 'selection' ||
-                    prefix == 'mcp' ||
-                    prefix == 'window' ||
-                    prefix == 'beam' ||
-                    prefix == 'action' ||
-                    prefix == 'smarthome' ||
-                    name == 'tv.launch_app')
-                ? ToolFamily.app
-                : ToolFamily.fromWire(prefix);
+            : (prefix == 'system')
+                ? ToolFamily.host
+                : (prefix == 'display' ||
+                        prefix == 'workspace' ||
+                        prefix == 'selection' ||
+                        prefix == 'mcp' ||
+                        prefix == 'window' ||
+                        prefix == 'beam' ||
+                        prefix == 'action' ||
+                        prefix == 'smarthome' ||
+                        prefix == 'clipboard' ||
+                        prefix == 'dev' ||
+                        name == 'tv.launch_app')
+                    ? ToolFamily.app
+                    : ToolFamily.fromWire(prefix);
     if (expectedFamily != null && family != expectedFamily) {
       throw FormatException(
         'Tool $name prefix ($prefix) does not match policy family (${expectedFamily.wire})',
@@ -491,6 +497,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeDeskCopilotTools = false,
   bool includeAmbientCopilotTools = false,
   bool includeSmartTvHomeTools = false,
+  bool includeSymbioticCopilotTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -815,6 +822,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildAmbientCopilotTools(defaultPermission: defaultPermission),
     if (includeSmartTvHomeTools)
       ...buildSmartTvHomeTools(defaultPermission: defaultPermission),
+    if (includeSymbioticCopilotTools)
+      ...buildSymbioticCopilotTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -1816,6 +1825,228 @@ List<ToolDescriptor> buildSmartTvHomeTools({
         family: ToolFamily.app,
         risk: RiskTier.r2,
         observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Allowed microphone/meeting actions for `meeting.control` (`UDC-15` S15.2).
+const Set<String> allowedMeetingActions = <String>{
+  'mute_mic',
+  'unmute_mic',
+  'toggle_mic',
+};
+
+/// Default localhost development ports inspected by `dev.ports` (`UDC-15` S15.3).
+const List<int> defaultAllowedDevPorts = <int>[
+  3000,
+  4200,
+  5000,
+  5173,
+  5174,
+  8000,
+  8080,
+  8888,
+];
+
+/// Builds the 5 `UDC-15` Live Symbiotic Co-Pilot tool descriptors (`S15.1`–`S15.4`):
+/// - `clipboard.write` (`R2`, `reversible: false`, family `app`)
+/// - `meeting.status` (`R1`, `observes: true`, family `media`)
+/// - `meeting.control` (`R1`, `reversible: true`, family `media`)
+/// - `dev.ports` (`R1`, `observes: true`, family `app`)
+/// - `system.vitals` (`R1`, `observes: true`, family `host`)
+List<ToolDescriptor> buildSymbioticCopilotTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'clipboard.write',
+      description:
+          'Copy generated text, code snippet, or translated reply directly into the host OS clipboard (secret-redacted, zero content logging).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'text': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 4000,
+          },
+          'label': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+        },
+        'required': <String>['text'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'written': <String, Object?>{'type': 'boolean'},
+          'charCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'redactedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+        },
+        'required': <String>['written', 'charCount', 'redactedCount'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'meeting.status',
+      description:
+          'Check active video/voice conferencing session (Zoom, Teams, Meet, Discord, FaceTime) and microphone mute state.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{},
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'inMeeting': <String, Object?>{'type': 'boolean'},
+          'app': <String, Object?>{'type': 'string', 'maxLength': 40},
+          'micMuted': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['inMeeting', 'app', 'micMuted'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.media,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'meeting.control',
+      description:
+          'Mute, unmute, or toggle the host microphone during a meeting or call.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['mute_mic', 'unmute_mic', 'toggle_mic'],
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'micMuted': <String, Object?>{'type': 'boolean'},
+          'app': <String, Object?>{'type': 'string', 'maxLength': 40},
+        },
+        'required': <String>['action', 'micMuted', 'app'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.media,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'dev.ports',
+      description:
+          'Inspect active localhost development server ports (3000, 4200, 5000, 5173, 8000, 8080, 8888) and LAN preview URLs.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'ports': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'integer',
+              'minimum': 1024,
+              'maximum': 65535,
+            },
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'lanIp': <String, Object?>{'type': 'string', 'maxLength': 45},
+          'activePorts': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'port': <String, Object?>{'type': 'integer'},
+                'process': <String, Object?>{'type': 'string', 'maxLength': 48},
+                'url': <String, Object?>{'type': 'string', 'maxLength': 120},
+              },
+              'required': <String>['port', 'process', 'url'],
+              'additionalProperties': false,
+            },
+          },
+        },
+        'required': <String>['lanIp', 'activePorts'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'system.vitals',
+      description:
+          'Read host battery percentage, charging state, memory usage, free disk space, and thermal health.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{},
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'batteryPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+          'isCharging': <String, Object?>{'type': 'boolean'},
+          'memoryUsedPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+          'diskFreeGb': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'thermalState': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'healthStatus': <String, Object?>{'type': 'string', 'maxLength': 32},
+        },
+        'required': <String>[
+          'batteryPercent',
+          'isCharging',
+          'memoryUsedPercent',
+          'diskFreeGb',
+          'thermalState',
+          'healthStatus',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.host,
+        risk: RiskTier.r1,
+        observes: true,
         reversible: true,
         permission: defaultPermission,
       ),

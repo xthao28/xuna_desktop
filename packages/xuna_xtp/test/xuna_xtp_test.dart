@@ -1456,5 +1456,136 @@ void main() {
       expect(lightApproved.allowed, isTrue);
       expect(lightApproved.effectiveRisk, equals(RiskTier.r2));
     });
+
+    test(
+        'evaluates UDC-15 S15.1–S15.4 Symbiotic Co-Pilot tools (clipboard.write, meeting.status/control, dev.ports, system.vitals)',
+        () {
+      const symPolicyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {
+    "media": "allow",
+    "app": "allow",
+    "url": "allow",
+    "workflow": "allow"
+  },
+  "apps": [],
+  "urlDomains": ["github.com"],
+  "workflows": [],
+  "players": ["spotify"]
+}
+''';
+      final evaluator = HostPolicyEvaluator.fromJsonString(symPolicyJson);
+      final now = DateTime.utc(2026, 10, 31, 16, 15, 0);
+
+      final symTools = buildSymbioticCopilotTools();
+      expect(symTools, hasLength(5));
+      expect(
+        symTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'clipboard.write',
+          'meeting.status',
+          'meeting.control',
+          'dev.ports',
+          'system.vitals',
+        ]),
+      );
+
+      final fullCatalog = buildMvpToolCatalog(
+        includeBrowserCurrentUrl: true,
+        includeDevWorkspaceTools: true,
+        includeDeskCopilotTools: true,
+        includeAmbientCopilotTools: true,
+        includeSmartTvHomeTools: true,
+        includeSymbioticCopilotTools: true,
+      );
+      expect(fullCatalog, hasLength(38));
+
+      // S15.1: clipboard.write requires R2 approval and safe text
+      const clipArgs = <String, Object?>{
+        'text': 'lsof -i :8000',
+        'label': 'Lệnh kiểm tra cổng 8000',
+      };
+      final clipNoApproval = evaluator.evaluateInvocation(
+        toolName: 'clipboard.write',
+        arguments: clipArgs,
+        nowUtc: now,
+      );
+      expect(clipNoApproval.allowed, isFalse);
+      expect(clipNoApproval.errorCode, equals('approval_required'));
+
+      final clipApproved = evaluator.evaluateInvocation(
+        toolName: 'clipboard.write',
+        arguments: clipArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c77',
+          argsSha256: argsSha256(clipArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(clipApproved.allowed, isTrue);
+      expect(clipApproved.effectiveRisk, equals(RiskTier.r2));
+
+      // S15.2: meeting.status & meeting.control (R1)
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'meeting.status',
+              arguments: const <String, Object?>{},
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'meeting.control',
+              arguments: const <String, Object?>{'action': 'mute_mic'},
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+
+      // S15.3: dev.ports (R1, bounded port range 1024..65535)
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'dev.ports',
+              arguments: const <String, Object?>{
+                'ports': <int>[3000, 5173, 8000],
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'dev.ports',
+              arguments: const <String, Object?>{
+                'ports': <int>[22],
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isFalse,
+      );
+
+      // S15.4: system.vitals (R1)
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'system.vitals',
+              arguments: const <String, Object?>{},
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+    });
   });
 }
