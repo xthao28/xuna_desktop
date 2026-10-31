@@ -3012,14 +3012,26 @@ void main() {
           expect(find.textContaining('Repo XUNA'), findsOneWidget);
           expect(find.text('[process] cargo'), findsOneWidget);
 
+          await tester.ensureVisible(find.text('Đóng băng nhanh'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Đóng băng nhanh'));
+          await tester.pump();
+          expect(agentController.workspaceCapsules, hasLength(2));
+
+          await tester.ensureVisible(find.text('Thêm ghi chú'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Thêm ghi chú'));
+          await tester.pump();
+          expect(agentController.pocketItems, hasLength(2));
+
           await tester.ensureVisible(find.text('Xóa tất cả'));
+          await tester.pumpAndSettle();
           await tester.tap(find.text('Xóa tất cả'));
           await tester.pump();
           expect(agentController.activeWatchdogs, isEmpty);
 
           agentController.onClose();
           await tester.runAsync(() => sessionClient.dispose());
-          await tester.runAsync(() => fakeWs.inbound.close());
         },
       );
     },

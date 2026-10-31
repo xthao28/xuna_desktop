@@ -81,6 +81,7 @@ Future<void> main() async {
       stopController: stopController,
       sessionClient: sessionClient,
       lanServer: lanServer,
+      symbioticService: dispatcher.symbioticService,
       logger: logger,
     ),
   );

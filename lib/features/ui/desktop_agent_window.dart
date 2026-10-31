@@ -508,9 +508,19 @@ class DesktopAgentWindow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Hộp thời gian dự án (${capsules.length})',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Hộp thời gian dự án (${capsules.length})',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      OutlinedButton(
+                        onPressed: () =>
+                            controller.captureQuickWorkspaceCapsule(),
+                        child: const Text('Đóng băng nhanh'),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 6),
                   if (capsules.isEmpty)
@@ -537,9 +547,21 @@ class DesktopAgentWindow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    'Túi đồ xuyên thiết bị (${items.length})',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Túi đồ xuyên thiết bị (${items.length})',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => controller.pushQuickPocketSnippet(
+                          'TODO: Kiểm tra luồng Cộng sinh giữa Desktop và Mobile',
+                          label: 'Ghi chú nhanh',
+                        ),
+                        child: const Text('Thêm ghi chú'),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 6),
                   if (items.isEmpty)

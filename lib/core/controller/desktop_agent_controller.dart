@@ -207,6 +207,38 @@ class DesktopAgentController extends GetxController {
     refreshSymbioticState();
   }
 
+  /// Captures a quick Workspace Time-Capsule from the Desktop UI (`SYM-LIVE` S-LIVE.2).
+  WorkspaceCapsuleEntry? captureQuickWorkspaceCapsule({
+    String project = 'xuna_pet',
+    String branch = 'dev',
+    int dirtyCount = 0,
+    String? nextStepHint,
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final entry = svc.captureWorkspaceCapsule(
+      project: project,
+      branch: branch,
+      dirtyCount: dirtyCount,
+      nextStepHint: nextStepHint,
+    );
+    refreshSymbioticState();
+    return entry;
+  }
+
+  /// Pushes a quick snippet into XUNA Universal Pocket from the Desktop UI (`SYM-LIVE` S-LIVE.2).
+  UniversalPocketItem? pushQuickPocketSnippet(String rawText, {String? label}) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final item = svc.pushPocketItem(
+      rawText: rawText,
+      label: label,
+      sourceDevice: 'desktop_ui',
+    );
+    refreshSymbioticState();
+    return item;
+  }
+
   Future<void> reloadPolicy() async {
     await policyStore.reload();
   }
