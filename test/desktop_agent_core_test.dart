@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(38));
+        expect(toolsList, hasLength(44));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -2666,6 +2666,165 @@ void main() {
             expect(line, isNot(contains('npm run dev')));
             expect(line, isNot(contains('192.168.1.42')));
           }
+        },
+      );
+    },
+  );
+
+  group(
+    'SYM-1 S1.1: Time-Travel Workspace Capsules (workspace.capture/restore/list_capsules) & Universal Pocket (pocket.push/list/transform_item)',
+    () {
+      test(
+        'freezes and rehydrates workspace capsules, classifies and redacts Universal Pocket items, and transforms JSON/tasks/facts without logging secrets',
+        () async {
+          await policyStore.savePolicy(_sampleHealthyPolicy());
+          final symbioticService = AutoSymbioticService();
+          final sym1Dispatcher = HostToolDispatcher(
+            policyStore: policyStore,
+            channel: channel,
+            auditStore: auditStore,
+            stopController: stopController,
+            logger: logger,
+            enrollmentStore: enrollmentStore,
+            symbioticService: symbioticService,
+          );
+          addTearDown(sym1Dispatcher.dispose);
+
+          final now = DateTime.utc(2026, 10, 31, 17, 15);
+
+          // 1. Capture a Time-Travel Workspace Capsule (R1) with secret redaction
+          final capResp = await sym1Dispatcher.dispatch(
+            requestId: 1201,
+            params: const ToolsCallParams(
+              name: 'workspace.capture_capsule',
+              arguments: <String, Object?>{
+                'project': 'xuna_pet',
+                'nextStepHint':
+                    'Sửa hàm verifyProof ở dòng 142 (key=sk-proj-secret1234567890abcdef)',
+              },
+              invocationId: '12010000-0000-4000-8000-000000000001',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final capSc =
+              capResp.result['structuredContent'] as Map<String, Object?>;
+          expect(capSc['project'], equals('xuna_pet'));
+          expect(capSc['capsuleId'], equals('cap-xuna_pet-1'));
+          expect(capSc['nextStepHint'] as String, contains('[REDACTED]'));
+          expect(
+            capSc['nextStepHint'] as String,
+            isNot(contains('sk-proj-secret')),
+          );
+
+          // 2. List saved capsules (R1)
+          final listCapResp = await sym1Dispatcher.dispatch(
+            requestId: 1202,
+            params: const ToolsCallParams(
+              name: 'workspace.list_capsules',
+              arguments: <String, Object?>{'limit': 5},
+              invocationId: '12020000-0000-4000-8000-000000000002',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final capsules = (listCapResp.result['structuredContent']
+              as Map<String, Object?>)['capsules'] as List<Object?>;
+          expect(capsules, hasLength(1));
+
+          // 3. Rehydrate workspace capsule (R2)
+          const restoreArgs = <String, Object?>{
+            'capsuleId': 'cap-xuna_pet-1',
+            'ide': 'antigravity',
+          };
+          final restoreResp = await sym1Dispatcher.dispatch(
+            requestId: 1203,
+            params: ToolsCallParams(
+              name: 'workspace.restore_capsule',
+              arguments: restoreArgs,
+              invocationId: '12030000-0000-4000-8000-000000000003',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '12030000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(restoreArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final restoreSc =
+              restoreResp.result['structuredContent'] as Map<String, Object?>;
+          expect(restoreSc['restored'], isTrue);
+          expect(restoreSc['project'], equals('xuna_pet'));
+          expect(
+            restoreSc['briefingVi'] as String,
+            contains('Đã rã đông dự án xuna_pet'),
+          );
+
+          // 4. Push items into Universal Pocket (R1) with auto-classification
+          final pushJsonResp = await sym1Dispatcher.dispatch(
+            requestId: 1204,
+            params: const ToolsCallParams(
+              name: 'pocket.push_item',
+              arguments: <String, Object?>{
+                'text': '{"service":"xuna","port":8000}',
+                'sourceDevice': 'phone',
+              },
+              invocationId: '12040000-0000-4000-8000-000000000004',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final pushSc =
+              pushJsonResp.result['structuredContent'] as Map<String, Object?>;
+          expect(pushSc['itemId'], equals('pkt-1'));
+          expect(pushSc['kind'], equals('json'));
+          expect(
+            pushSc['suggestedActions'] as List<Object?>,
+            contains('format_json'),
+          );
+
+          // 5. Transform Universal Pocket item (format_json & extract_tasks)
+          final fmtResp = await sym1Dispatcher.dispatch(
+            requestId: 1205,
+            params: const ToolsCallParams(
+              name: 'pocket.transform_item',
+              arguments: <String, Object?>{
+                'itemId': 'pkt-1',
+                'mode': 'format_json',
+              },
+              invocationId: '12050000-0000-4000-8000-000000000005',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final fmtSc =
+              fmtResp.result['structuredContent'] as Map<String, Object?>;
+          expect(
+            fmtSc['transformedText'] as String,
+            contains('  "service": "xuna"'),
+          );
+
+          final taskResp = await sym1Dispatcher.dispatch(
+            requestId: 1206,
+            params: const ToolsCallParams(
+              name: 'pocket.transform_item',
+              arguments: <String, Object?>{
+                'text': 'Kiểm tra BLE; Chạy pytest backend; Đóng gói bản build',
+                'mode': 'extract_tasks',
+              },
+              invocationId: '12060000-0000-4000-8000-000000000006',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final taskSc =
+              taskResp.result['structuredContent'] as Map<String, Object?>;
+          expect(taskSc['itemCount'], equals(3));
+          expect(
+            taskSc['transformedText'] as String,
+            contains('- [ ] Kiểm tra BLE'),
+          );
         },
       );
     },

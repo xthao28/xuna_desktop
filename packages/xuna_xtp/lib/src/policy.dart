@@ -435,6 +435,7 @@ class HostPolicyEvaluator {
                         prefix == 'smarthome' ||
                         prefix == 'clipboard' ||
                         prefix == 'dev' ||
+                        prefix == 'pocket' ||
                         toolName == 'tv.launch_app')
                     ? ToolFamily.app
                     : ToolFamily.fromWire(prefix);
@@ -886,6 +887,132 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r2;
+      case 'workspace.capture_capsule':
+        final proj = arguments['project'];
+        final nextStepHint = arguments['nextStepHint'];
+        const allowedCaptureKeys = <String>{'project', 'nextStepHint'};
+        if (arguments.keys.any((k) => !allowedCaptureKeys.contains(k)) ||
+            (proj != null &&
+                (proj is! String || !isValidWorkspaceQuery(proj))) ||
+            (nextStepHint != null &&
+                (nextStepHint is! String ||
+                    nextStepHint.length > 240 ||
+                    !isSafeAgentPrompt(nextStepHint)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'workspace.restore_capsule':
+        final capsuleId = arguments['capsuleId'];
+        final proj = arguments['project'];
+        final ide = arguments['ide'];
+        const allowedRestoreKeys = <String>{'capsuleId', 'project', 'ide'};
+        final hasCapsuleId = capsuleId is String && isValidShortId(capsuleId);
+        final hasProj = proj is String && isValidWorkspaceQuery(proj);
+        if (arguments.keys.any((k) => !allowedRestoreKeys.contains(k)) ||
+            (!hasCapsuleId && !hasProj) ||
+            (capsuleId != null && !hasCapsuleId) ||
+            (proj != null && !hasProj) ||
+            (ide != null &&
+                (ide is! String || !supportedWorkspaceIdes.contains(ide)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'workspace.list_capsules':
+        final limit = arguments['limit'];
+        if (arguments.keys.any((k) => k != 'limit') ||
+            (limit != null && (limit is! int || limit < 1 || limit > 20))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'pocket.push_item':
+        final text = arguments['text'];
+        final label = arguments['label'];
+        final kind = arguments['kind'];
+        final sourceDevice = arguments['sourceDevice'];
+        const allowedPocketPushKeys = <String>{
+          'text',
+          'label',
+          'kind',
+          'sourceDevice',
+        };
+        if (arguments.keys.any((k) => !allowedPocketPushKeys.contains(k)) ||
+            text is! String ||
+            !isSafeClipboardWriteText(text) ||
+            (label != null &&
+                (label is! String ||
+                    label.length > 80 ||
+                    !isSafeAgentPrompt(label))) ||
+            (kind != null &&
+                (kind is! String || !allowedPocketItemKinds.contains(kind))) ||
+            (sourceDevice != null &&
+                (sourceDevice is! String ||
+                    sourceDevice.length > 40 ||
+                    !isSafeAgentPrompt(sourceDevice)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'pocket.list_items':
+        final kind = arguments['kind'];
+        final query = arguments['query'];
+        final limit = arguments['limit'];
+        const allowedPocketListKeys = <String>{'kind', 'query', 'limit'};
+        if (arguments.keys.any((k) => !allowedPocketListKeys.contains(k)) ||
+            (kind != null &&
+                (kind is! String || !allowedPocketItemKinds.contains(kind))) ||
+            (query != null &&
+                (query is! String ||
+                    query.length > 80 ||
+                    !isSafeAgentPrompt(query))) ||
+            (limit != null && (limit is! int || limit < 1 || limit > 20))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'pocket.transform_item':
+        final itemId = arguments['itemId'];
+        final text = arguments['text'];
+        final mode = arguments['mode'];
+        const allowedTransformKeys = <String>{'itemId', 'text', 'mode'};
+        final hasItemId = itemId is String && isValidShortId(itemId);
+        final hasText = text is String && isSafeClipboardWriteText(text);
+        if (arguments.keys.any((k) => !allowedTransformKeys.contains(k)) ||
+            mode is! String ||
+            !allowedPocketTransformModes.contains(mode) ||
+            (!hasItemId && !hasText) ||
+            (itemId != null && !hasItemId) ||
+            (text != null && !hasText)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
       case 'workspace.coding_agent':
         final proj = arguments['project'];
         final agent = arguments['agent'];

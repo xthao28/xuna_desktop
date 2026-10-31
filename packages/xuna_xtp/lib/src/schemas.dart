@@ -372,6 +372,7 @@ class ToolDescriptor {
                         prefix == 'smarthome' ||
                         prefix == 'clipboard' ||
                         prefix == 'dev' ||
+                        prefix == 'pocket' ||
                         name == 'tv.launch_app')
                     ? ToolFamily.app
                     : ToolFamily.fromWire(prefix);
@@ -498,6 +499,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeAmbientCopilotTools = false,
   bool includeSmartTvHomeTools = false,
   bool includeSymbioticCopilotTools = false,
+  bool includeSymbioticEvolutionTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -824,6 +826,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildSmartTvHomeTools(defaultPermission: defaultPermission),
     if (includeSymbioticCopilotTools)
       ...buildSymbioticCopilotTools(defaultPermission: defaultPermission),
+    if (includeSymbioticEvolutionTools)
+      ...buildSymbioticEvolutionTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -2047,6 +2051,397 @@ List<ToolDescriptor> buildSymbioticCopilotTools({
         family: ToolFamily.host,
         risk: RiskTier.r1,
         observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Allowed item kinds for `pocket.push_item` and `pocket.list_items` (`SYM-1` S1.1).
+const Set<String> allowedPocketItemKinds = <String>{
+  'auto',
+  'text',
+  'url',
+  'json',
+  'code',
+  'command',
+  'schedule_note',
+};
+
+/// Allowed transformation modes for `pocket.transform_item` (`SYM-1` S1.1).
+const Set<String> allowedPocketTransformModes = <String>{
+  'format_json',
+  'extract_tasks',
+  'summarize_snippet',
+  'prepare_knowledge_fact',
+};
+
+/// Builds the 6 `SYM-1` Time-Travel Workspace & Universal Pocket tool descriptors (`S1.1`):
+/// - `workspace.capture_capsule` (`R1`, `observes: true`, family `app`)
+/// - `workspace.restore_capsule` (`R2`, `reversible: true`, family `app`)
+/// - `workspace.list_capsules` (`R1`, `observes: true`, family `app`)
+/// - `pocket.push_item` (`R1`, `reversible: true`, family `app`)
+/// - `pocket.list_items` (`R1`, `observes: true`, family `app`)
+/// - `pocket.transform_item` (`R1`, `reversible: true`, family `app`)
+List<ToolDescriptor> buildSymbioticEvolutionTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'workspace.capture_capsule',
+      description:
+          'Freeze the active project workspace context (Git branch, modified files, open windows, and next-step hint) into a Time-Travel Capsule.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'project': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 80,
+          },
+          'nextStepHint': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'capsuleId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'project': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'branch': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'dirtyCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'nextStepHint': <String, Object?>{'type': 'string', 'maxLength': 240},
+          'createdAt': <String, Object?>{'type': 'string', 'maxLength': 40},
+        },
+        'required': <String>[
+          'capsuleId',
+          'project',
+          'branch',
+          'dirtyCount',
+          'nextStepHint',
+          'createdAt',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'workspace.restore_capsule',
+      description:
+          'Rehydrate a frozen Time-Travel Workspace Capsule by capsuleId or project name and surface the 15-second context briefing.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'capsuleId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'project': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 80,
+          },
+          'ide': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['auto', 'antigravity', 'vscode', 'cursor'],
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'restored': <String, Object?>{'type': 'boolean'},
+          'capsuleId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'project': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'branch': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'nextStepHint': <String, Object?>{'type': 'string', 'maxLength': 240},
+          'briefingVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'restored',
+          'capsuleId',
+          'project',
+          'branch',
+          'nextStepHint',
+          'briefingVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'workspace.list_capsules',
+      description:
+          'List saved Time-Travel Workspace Capsules sorted from newest to oldest.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'limit': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 20,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'capsules': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'capsuleId': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 64,
+                },
+                'project': <String, Object?>{'type': 'string', 'maxLength': 80},
+                'branch': <String, Object?>{'type': 'string', 'maxLength': 80},
+                'dirtyCount': <String, Object?>{
+                  'type': 'integer',
+                  'minimum': 0,
+                },
+                'nextStepHint': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 240,
+                },
+                'createdAt': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 40,
+                },
+              },
+              'required': <String>[
+                'capsuleId',
+                'project',
+                'branch',
+                'dirtyCount',
+                'nextStepHint',
+                'createdAt',
+              ],
+              'additionalProperties': false,
+            },
+          },
+        },
+        'required': <String>['capsules'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'pocket.push_item',
+      description:
+          'Save a secret-redacted snippet, URL, JSON, command, or note into XUNA Universal Pocket with automatic kind classification.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'text': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 4000,
+          },
+          'label': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+          'kind': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'auto',
+              'text',
+              'url',
+              'json',
+              'code',
+              'command',
+              'schedule_note',
+            ],
+          },
+          'sourceDevice': <String, Object?>{
+            'type': 'string',
+            'maxLength': 40,
+          },
+        },
+        'required': <String>['text'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'itemId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'kind': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'label': <String, Object?>{'type': 'string', 'maxLength': 80},
+          'preview': <String, Object?>{'type': 'string', 'maxLength': 200},
+          'redactedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'suggestedActions': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 48},
+          },
+        },
+        'required': <String>[
+          'itemId',
+          'kind',
+          'label',
+          'preview',
+          'redactedCount',
+          'suggestedActions',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'pocket.list_items',
+      description:
+          'List recent items stored in XUNA Universal Pocket across devices with optional kind or keyword filtering.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'kind': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'auto',
+              'text',
+              'url',
+              'json',
+              'code',
+              'command',
+              'schedule_note',
+            ],
+          },
+          'query': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+          'limit': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 20,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'items': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'itemId': <String, Object?>{'type': 'string', 'maxLength': 64},
+                'kind': <String, Object?>{'type': 'string', 'maxLength': 32},
+                'label': <String, Object?>{'type': 'string', 'maxLength': 80},
+                'preview': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 200,
+                },
+                'sourceDevice': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 40,
+                },
+                'createdAt': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 40,
+                },
+              },
+              'required': <String>[
+                'itemId',
+                'kind',
+                'label',
+                'preview',
+                'sourceDevice',
+                'createdAt',
+              ],
+              'additionalProperties': false,
+            },
+          },
+        },
+        'required': <String>['items'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'pocket.transform_item',
+      description:
+          'Transform a Universal Pocket item or snippet into formatted JSON, extracted tasks, a concise summary, or a Knowledge Domain fact.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'itemId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'text': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'mode': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'format_json',
+              'extract_tasks',
+              'summarize_snippet',
+              'prepare_knowledge_fact',
+            ],
+          },
+        },
+        'required': <String>['mode'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'transformedText': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'itemCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+        },
+        'required': <String>['mode', 'transformedText', 'itemCount'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
         reversible: true,
         permission: defaultPermission,
       ),

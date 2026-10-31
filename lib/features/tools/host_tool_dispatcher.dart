@@ -1376,6 +1376,208 @@ class SystemVitalsTool extends HostToolHandler {
   }
 }
 
+class WorkspaceCaptureCapsuleTool extends HostToolHandler {
+  const WorkspaceCaptureCapsuleTool();
+
+  @override
+  String get name => 'workspace.capture_capsule';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final projectQuery = (context.arguments['project'] as String?) ?? 'recent';
+    final nextStepHint = context.arguments['nextStepHint'] as String?;
+    final ws = context.workspaceIndexer.resolveWorkspace(projectQuery);
+    var resolvedProject = projectQuery;
+    var branch = 'main';
+    var dirtyCount = 0;
+    if (ws != null) {
+      resolvedProject = ws.alias;
+      try {
+        final summary = await context.workspaceIndexer.readGitSummary(ws);
+        branch = summary.branch;
+        dirtyCount = summary.modifiedCount + summary.untrackedCount;
+      } catch (_) {
+        // Fallback if Git CLI is unavailable
+      }
+    }
+    final capsule = context.symbioticService.captureWorkspaceCapsule(
+      project: resolvedProject,
+      branch: branch,
+      dirtyCount: dirtyCount,
+      nextStepHint: nextStepHint,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text:
+          'Đã đóng băng mạch làm việc ${capsule.project} (nhánh ${capsule.branch}, ${capsule.dirtyCount} tệp đang sửa).',
+      structuredContent: capsule.toWireJson(),
+      toastBody: 'đã đóng băng mạch làm việc ${capsule.project}',
+    );
+  }
+}
+
+class WorkspaceRestoreCapsuleTool extends HostToolHandler {
+  const WorkspaceRestoreCapsuleTool();
+
+  @override
+  String get name => 'workspace.restore_capsule';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final capsuleId = context.arguments['capsuleId'] as String?;
+    final projectQuery = context.arguments['project'] as String?;
+    final ide = (context.arguments['ide'] as String?) ?? 'auto';
+    final capsule = context.symbioticService.findWorkspaceCapsule(
+      capsuleId: capsuleId,
+      project: projectQuery,
+    );
+    if (capsule == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'capsule_not_found',
+      );
+    }
+    final ws = context.workspaceIndexer.resolveWorkspace(capsule.project);
+    if (ws != null) {
+      final resolvedIde = context.appScanner.resolveCodingAgent(
+            ide == 'auto' ? 'antigravity' : ide,
+          ) ??
+          context.appScanner.resolveCodingAgent('auto');
+      if (resolvedIde != null) {
+        await context.workspaceIndexer.launchCodingAgent(
+          workspace: ws,
+          agent: resolvedIde.agent,
+          executable: resolvedIde.executable,
+          resumeLast: true,
+        );
+      }
+    }
+    final briefingVi =
+        'Đã rã đông dự án ${capsule.project} (nhánh ${capsule.branch}). Việc tiếp theo: ${capsule.nextStepHint}';
+    return ToolHandlerOutput(
+      text: briefingVi,
+      structuredContent: <String, Object?>{
+        'restored': true,
+        'capsuleId': capsule.capsuleId,
+        'project': capsule.project,
+        'branch': capsule.branch,
+        'nextStepHint': capsule.nextStepHint,
+        'briefingVi': briefingVi,
+      },
+      toastBody: 'đã khôi phục mạch làm việc ${capsule.project}',
+    );
+  }
+}
+
+class WorkspaceListCapsulesTool extends HostToolHandler {
+  const WorkspaceListCapsulesTool();
+
+  @override
+  String get name => 'workspace.list_capsules';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final limit = (context.arguments['limit'] as int?) ?? 10;
+    final list = context.symbioticService.listWorkspaceCapsules(limit: limit);
+    return ToolHandlerOutput(
+      text: list.isEmpty
+          ? 'Chưa có mạch làm việc nào được đóng băng.'
+          : 'Đang lưu ${list.length} mạch làm việc trong bộ nhớ Time-Travel.',
+      structuredContent: <String, Object?>{
+        'capsules': list.map((e) => e.toWireJson()).toList(growable: false),
+      },
+    );
+  }
+}
+
+class PocketPushItemTool extends HostToolHandler {
+  const PocketPushItemTool();
+
+  @override
+  String get name => 'pocket.push_item';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawText = context.arguments['text'] as String;
+    final label = context.arguments['label'] as String?;
+    final kind = context.arguments['kind'] as String?;
+    final sourceDevice = context.arguments['sourceDevice'] as String?;
+    final item = context.symbioticService.pushPocketItem(
+      rawText: rawText,
+      label: label,
+      kind: kind,
+      sourceDevice: sourceDevice,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã cất vào Túi đồ XUNA (${item.kind}: ${item.label}).',
+      structuredContent: <String, Object?>{
+        'itemId': item.itemId,
+        'kind': item.kind,
+        'label': item.label,
+        'preview': item.preview,
+        'redactedCount': item.redactedCount,
+        'suggestedActions': item.suggestedActions,
+      },
+      toastBody: 'đã lưu vào Túi đồ XUNA',
+    );
+  }
+}
+
+class PocketListItemsTool extends HostToolHandler {
+  const PocketListItemsTool();
+
+  @override
+  String get name => 'pocket.list_items';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final kind = context.arguments['kind'] as String?;
+    final query = context.arguments['query'] as String?;
+    final limit = (context.arguments['limit'] as int?) ?? 10;
+    final items = context.symbioticService.listPocketItems(
+      kind: kind,
+      query: query,
+      limit: limit,
+    );
+    return ToolHandlerOutput(
+      text: items.isEmpty
+          ? 'Túi đồ XUNA hiện đang trống.'
+          : 'Tìm thấy ${items.length} mục trong Túi đồ XUNA.',
+      structuredContent: <String, Object?>{
+        'items': items.map((e) => e.toWireListJson()).toList(growable: false),
+      },
+    );
+  }
+}
+
+class PocketTransformItemTool extends HostToolHandler {
+  const PocketTransformItemTool();
+
+  @override
+  String get name => 'pocket.transform_item';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final itemId = context.arguments['itemId'] as String?;
+    final rawText = context.arguments['text'] as String?;
+    final mode = context.arguments['mode'] as String;
+    final res = context.symbioticService.transformPocketItem(
+      itemId: itemId,
+      rawText: rawText,
+      mode: mode,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã biến đổi nội dung theo chế độ ${res.mode} (${res.itemCount} mục).',
+      structuredContent: <String, Object?>{
+        'mode': res.mode,
+        'transformedText': res.transformedText,
+        'itemCount': res.itemCount,
+      },
+    );
+  }
+}
+
 /// Registry and dispatcher for all MVP, Dev Workspace, Desk Co-Pilot, Ambient Co-Pilot, Smart TV/Home, and Symbiotic Co-Pilot tools (`UDC-3` §5.6.5, `UDC-11`..`UDC-15`).
 class HostToolDispatcher {
   HostToolDispatcher({
@@ -1445,6 +1647,12 @@ class HostToolDispatcher {
           const MeetingControlTool(),
           const DevPortsTool(),
           const SystemVitalsTool(),
+          const WorkspaceCaptureCapsuleTool(),
+          const WorkspaceRestoreCapsuleTool(),
+          const WorkspaceListCapsulesTool(),
+          const PocketPushItemTool(),
+          const PocketListItemsTool(),
+          const PocketTransformItemTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -1495,6 +1703,7 @@ class HostToolDispatcher {
       includeAmbientCopilotTools: true,
       includeSmartTvHomeTools: true,
       includeSymbioticCopilotTools: true,
+      includeSymbioticEvolutionTools: true,
     );
     if (computerUseManager == null) {
       return mvp;

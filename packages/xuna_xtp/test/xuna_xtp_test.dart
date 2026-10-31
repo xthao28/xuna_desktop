@@ -1587,5 +1587,147 @@ void main() {
         isTrue,
       );
     });
+
+    test(
+        'evaluates SYM-1 S1.1 Time-Travel Workspace & Universal Pocket tools (workspace.capture/restore/list_capsules, pocket.push/list/transform_item)',
+        () {
+      const symPolicyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {
+    "media": "allow",
+    "app": "allow",
+    "url": "allow",
+    "workflow": "allow"
+  },
+  "apps": [],
+  "urlDomains": ["github.com"],
+  "workflows": [],
+  "players": ["spotify"]
+}
+''';
+      final evaluator = HostPolicyEvaluator.fromJsonString(symPolicyJson);
+      final now = DateTime.utc(2026, 10, 31, 17, 15, 0);
+
+      final symEvoTools = buildSymbioticEvolutionTools();
+      expect(symEvoTools, hasLength(6));
+      expect(
+        symEvoTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'workspace.capture_capsule',
+          'workspace.restore_capsule',
+          'workspace.list_capsules',
+          'pocket.push_item',
+          'pocket.list_items',
+          'pocket.transform_item',
+        ]),
+      );
+
+      final fullCatalog = buildMvpToolCatalog(
+        includeBrowserCurrentUrl: true,
+        includeDevWorkspaceTools: true,
+        includeDeskCopilotTools: true,
+        includeAmbientCopilotTools: true,
+        includeSmartTvHomeTools: true,
+        includeSymbioticCopilotTools: true,
+        includeSymbioticEvolutionTools: true,
+      );
+      expect(fullCatalog, hasLength(44));
+
+      // R1 workspace.capture_capsule & workspace.list_capsules
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'workspace.capture_capsule',
+              arguments: const <String, Object?>{
+                'project': 'xuna_pet',
+                'nextStepHint': 'Kiểm tra hàm verifyProof ở dòng 142',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'workspace.list_capsules',
+              arguments: const <String, Object?>{'limit': 5},
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+
+      // R2 workspace.restore_capsule requires approval bound to argsSha256
+      const restoreArgs = <String, Object?>{
+        'capsuleId': 'cap-xuna-pet-01',
+        'project': 'xuna_pet',
+        'ide': 'antigravity',
+      };
+      final restoreNoApproval = evaluator.evaluateInvocation(
+        toolName: 'workspace.restore_capsule',
+        arguments: restoreArgs,
+        nowUtc: now,
+      );
+      expect(restoreNoApproval.allowed, isFalse);
+      expect(restoreNoApproval.errorCode, equals('approval_required'));
+
+      final restoreApproved = evaluator.evaluateInvocation(
+        toolName: 'workspace.restore_capsule',
+        arguments: restoreArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c88',
+          argsSha256: argsSha256(restoreArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(restoreApproved.allowed, isTrue);
+      expect(restoreApproved.effectiveRisk, equals(RiskTier.r2));
+
+      // R1 pocket.push_item, pocket.list_items, pocket.transform_item
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'pocket.push_item',
+              arguments: const <String, Object?>{
+                'text': '{"port": 8000, "status": "healthy"}',
+                'label': 'Cấu hình cổng backend',
+                'kind': 'json',
+                'sourceDevice': 'phone',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'pocket.list_items',
+              arguments: const <String, Object?>{
+                'kind': 'json',
+                'limit': 10,
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'pocket.transform_item',
+              arguments: const <String, Object?>{
+                'itemId': 'pkt-01',
+                'mode': 'format_json',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+    });
   });
 }
