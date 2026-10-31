@@ -1154,6 +1154,181 @@ void main() {
       );
       expect(mcpApproved.allowed, isTrue);
       expect(mcpApproved.effectiveRisk, equals(RiskTier.r2));
+
+      // UDC-13 S13.1-S13.5: Ambient Co-Pilot & Beam tools
+      final ambientTools = buildAmbientCopilotTools();
+      expect(
+        ambientTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'window.active_context',
+          'browser.read_page',
+          'beam.transfer',
+          'workflow.batch_steps',
+          'action.undo',
+        ]),
+      );
+
+      // S13.1: window.active_context (R1, observes: true)
+      final winCtxOk = evaluator.evaluateInvocation(
+        toolName: 'window.active_context',
+        arguments: const <String, Object?>{'maxChars': 600},
+        nowUtc: now,
+      );
+      expect(winCtxOk.allowed, isTrue);
+      expect(winCtxOk.effectiveRisk, equals(RiskTier.r1));
+
+      // S13.2: browser.read_page (R1, observes: true)
+      final readPageOk = evaluator.evaluateInvocation(
+        toolName: 'browser.read_page',
+        arguments: const <String, Object?>{
+          'browser': 'edge',
+          'maxChars': 1400,
+        },
+        nowUtc: now,
+      );
+      expect(readPageOk.allowed, isTrue);
+      expect(readPageOk.effectiveRisk, equals(RiskTier.r1));
+
+      // S13.3: isValidBeamFileName and beam.transfer (R2)
+      expect(isValidBeamFileName('xuna-screenshot-2026.png'), isTrue);
+      expect(isValidBeamFileName('Meeting Notes (v2).pdf'), isTrue);
+      expect(isValidBeamFileName('../secret.txt'), isFalse);
+      expect(isValidBeamFileName('payload.exe'), isFalse);
+      expect(isValidBeamFileName('install.ps1'), isFalse);
+      expect(isValidBeamFileName('malware.dmg'), isFalse);
+      expect(isValidBeamFileName('.env'), isFalse);
+      expect(isValidBeamFileName('CON.txt'), isFalse);
+
+      final beamArgs = <String, Object?>{
+        'direction': 'phone_to_desktop',
+        'kind': 'screenshot',
+        'fileName': 'phone-screen.png',
+        'sizeBytes': 1024,
+        'sha256': 'a' * 64,
+      };
+      final beamNoApproval = evaluator.evaluateInvocation(
+        toolName: 'beam.transfer',
+        arguments: beamArgs,
+        nowUtc: now,
+      );
+      expect(beamNoApproval.allowed, isFalse);
+      expect(beamNoApproval.errorCode, equals('approval_required'));
+
+      final beamApproved = evaluator.evaluateInvocation(
+        toolName: 'beam.transfer',
+        arguments: beamArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c61',
+          argsSha256: argsSha256(beamArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(beamApproved.allowed, isTrue);
+      expect(beamApproved.effectiveRisk, equals(RiskTier.r2));
+
+      final beamExeRejected = evaluator.evaluateInvocation(
+        toolName: 'beam.transfer',
+        arguments: <String, Object?>{
+          ...beamArgs,
+          'fileName': 'dropper.exe',
+        },
+        nowUtc: now,
+      );
+      expect(beamExeRejected.allowed, isFalse);
+      expect(beamExeRejected.status, equals(XtpStatus.invalidArgs));
+
+      // S13.4: workflow.batch_steps pre-validates every step before execution
+      final validBatchArgs = <String, Object?>{
+        'steps': <Map<String, Object?>>[
+          <String, Object?>{
+            'tool': 'display.wake',
+            'arguments': const <String, Object?>{},
+          },
+          <String, Object?>{
+            'tool': 'app.launch',
+            'arguments': const <String, Object?>{'id': 'vscode'},
+          },
+          <String, Object?>{
+            'tool': 'url.open',
+            'arguments': const <String, Object?>{
+              'url': 'https://github.com/xthao28/xuna_pet',
+            },
+          },
+        ],
+      };
+      final batchApproved = evaluator.evaluateInvocation(
+        toolName: 'workflow.batch_steps',
+        arguments: validBatchArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c62',
+          argsSha256: argsSha256(validBatchArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(batchApproved.allowed, isTrue);
+      expect(batchApproved.effectiveRisk, equals(RiskTier.r2));
+
+      // Batch containing a denylisted app or unallowed domain fails pre-validation
+      final badDomainBatchArgs = <String, Object?>{
+        'steps': <Map<String, Object?>>[
+          <String, Object?>{
+            'tool': 'display.wake',
+            'arguments': const <String, Object?>{},
+          },
+          <String, Object?>{
+            'tool': 'url.open',
+            'arguments': const <String, Object?>{
+              'url': 'https://evil.example.com/phish',
+            },
+          },
+        ],
+      };
+      final badDomainBatchRes = evaluator.evaluateInvocation(
+        toolName: 'workflow.batch_steps',
+        arguments: badDomainBatchArgs,
+        approval: ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c63',
+          argsSha256: argsSha256(badDomainBatchArgs),
+          expiresAt: now.add(const Duration(seconds: 60)),
+        ),
+        nowUtc: now,
+      );
+      expect(badDomainBatchRes.allowed, isFalse);
+      expect(badDomainBatchRes.errorCode, equals('domain_not_allowed'));
+
+      // Batch containing an R3 / CU tool is rejected with batch_r3_forbidden
+      final r3BatchArgs = <String, Object?>{
+        'steps': <Map<String, Object?>>[
+          <String, Object?>{
+            'tool': 'cu.session_start',
+            'arguments': const <String, Object?>{
+              'goal': 'test',
+              'apps': <String>['vscode'],
+              'domains': <String>[],
+              'maxSteps': 5,
+              'maxMinutes': 2,
+            },
+          },
+        ],
+      };
+      final r3BatchRes = evaluator.evaluateInvocation(
+        toolName: 'workflow.batch_steps',
+        arguments: r3BatchArgs,
+        nowUtc: now,
+      );
+      expect(r3BatchRes.allowed, isFalse);
+      expect(r3BatchRes.errorCode, equals('batch_r3_forbidden'));
+
+      // S13.5: action.undo (R1)
+      final undoOk = evaluator.evaluateInvocation(
+        toolName: 'action.undo',
+        arguments: const <String, Object?>{},
+        nowUtc: now,
+      );
+      expect(undoOk.allowed, isTrue);
+      expect(undoOk.effectiveRisk, equals(RiskTier.r1));
     });
   });
 }

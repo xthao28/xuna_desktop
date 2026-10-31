@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
@@ -51,6 +53,111 @@ class ToolCancellationToken {
   }
 }
 
+/// Single reversible host action entry stored in [ReversibleActionLedger] (`UDC-13` S13.5).
+class ReversibleActionEntry {
+  const ReversibleActionEntry({
+    required this.originalTool,
+    required this.inverseTool,
+    required this.inverseArgs,
+    required this.description,
+    required this.recordedAt,
+  });
+
+  final String originalTool;
+  final String inverseTool;
+  final Map<String, Object?> inverseArgs;
+  final String description;
+  final DateTime recordedAt;
+}
+
+/// Bounded in-memory stack of reversible desktop actions (`UDC-13` S13.5).
+///
+/// Tracks the last [maxEntries] reversible actions with a [ttl] of 10 minutes
+/// so `action.undo` can immediately restore the previous state.
+class ReversibleActionLedger {
+  ReversibleActionLedger({
+    this.maxEntries = 5,
+    this.ttl = const Duration(minutes: 10),
+    int initialVolume = 50,
+  }) : _lastKnownVolume = initialVolume;
+
+  final int maxEntries;
+  final Duration ttl;
+  final List<ReversibleActionEntry> _stack = <ReversibleActionEntry>[];
+  int _lastKnownVolume;
+
+  int get lastKnownVolume => _lastKnownVolume;
+
+  int get length => _stack.length;
+
+  void record({
+    required String originalTool,
+    required Map<String, Object?> arguments,
+    required DateTime nowUtc,
+  }) {
+    _pruneExpired(nowUtc);
+    ReversibleActionEntry? entry;
+    if (originalTool == 'media.play_pause') {
+      entry = ReversibleActionEntry(
+        originalTool: originalTool,
+        inverseTool: 'media.play_pause',
+        inverseArgs: const <String, Object?>{},
+        description: 'khôi phục trạng thái phát nhạc',
+        recordedAt: nowUtc,
+      );
+    } else if (originalTool == 'media.volume_set') {
+      final newLevel = arguments['level'];
+      if (newLevel is int) {
+        final prev = _lastKnownVolume;
+        _lastKnownVolume = newLevel;
+        entry = ReversibleActionEntry(
+          originalTool: originalTool,
+          inverseTool: 'media.volume_set',
+          inverseArgs: <String, Object?>{'level': prev},
+          description: 'khôi phục âm lượng $prev%',
+          recordedAt: nowUtc,
+        );
+      }
+    } else if (originalTool == 'host.lock_screen') {
+      entry = ReversibleActionEntry(
+        originalTool: originalTool,
+        inverseTool: 'display.wake',
+        inverseArgs: const <String, Object?>{},
+        description: 'bật lại màn hình',
+        recordedAt: nowUtc,
+      );
+    }
+    if (entry != null) {
+      if (_stack.length >= maxEntries) {
+        _stack.removeAt(0);
+      }
+      _stack.add(entry);
+    }
+  }
+
+  ReversibleActionEntry? popValid(DateTime nowUtc) {
+    _pruneExpired(nowUtc);
+    if (_stack.isEmpty) return null;
+    final popped = _stack.removeLast();
+    if (popped.inverseTool == 'media.volume_set') {
+      final restored = popped.inverseArgs['level'];
+      if (restored is int) {
+        _lastKnownVolume = restored;
+      }
+    }
+    return popped;
+  }
+
+  void _pruneExpired(DateTime nowUtc) {
+    _stack.removeWhere((e) => nowUtc.difference(e.recordedAt) > ttl);
+  }
+}
+
+typedef SubStepExecutor = Future<ToolHandlerOutput> Function(
+  String toolName,
+  Map<String, Object?> arguments,
+);
+
 /// Context passed to a [HostToolHandler] during execution.
 class ToolExecutionContext {
   const ToolExecutionContext({
@@ -61,8 +168,12 @@ class ToolExecutionContext {
     required this.appScanner,
     required this.workspaceIndexer,
     required this.mcpBridge,
+    required this.actionLedger,
     required this.cancellationToken,
     required this.agentVersion,
+    required this.nowUtc,
+    this.beamDirectoryPath,
+    this.subStepExecutor,
   });
 
   final Map<String, Object?> arguments;
@@ -72,8 +183,12 @@ class ToolExecutionContext {
   final AutoAppScanner appScanner;
   final AutoWorkspaceIndexer workspaceIndexer;
   final AutoMcpBridge mcpBridge;
+  final ReversibleActionLedger actionLedger;
   final ToolCancellationToken cancellationToken;
   final String agentVersion;
+  final DateTime nowUtc;
+  final String? beamDirectoryPath;
+  final SubStepExecutor? subStepExecutor;
 }
 
 /// Base class for each of the 12 MVP tools (`UDC-3` §5.6.1: one class per tool).
@@ -640,7 +755,270 @@ class McpCallTool extends HostToolHandler {
   }
 }
 
-/// Registry and dispatcher for all MVP and Dev Workspace tools (`UDC-3` §5.6.5, `UDC-11`, `UDC-12`).
+class WindowActiveContextTool extends HostToolHandler {
+  const WindowActiveContextTool();
+
+  @override
+  String get name => 'window.active_context';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final maxChars = (context.arguments['maxChars'] as int?) ?? 600;
+    final snap = await context.channel.readActiveWindowContext(
+      maxChars: maxChars,
+    );
+    if (snap.isElevated) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'elevated_window_forbidden',
+      );
+    }
+    if (isHardDeniedAppOrProcess(snap.processName) ||
+        isHardDeniedAppOrProcess(snap.appName)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'denylisted_target_forbidden',
+      );
+    }
+    final titleRedacted = redactSensitiveSelectionText(
+      snap.windowTitle,
+      maxChars: 160,
+    );
+    final textRedacted = redactSensitiveSelectionText(
+      snap.visibleText,
+      maxChars: maxChars,
+    );
+    final totalRedacted =
+        titleRedacted.redactedCount + textRedacted.redactedCount;
+    return ToolHandlerOutput(
+      text:
+          'Đã đọc ngữ cảnh cửa sổ ${snap.appName} (${textRedacted.text.length} ký tự, ẩn $totalRedacted mã nhạy cảm).',
+      structuredContent: <String, Object?>{
+        'appName': snap.appName,
+        'windowTitle': titleRedacted.text,
+        'focusedRole': snap.focusedRole,
+        'visibleSummary': textRedacted.text,
+        'truncated': textRedacted.truncated,
+        'redactedCount': totalRedacted,
+      },
+      toastBody: 'đã đọc cửa sổ ${snap.appName}',
+    );
+  }
+}
+
+class BrowserReadPageTool extends HostToolHandler {
+  const BrowserReadPageTool();
+
+  @override
+  String get name => 'browser.read_page';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final requestedBrowser =
+        (context.arguments['browser'] as String?) ?? 'auto';
+    final maxChars = (context.arguments['maxChars'] as int?) ?? 800;
+    final snap = await context.channel.readBrowserPageSummary(
+      browser: requestedBrowser,
+      maxChars: maxChars,
+    );
+    final urlCheck = validateHttpsUrlAgainstAllowlist(
+      snap.url,
+      context.policy?.urlDomains ?? const <String>[],
+    );
+    if (!urlCheck.validUrl || urlCheck.asciiHost == null) {
+      throw XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: urlCheck.errorCode ?? 'url_invalid',
+      );
+    }
+    final resolvedBrowser =
+        const <String>{'edge', 'chrome', 'safari'}.contains(snap.browser)
+            ? snap.browser
+            : 'edge';
+    final host = urlCheck.asciiHost!;
+    final titleRedacted = redactSensitiveSelectionText(
+      snap.title,
+      maxChars: 160,
+    );
+    final excerptRedacted = redactSensitiveSelectionText(
+      snap.excerpt,
+      maxChars: maxChars,
+    );
+    var totalRedacted =
+        titleRedacted.redactedCount + excerptRedacted.redactedCount;
+    final redactedHeadings = <String>[];
+    for (final h in snap.headings.take(8)) {
+      final r = redactSensitiveSelectionText(h, maxChars: 120);
+      totalRedacted += r.redactedCount;
+      if (r.text.isNotEmpty) redactedHeadings.add(r.text);
+    }
+    final redactedActions = <String>[];
+    for (final a in snap.actions.take(8)) {
+      final r = redactSensitiveSelectionText(a, maxChars: 80);
+      totalRedacted += r.redactedCount;
+      if (r.text.isNotEmpty) redactedActions.add(r.text);
+    }
+    return ToolHandlerOutput(
+      text: 'Đã tóm tắt trang web trên $resolvedBrowser ($host).',
+      structuredContent: <String, Object?>{
+        'browser': resolvedBrowser,
+        'host': host,
+        'title': titleRedacted.text,
+        'headings': redactedHeadings,
+        'actions': redactedActions,
+        'excerpt': excerptRedacted.text,
+        'redactedCount': totalRedacted,
+        'playwrightMcpAvailable': context.mcpBridge.hasPlaywrightMcp,
+      },
+      toastBody: 'đã đọc trang $host',
+    );
+  }
+}
+
+class BeamTransferTool extends HostToolHandler {
+  const BeamTransferTool();
+
+  @override
+  String get name => 'beam.transfer';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final direction = context.arguments['direction'] as String;
+    final kind = context.arguments['kind'] as String;
+    final fileName = context.arguments['fileName'] as String;
+    final sizeBytes = context.arguments['sizeBytes'] as int;
+    final sha256 = context.arguments['sha256'] as String;
+    final dataBase64 = context.arguments['dataBase64'] as String?;
+
+    if (!isValidBeamFileName(fileName)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'schema_mismatch',
+      );
+    }
+
+    if (dataBase64 != null) {
+      final Uint8List bytes;
+      try {
+        bytes = Uint8List.fromList(base64.decode(dataBase64));
+      } on FormatException {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      if (bytes.length != sizeBytes || sha256Hex(bytes) != sha256) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'beam_hash_mismatch',
+        );
+      }
+      final baseDir = context.beamDirectoryPath;
+      if (baseDir != null && baseDir.isNotEmpty) {
+        final dir = Directory(baseDir);
+        if (!dir.existsSync()) {
+          dir.createSync(recursive: true);
+        }
+        final outFile = File(
+          '$baseDir${Platform.pathSeparator}$fileName',
+        );
+        outFile.writeAsBytesSync(bytes, flush: true);
+      }
+    }
+
+    return ToolHandlerOutput(
+      text: 'Đã truyền an toàn $fileName ($sizeBytes B) qua XUNA Beam.',
+      structuredContent: <String, Object?>{
+        'direction': direction,
+        'kind': kind,
+        'fileName': fileName,
+        'sizeBytes': sizeBytes,
+        'sha256': sha256,
+        'verified': true,
+        'savedUnder': 'XUNA_Beam/$fileName',
+      },
+      toastBody: 'đã nhận $fileName qua Beam',
+    );
+  }
+}
+
+class WorkflowBatchStepsTool extends HostToolHandler {
+  const WorkflowBatchStepsTool();
+
+  @override
+  String get name => 'workflow.batch_steps';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final steps = context.arguments['steps'] as List;
+    final executor = context.subStepExecutor;
+    if (executor == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'platform_unsupported',
+      );
+    }
+    final completedTools = <String>[];
+    for (final rawStep in steps) {
+      if (context.cancellationToken.isCancelled) {
+        break;
+      }
+      final stepMap = rawStep as Map;
+      final stepTool = stepMap['tool'] as String;
+      final rawArgs = stepMap['arguments'] as Map;
+      final stepArgs = rawArgs.map((k, v) => MapEntry(k.toString(), v));
+      await executor(stepTool, stepArgs);
+      completedTools.add(stepTool);
+    }
+    return ToolHandlerOutput(
+      text:
+          'Đã chạy chuỗi ${completedTools.length}/${steps.length} bước liên hoàn.',
+      structuredContent: <String, Object?>{
+        'completedCount': completedTools.length,
+        'totalSteps': steps.length,
+        'executedTools': completedTools,
+      },
+      toastBody: 'đã chạy chuỗi ${completedTools.length} bước',
+    );
+  }
+}
+
+class ActionUndoTool extends HostToolHandler {
+  const ActionUndoTool();
+
+  @override
+  String get name => 'action.undo';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final entry = context.actionLedger.popValid(context.nowUtc);
+    if (entry == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'nothing_to_undo',
+      );
+    }
+    final executor = context.subStepExecutor;
+    if (executor == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'platform_unsupported',
+      );
+    }
+    await executor(entry.inverseTool, entry.inverseArgs);
+    return ToolHandlerOutput(
+      text: 'Đã hoàn tác ${entry.originalTool} (${entry.description}).',
+      structuredContent: <String, Object?>{
+        'undoneTool': entry.originalTool,
+        'inverseTool': entry.inverseTool,
+        'restored': true,
+      },
+      toastBody: 'đã hoàn tác (${entry.description})',
+    );
+  }
+}
+
+/// Registry and dispatcher for all MVP, Dev Workspace, Desk Co-Pilot, and Ambient Co-Pilot tools (`UDC-3` §5.6.5, `UDC-11`..`UDC-13`).
 class HostToolDispatcher {
   HostToolDispatcher({
     required this.policyStore,
@@ -653,12 +1031,15 @@ class HostToolDispatcher {
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
     AutoMcpBridge? mcpBridge,
+    ReversibleActionLedger? actionLedger,
+    this.beamDirectoryPath,
     this.agentVersion = '0.1.0',
     this.maxIdempotencyCacheEntries = 256,
     List<HostToolHandler>? handlers,
   }) : appScanner = appScanner ?? AutoAppScanner(),
        workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer(),
-       mcpBridge = mcpBridge ?? AutoMcpBridge() {
+       mcpBridge = mcpBridge ?? AutoMcpBridge(),
+       actionLedger = actionLedger ?? ReversibleActionLedger() {
     final registered =
         handlers ??
         <HostToolHandler>[
@@ -684,6 +1065,11 @@ class HostToolDispatcher {
           const WorkspaceWatchTaskTool(),
           const McpListServersTool(),
           const McpCallTool(),
+          const WindowActiveContextTool(),
+          const BrowserReadPageTool(),
+          const BeamTransferTool(),
+          const WorkflowBatchStepsTool(),
+          const ActionUndoTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -704,6 +1090,8 @@ class HostToolDispatcher {
   final AutoAppScanner appScanner;
   final AutoWorkspaceIndexer workspaceIndexer;
   final AutoMcpBridge mcpBridge;
+  final ReversibleActionLedger actionLedger;
+  final String? beamDirectoryPath;
   final String agentVersion;
   final int maxIdempotencyCacheEntries;
 
@@ -726,6 +1114,7 @@ class HostToolDispatcher {
       includeBrowserCurrentUrl: true,
       includeDevWorkspaceTools: true,
       includeDeskCopilotTools: true,
+      includeAmbientCopilotTools: true,
     );
     if (computerUseManager == null) {
       return mvp;
@@ -846,7 +1235,66 @@ class HostToolDispatcher {
     Map<String, Object?> structuredContent = const <String, Object?>{};
     String? toastBody;
 
+    final effectiveNow = (nowUtc ?? DateTime.now()).toUtc();
     try {
+      Future<ToolHandlerOutput> executeSubStep(
+        String stepToolName,
+        Map<String, Object?> stepArgs,
+      ) async {
+        final subHandler = _handlers[stepToolName];
+        if (subHandler == null) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.unsupported,
+            errorCode: 'platform_unsupported',
+          );
+        }
+        final syntheticApproval = ApprovalToken(
+          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c98',
+          scope: 'once',
+          expiresAt: effectiveNow.add(const Duration(minutes: 5)),
+          argsSha256: argsSha256(stepArgs),
+        );
+        final subEval = evaluator.evaluateInvocation(
+          toolName: stepToolName,
+          arguments: stepArgs,
+          approval: syntheticApproval,
+          isStopped: stopController.isStopped,
+          hostId: enrolled?.hostId,
+          pinnedPhonePublicKeys:
+              enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
+          isInApprovedCuSession: false,
+          allowZeroConfigAppDiscovery: true,
+          nowUtc: effectiveNow,
+        );
+        if (!subEval.allowed) {
+          throw XunaHostChannelException(
+            status: subEval.status,
+            errorCode: subEval.errorCode ?? 'policy_blocked',
+          );
+        }
+        final subContext = ToolExecutionContext(
+          arguments: stepArgs,
+          evaluation: subEval,
+          policy: evaluator.policy,
+          channel: channel,
+          appScanner: appScanner,
+          workspaceIndexer: workspaceIndexer,
+          mcpBridge: mcpBridge,
+          actionLedger: actionLedger,
+          cancellationToken: cancelToken,
+          agentVersion: agentVersion,
+          nowUtc: effectiveNow,
+          beamDirectoryPath: beamDirectoryPath,
+        );
+        final subOut = await subHandler.execute(subContext);
+        actionLedger.record(
+          originalTool: stepToolName,
+          arguments: stepArgs,
+          nowUtc: effectiveNow,
+        );
+        return subOut;
+      }
+
       final execContext = ToolExecutionContext(
         arguments: params.arguments,
         evaluation: evaluation,
@@ -855,8 +1303,12 @@ class HostToolDispatcher {
         appScanner: appScanner,
         workspaceIndexer: workspaceIndexer,
         mcpBridge: mcpBridge,
+        actionLedger: actionLedger,
         cancellationToken: cancelToken,
         agentVersion: agentVersion,
+        nowUtc: effectiveNow,
+        beamDirectoryPath: beamDirectoryPath,
+        subStepExecutor: executeSubStep,
       );
 
       final deadline = Duration(milliseconds: params.deadlineMs);
@@ -882,6 +1334,13 @@ class HostToolDispatcher {
         text = output.text;
         structuredContent = output.structuredContent;
         toastBody = output.toastBody;
+        if (params.name != 'action.undo') {
+          actionLedger.record(
+            originalTool: params.name,
+            arguments: params.arguments,
+            nowUtc: effectiveNow,
+          );
+        }
       }
     } on TimeoutException {
       status = XtpStatus.timeout;

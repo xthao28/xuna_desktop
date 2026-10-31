@@ -635,7 +635,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(22));
+        expect(toolsList, hasLength(27));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -1959,4 +1959,306 @@ void main() {
       },
     );
   });
+
+  group(
+    'UDC-13 S13.1–S13.5: window.active_context, browser.read_page, beam.transfer, workflow.batch_steps (validate-all-before-run), and action.undo',
+    () {
+      test(
+        'executes window.active_context (blocks hard-denied & elevated), browser.read_page (with playwright MCP detection), beam.transfer (SHA-256 verification), workflow.batch_steps, and action.undo with zero content logging',
+        () async {
+          await policyStore.savePolicy(_sampleHealthyPolicy());
+          final beamDir = Directory('${tempDir.path}/XUNA_Beam');
+
+          final mcpBridge = AutoMcpBridge(
+            seedServers: const <DiscoveredMcpServer>[
+              DiscoveredMcpServer(
+                id: 'playwright',
+                transport: 'stdio',
+                source: 'claude_code',
+                command: 'npx',
+                args: <String>['@playwright/mcp@latest'],
+              ),
+            ],
+            scanDefaultLocations: false,
+          );
+
+          final udc13Dispatcher = HostToolDispatcher(
+            policyStore: policyStore,
+            channel: channel,
+            auditStore: auditStore,
+            stopController: stopController,
+            logger: logger,
+            enrollmentStore: enrollmentStore,
+            mcpBridge: mcpBridge,
+            beamDirectoryPath: beamDir.path,
+          );
+          addTearDown(udc13Dispatcher.dispose);
+
+          final now = DateTime.utc(2026, 10, 31, 14, 0);
+
+          // 1. S13.1: window.active_context reads active window and redacts secrets
+          channel.activeWindowContextResult = const ActiveWindowContextSnapshot(
+            appName: 'VS Code',
+            processName: 'Code.exe',
+            windowTitle: 'config.dart - token=sk-secret9876543210abcdef',
+            focusedRole: 'editor',
+            visibleText:
+                'Database connection error withBearer: Bearer eyJhbGciOiJIUzI1NiJ9',
+            isElevated: false,
+          );
+          final winResp = await udc13Dispatcher.dispatch(
+            requestId: 901,
+            params: const ToolsCallParams(
+              name: 'window.active_context',
+              arguments: <String, Object?>{'maxChars': 500},
+              invocationId: '90100000-0000-4000-8000-000000000001',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final winSc =
+              winResp.result['structuredContent'] as Map<String, Object?>;
+          expect(winSc['appName'], equals('VS Code'));
+          expect(winSc['redactedCount'], greaterThanOrEqualTo(2));
+          expect(
+            winSc['windowTitle'] as String,
+            isNot(contains('sk-secret987654')),
+          );
+          expect(
+            winSc['visibleSummary'] as String,
+            isNot(contains('eyJhbGci')),
+          );
+
+          // Hard-denied app (1Password) is refused with denylisted_target_forbidden
+          channel.activeWindowContextResult = const ActiveWindowContextSnapshot(
+            appName: '1Password',
+            processName: '1Password.exe',
+            windowTitle: 'Vault',
+            focusedRole: 'window',
+            visibleText: 'Master password',
+            isElevated: false,
+          );
+          final deniedWinResp = await udc13Dispatcher.dispatch(
+            requestId: 902,
+            params: const ToolsCallParams(
+              name: 'window.active_context',
+              arguments: <String, Object?>{},
+              invocationId: '90200000-0000-4000-8000-000000000002',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          expect(
+            (deniedWinResp.result['_meta']
+                as Map<String, Object?>)['xuna/errorCode'],
+            equals('denylisted_target_forbidden'),
+          );
+
+          // Elevated window is refused with elevated_window_forbidden
+          channel.activeWindowContextResult = const ActiveWindowContextSnapshot(
+            appName: 'VS Code',
+            processName: 'Code.exe',
+            windowTitle: 'Admin Window',
+            focusedRole: 'window',
+            visibleText: 'Admin text',
+            isElevated: true,
+          );
+          final elevWinResp = await udc13Dispatcher.dispatch(
+            requestId: 903,
+            params: const ToolsCallParams(
+              name: 'window.active_context',
+              arguments: <String, Object?>{},
+              invocationId: '90300000-0000-4000-8000-000000000003',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          expect(
+            (elevWinResp.result['_meta']
+                as Map<String, Object?>)['xuna/errorCode'],
+            equals('elevated_window_forbidden'),
+          );
+
+          // 2. S13.2: browser.read_page returns semantic summary and detects @playwright/mcp
+          final pageResp = await udc13Dispatcher.dispatch(
+            requestId: 904,
+            params: const ToolsCallParams(
+              name: 'browser.read_page',
+              arguments: <String, Object?>{'browser': 'edge', 'maxChars': 800},
+              invocationId: '90400000-0000-4000-8000-000000000004',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final pageSc =
+              pageResp.result['structuredContent'] as Map<String, Object?>;
+          expect(pageSc['host'], equals('github.com'));
+          expect(pageSc['playwrightMcpAvailable'], isTrue);
+          expect(
+            pageSc['headings'] as List<Object?>,
+            contains('All checks have passed'),
+          );
+
+          // 3. S13.3: beam.transfer verifies SHA-256 and saves file to XUNA_Beam
+          final payloadBytes = Uint8List.fromList(
+            utf8.encode('XUNA Beam Peer-to-Peer LAN Payload'),
+          );
+          final payloadHash = sha256Hex(payloadBytes);
+          final beamArgs = <String, Object?>{
+            'direction': 'phone_to_desktop',
+            'kind': 'file',
+            'fileName': 'note-from-phone.txt',
+            'sizeBytes': payloadBytes.length,
+            'sha256': payloadHash,
+            'dataBase64': base64.encode(payloadBytes),
+          };
+          final beamResp = await udc13Dispatcher.dispatch(
+            requestId: 905,
+            params: ToolsCallParams(
+              name: 'beam.transfer',
+              arguments: beamArgs,
+              invocationId: '90500000-0000-4000-8000-000000000005',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '90500000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(beamArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final beamSc =
+              beamResp.result['structuredContent'] as Map<String, Object?>;
+          expect(beamSc['verified'], isTrue);
+          final savedFile = File('${beamDir.path}/note-from-phone.txt');
+          expect(await savedFile.exists(), isTrue);
+          expect(await savedFile.readAsBytes(), equals(payloadBytes));
+
+          // Corrupted SHA-256 is rejected with beam_hash_mismatch
+          final badBeamArgs = <String, Object?>{
+            ...beamArgs,
+            'fileName': 'corrupted.txt',
+            'sha256': '0' * 64,
+          };
+          final badBeamResp = await udc13Dispatcher.dispatch(
+            requestId: 906,
+            params: ToolsCallParams(
+              name: 'beam.transfer',
+              arguments: badBeamArgs,
+              invocationId: '90600000-0000-4000-8000-000000000006',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '90600000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(badBeamArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          expect(
+            (badBeamResp.result['_meta']
+                as Map<String, Object?>)['xuna/errorCode'],
+            equals('beam_hash_mismatch'),
+          );
+          expect(await File('${beamDir.path}/corrupted.txt').exists(), isFalse);
+
+          // 4. S13.4: workflow.batch_steps executes all validated steps atomically
+          final wakeBeforeBatch = channel.displayWakeCount;
+          final batchArgs = <String, Object?>{
+            'steps': <Map<String, Object?>>[
+              <String, Object?>{
+                'tool': 'display.wake',
+                'arguments': const <String, Object?>{},
+              },
+              <String, Object?>{
+                'tool': 'media.volume_set',
+                'arguments': const <String, Object?>{'level': 35},
+              },
+              <String, Object?>{
+                'tool': 'url.open',
+                'arguments': const <String, Object?>{
+                  'url': 'https://github.com/xthao28/xuna_pet',
+                },
+              },
+            ],
+          };
+          final batchResp = await udc13Dispatcher.dispatch(
+            requestId: 907,
+            params: ToolsCallParams(
+              name: 'workflow.batch_steps',
+              arguments: batchArgs,
+              invocationId: '90700000-0000-4000-8000-000000000007',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '90700000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(batchArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final batchSc =
+              batchResp.result['structuredContent'] as Map<String, Object?>;
+          expect(batchSc['completedCount'], equals(3));
+          expect(channel.displayWakeCount, equals(wakeBeforeBatch + 1));
+          expect(channel.currentVolume, equals(35));
+
+          // If Step 2 is invalid/denied, Step 1 (display.wake) MUST NOT execute!
+          final wakeBeforeInvalidBatch = channel.displayWakeCount;
+          final invalidBatchArgs = <String, Object?>{
+            'steps': <Map<String, Object?>>[
+              <String, Object?>{
+                'tool': 'display.wake',
+                'arguments': const <String, Object?>{},
+              },
+              <String, Object?>{
+                'tool': 'url.open',
+                'arguments': const <String, Object?>{
+                  'url': 'https://untrusted.example.org/malware',
+                },
+              },
+            ],
+          };
+          final invalidBatchResp = await udc13Dispatcher.dispatch(
+            requestId: 908,
+            params: ToolsCallParams(
+              name: 'workflow.batch_steps',
+              arguments: invalidBatchArgs,
+              invocationId: '90800000-0000-4000-8000-000000000008',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '90800000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(invalidBatchArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          expect(
+            (invalidBatchResp.result['_meta']
+                as Map<String, Object?>)['xuna/errorCode'],
+            equals('domain_not_allowed'),
+          );
+          expect(channel.displayWakeCount, equals(wakeBeforeInvalidBatch));
+
+          // 5. S13.5: action.undo restores the previous volume (50%) set before batch
+          final undoResp = await udc13Dispatcher.dispatch(
+            requestId: 909,
+            params: const ToolsCallParams(
+              name: 'action.undo',
+              arguments: <String, Object?>{},
+              invocationId: '90900000-0000-4000-8000-000000000009',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now.add(const Duration(seconds: 30)),
+          );
+          final undoSc =
+              undoResp.result['structuredContent'] as Map<String, Object?>;
+          expect(undoSc['undoneTool'], equals('media.volume_set'));
+          expect(undoSc['restored'], isTrue);
+          expect(channel.currentVolume, equals(50));
+        },
+      );
+    },
+  );
 }

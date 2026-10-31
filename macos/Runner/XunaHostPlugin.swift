@@ -77,6 +77,10 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
         self.handleClipboardReadText(result: result)
       case "lockScreen":
         self.handleLockScreen(result: result)
+      case "readActiveWindowContext":
+        self.handleReadActiveWindowContext(args: args, result: result)
+      case "readBrowserPageSummary":
+        self.handleReadBrowserPageSummary(args: args, result: result)
       default:
         DispatchQueue.main.async {
           result(FlutterMethodNotImplemented)
@@ -922,6 +926,124 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     } catch {
       replyError(result, code: "failed", message: "Failed to lock/sleep display via pmset")
     }
+  }
+
+  private func handleReadActiveWindowContext(args: [String: Any], result: @escaping FlutterResult) {
+    let rawMax = args["maxChars"] as? Int ?? 600
+    let maxChars = min(max(rawMax, 80), 1200)
+    guard let app = NSWorkspace.shared.frontmostApplication else {
+      replySuccess(result, [
+        "appName": "unknown",
+        "processName": "unknown",
+        "windowTitle": "",
+        "focusedRole": "window",
+        "visibleText": "",
+        "isElevated": false,
+      ])
+      return
+    }
+    let appName = app.localizedName ?? "unknown"
+    let bundleId = app.bundleIdentifier ?? appName
+    var windowTitle = ""
+    var focusedRole = "window"
+    var visibleText = ""
+
+    if AXIsProcessTrusted() {
+      let axApp = AXUIElementCreateApplication(app.processIdentifier)
+      var winRef: CFTypeRef?
+      if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+         let winElem = winRef
+      {
+        var titleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(winElem as! AXUIElement, kAXTitleAttribute as CFString, &titleRef) == .success,
+           let titleStr = titleRef as? String
+        {
+          windowTitle = String(titleStr.prefix(160))
+        }
+      }
+
+      var focusRef: CFTypeRef?
+      if AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusRef) == .success,
+         let focusElem = focusRef
+      {
+        let axFocus = focusElem as! AXUIElement
+        var roleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(axFocus, kAXRoleAttribute as CFString, &roleRef) == .success,
+           let roleStr = roleRef as? String
+        {
+          focusedRole = String(roleStr.prefix(40))
+        }
+        if focusedRole.lowercased() != "axsecuretextfield" {
+          var valRef: CFTypeRef?
+          if AXUIElementCopyAttributeValue(axFocus, kAXValueAttribute as CFString, &valRef) == .success,
+             let valStr = valRef as? String
+          {
+            visibleText = String(valStr.prefix(maxChars))
+          }
+        }
+      }
+    }
+
+    replySuccess(result, [
+      "appName": appName,
+      "processName": bundleId,
+      "windowTitle": windowTitle,
+      "focusedRole": focusedRole,
+      "visibleText": visibleText,
+      "isElevated": false,
+    ])
+  }
+
+  private func handleReadBrowserPageSummary(args: [String: Any], result: @escaping FlutterResult) {
+    let rawMax = args["maxChars"] as? Int ?? 800
+    let maxChars = min(max(rawMax, 80), 1600)
+    let requested = (args["browser"] as? String ?? "auto").lowercased()
+    let candidates: [(id: String, bundleId: String, script: String)] = [
+      (
+        "safari",
+        "com.apple.Safari",
+        "tell application \"Safari\" to get URL of current tab of front window"
+      ),
+      (
+        "chrome",
+        "com.google.Chrome",
+        "tell application \"Google Chrome\" to get URL of active tab of front window"
+      ),
+    ]
+    let runningBundles = Set(
+      NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
+    )
+    for candidate in candidates {
+      if requested != "auto" && requested != candidate.id {
+        continue
+      }
+      if !runningBundles.contains(candidate.bundleId) {
+        continue
+      }
+      var errDict: NSDictionary?
+      if let scriptObj = NSAppleScript(source: candidate.script) {
+        let output = scriptObj.executeAndReturnError(&errDict)
+        if let rawUrl = output.stringValue,
+           rawUrl.lowercased().hasPrefix("https://")
+        {
+          let title = NSWorkspace.shared.frontmostApplication?.localizedName ?? candidate.id
+          replySuccess(result, [
+            "url": rawUrl,
+            "browser": candidate.id,
+            "title": String(title.prefix(160)),
+            "headings": [String(title.prefix(160))],
+            "actions": [] as [String],
+            "excerpt": String(title.prefix(maxChars)),
+          ])
+          return
+        }
+      }
+    }
+    replyError(
+      result,
+      code: "invalid_args",
+      message: "No active https:// browser tab found"
+    )
   }
 
   // MARK: - Helpers

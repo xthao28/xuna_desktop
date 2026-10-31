@@ -85,6 +85,44 @@ class BrowserTabSnapshot {
   final String browser;
 }
 
+/// Snapshot of the frontmost desktop window returned by `readActiveWindowContext` (`UDC-13` S13.1).
+class ActiveWindowContextSnapshot {
+  const ActiveWindowContextSnapshot({
+    required this.appName,
+    required this.processName,
+    required this.windowTitle,
+    required this.focusedRole,
+    required this.visibleText,
+    this.isElevated = false,
+  });
+
+  final String appName;
+  final String processName;
+  final String windowTitle;
+  final String focusedRole;
+  final String visibleText;
+  final bool isElevated;
+}
+
+/// Semantic snapshot of the active browser tab returned by `readBrowserPageSummary` (`UDC-13` S13.2).
+class BrowserPageSemanticSnapshot {
+  const BrowserPageSemanticSnapshot({
+    required this.url,
+    required this.browser,
+    required this.title,
+    this.headings = const <String>[],
+    this.actions = const <String>[],
+    this.excerpt = '',
+  });
+
+  final String url;
+  final String browser;
+  final String title;
+  final List<String> headings;
+  final List<String> actions;
+  final String excerpt;
+}
+
 /// Abstract interface for the native `xuna/host` MethodChannel (`UDC-3` §5.6.3).
 ///
 /// Every call has a 10 s native timeout. Unit and integration tests use
@@ -144,6 +182,19 @@ abstract interface class XunaHostChannel {
 
   /// Locks the host screen or puts the display to sleep (`UDC-12` S12.2).
   Future<bool> lockScreen();
+
+  /// Reads the frontmost desktop window's app name, window title, focused role,
+  /// and visible accessibility text (`UDC-13` S13.1).
+  Future<ActiveWindowContextSnapshot> readActiveWindowContext({
+    int maxChars = 600,
+  });
+
+  /// Reads a structured semantic summary (title, headings, actions, excerpt) of
+  /// the active browser tab (`UDC-13` S13.2).
+  Future<BrowserPageSemanticSnapshot> readBrowserPageSummary({
+    String browser = 'auto',
+    int maxChars = 800,
+  });
 }
 
 /// MethodChannel implementation of [XunaHostChannel] bound to `'xuna/host'`
@@ -357,6 +408,83 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     final map = await _invokeMap('lockScreen');
     final locked = map['locked'];
     return locked is bool ? locked : true;
+  }
+
+  @override
+  Future<ActiveWindowContextSnapshot> readActiveWindowContext({
+    int maxChars = 600,
+  }) async {
+    final map = await _invokeMap('readActiveWindowContext', <String, Object?>{
+      'maxChars': maxChars,
+    });
+    final appName = map['appName'];
+    final processName = map['processName'];
+    final windowTitle = map['windowTitle'];
+    final focusedRole = map['focusedRole'];
+    final visibleText = map['visibleText'];
+    final isElevated = map['isElevated'];
+    return ActiveWindowContextSnapshot(
+      appName: appName is String && appName.isNotEmpty ? appName : 'unknown',
+      processName: processName is String && processName.isNotEmpty
+          ? processName
+          : (appName is String && appName.isNotEmpty ? appName : 'unknown'),
+      windowTitle: windowTitle is String ? windowTitle : '',
+      focusedRole: focusedRole is String && focusedRole.isNotEmpty
+          ? focusedRole
+          : 'window',
+      visibleText: visibleText is String ? visibleText : '',
+      isElevated: isElevated is bool ? isElevated : false,
+    );
+  }
+
+  @override
+  Future<BrowserPageSemanticSnapshot> readBrowserPageSummary({
+    String browser = 'auto',
+    int maxChars = 800,
+  }) async {
+    final map = await _invokeMap('readBrowserPageSummary', <String, Object?>{
+      'browser': browser,
+      'maxChars': maxChars,
+    });
+    final url = map['url'];
+    if (url is! String || url.isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'No active browser tab URL found',
+      );
+    }
+    final resolvedBrowser = map['browser'];
+    final title = map['title'];
+    final excerpt = map['excerpt'];
+    final headingsRaw = map['headings'];
+    final actionsRaw = map['actions'];
+    final headings = <String>[];
+    if (headingsRaw is List) {
+      for (final h in headingsRaw) {
+        if (h is String && h.trim().isNotEmpty) {
+          headings.add(h.trim());
+        }
+      }
+    }
+    final actions = <String>[];
+    if (actionsRaw is List) {
+      for (final a in actionsRaw) {
+        if (a is String && a.trim().isNotEmpty) {
+          actions.add(a.trim());
+        }
+      }
+    }
+    return BrowserPageSemanticSnapshot(
+      url: url,
+      browser: resolvedBrowser is String && resolvedBrowser.isNotEmpty
+          ? resolvedBrowser
+          : (browser == 'auto' ? 'edge' : browser),
+      title: title is String ? title : '',
+      headings: headings,
+      actions: actions,
+      excerpt: excerpt is String ? excerpt : '',
+    );
   }
 
   Future<Map<String, Object?>> _invokeMap(

@@ -422,7 +422,10 @@ class HostPolicyEvaluator {
         : (prefix == 'display' ||
                 prefix == 'workspace' ||
                 prefix == 'selection' ||
-                prefix == 'mcp')
+                prefix == 'mcp' ||
+                prefix == 'window' ||
+                prefix == 'beam' ||
+                prefix == 'action')
             ? ToolFamily.app
             : ToolFamily.fromWire(prefix);
     if (!activePolicy.isFamilyAllowed(family)) {
@@ -558,6 +561,7 @@ class HostPolicyEvaluator {
         }
         effectiveRisk = RiskTier.r1;
       case 'selection.read':
+      case 'window.active_context':
         final maxChars = arguments['maxChars'];
         if (arguments.keys.any((k) => k != 'maxChars') ||
             (maxChars != null &&
@@ -572,6 +576,7 @@ class HostPolicyEvaluator {
         effectiveRisk = RiskTier.r1;
       case 'host.lock_screen':
       case 'mcp.list_servers':
+      case 'action.undo':
         if (arguments.isNotEmpty) {
           return const PolicyEvaluationResult(
             allowed: false,
@@ -581,6 +586,44 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r1;
+      case 'beam.transfer':
+        final direction = arguments['direction'];
+        final kind = arguments['kind'];
+        final fileName = arguments['fileName'];
+        final sizeBytes = arguments['sizeBytes'];
+        final sha256 = arguments['sha256'];
+        final dataBase64 = arguments['dataBase64'];
+        const allowedBeamKeys = <String>{
+          'direction',
+          'kind',
+          'fileName',
+          'sizeBytes',
+          'sha256',
+          'dataBase64',
+        };
+        if (arguments.keys.any((k) => !allowedBeamKeys.contains(k)) ||
+            direction is! String ||
+            !<String>{'phone_to_desktop', 'desktop_to_phone'}
+                .contains(direction) ||
+            kind is! String ||
+            !<String>{'clipboard_text', 'screenshot', 'file'}.contains(kind) ||
+            fileName is! String ||
+            !isValidBeamFileName(fileName) ||
+            sizeBytes is! int ||
+            sizeBytes < 1 ||
+            sizeBytes > 26214400 ||
+            sha256 is! String ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(sha256) ||
+            (dataBase64 != null &&
+                (dataBase64 is! String || dataBase64.isEmpty))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
       case 'mcp.call':
         final server = arguments['server'];
         final tool = arguments['tool'];
@@ -693,6 +736,25 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r2;
+      case 'browser.read_page':
+        final browser = arguments['browser'];
+        final maxChars = arguments['maxChars'];
+        const allowedReadPageKeys = <String>{'browser', 'maxChars'};
+        if (arguments.keys.any((k) => !allowedReadPageKeys.contains(k)) ||
+            (browser != null &&
+                (browser is! String ||
+                    !<String>{'auto', 'edge', 'chrome', 'safari'}
+                        .contains(browser))) ||
+            (maxChars != null &&
+                (maxChars is! int || maxChars < 80 || maxChars > 1600))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
       case 'workflow.run':
         if (arguments.length != 1 || arguments['id'] is! String) {
           return const PolicyEvaluationResult(
@@ -721,6 +783,99 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = matchedWorkflow.risk;
+      case 'workflow.batch_steps':
+        final steps = arguments['steps'];
+        if (arguments.length != 1 ||
+            steps is! List ||
+            steps.isEmpty ||
+            steps.length > 5) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        for (final rawStep in steps) {
+          if (rawStep is! Map) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r2,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          if (rawStep.length != 2 ||
+              !rawStep.containsKey('tool') ||
+              !rawStep.containsKey('arguments') ||
+              rawStep['tool'] is! String ||
+              rawStep['arguments'] is! Map) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r2,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          final stepTool = rawStep['tool'] as String;
+          if (stepTool == 'workflow.batch_steps' ||
+              stepTool.startsWith('cu.') ||
+              stepTool.startsWith('screen.') ||
+              stepTool.startsWith('ui.') ||
+              stepTool.startsWith('input.')) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'batch_r3_forbidden',
+            );
+          }
+          try {
+            ToolDescriptor.validateToolName(stepTool);
+          } on FormatException {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r2,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          final stepArgs = _castObjectMap(rawStep['arguments'], 'batch_step');
+          final syntheticApproval = ApprovalToken(
+            approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c99',
+            scope: 'once',
+            expiresAt: now.add(const Duration(minutes: 5)),
+            argsSha256: argsSha256(stepArgs),
+          );
+          final stepEval = evaluateInvocation(
+            toolName: stepTool,
+            arguments: stepArgs,
+            approval: syntheticApproval,
+            isStopped: isStopped,
+            nowUtc: now,
+            hostId: hostId,
+            pinnedPhonePublicKeys: pinnedPhonePublicKeys,
+            isInApprovedCuSession: false,
+            allowZeroConfigAppDiscovery: allowZeroConfigAppDiscovery,
+          );
+          if (stepEval.effectiveRisk >= RiskTier.r3) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r3,
+              errorCode: 'batch_r3_forbidden',
+            );
+          }
+          if (!stepEval.allowed) {
+            return PolicyEvaluationResult(
+              allowed: false,
+              status: stepEval.status,
+              effectiveRisk: RiskTier.r2,
+              errorCode: stepEval.errorCode ?? 'batch_step_rejected',
+            );
+          }
+        }
+        effectiveRisk = RiskTier.r2;
       case 'host.notify':
         if (arguments.length != 2 ||
             arguments['title'] is! String ||
@@ -1737,12 +1892,12 @@ typedef RedactedSelectionResult = ({
 });
 
 /// Redacts common API keys, Bearer tokens, private keys, and password assignments
-/// from [rawText] and truncates the result to [maxChars] (`80..1200`).
+/// from [rawText] and truncates the result to [maxChars] (`80..1600`).
 RedactedSelectionResult redactSensitiveSelectionText(
   String rawText, {
   int maxChars = 1200,
 }) {
-  final clampedMax = maxChars < 80 ? 80 : (maxChars > 1200 ? 1200 : maxChars);
+  final clampedMax = maxChars < 80 ? 80 : (maxChars > 1600 ? 1600 : maxChars);
   var working = rawText.trim();
   var count = 0;
   for (final pattern in _sensitiveTokenPatterns) {
@@ -1764,3 +1919,94 @@ RedactedSelectionResult redactSensitiveSelectionText(
 /// Convenience helper returning only the redacted string (`UDC-12` S12.2).
 String redactSensitiveTokens(String rawText, {int maxChars = 1200}) =>
     redactSensitiveSelectionText(rawText, maxChars: maxChars).text;
+
+/// Extensions forbidden for `beam.transfer` (`UDC-13` S13.3):
+/// executables, scripts, installers, libraries, and app bundles.
+const Set<String> forbiddenBeamExtensions = <String>{
+  'exe',
+  'bat',
+  'cmd',
+  'com',
+  'msi',
+  'ps1',
+  'vbs',
+  'js',
+  'jse',
+  'wsf',
+  'wsh',
+  'scr',
+  'pif',
+  'reg',
+  'dll',
+  'sys',
+  'drv',
+  'sh',
+  'bash',
+  'zsh',
+  'command',
+  'app',
+  'dmg',
+  'pkg',
+  'dylib',
+  'so',
+  'bin',
+  'run',
+  'jar',
+  'py',
+  'rb',
+  'pl',
+};
+
+final RegExp _beamFileNameRe =
+    RegExp(r'^[a-zA-Z0-9_.\- ()]+\.[a-zA-Z0-9]{1,10}$');
+
+/// Validates a safe filename for `beam.transfer` (`UDC-13` S13.3):
+/// rejects path separators (`/`, `\`), parent traversal (`..`), hidden files
+/// starting with `.`, Windows reserved device names, and executable extensions
+/// in [forbiddenBeamExtensions].
+bool isValidBeamFileName(String? fileName) {
+  if (fileName == null) return false;
+  final trimmed = fileName.trim();
+  if (trimmed.isEmpty ||
+      trimmed.length > 120 ||
+      trimmed != fileName ||
+      trimmed.startsWith('.') ||
+      trimmed.endsWith('.') ||
+      trimmed.contains('..') ||
+      trimmed.contains('/') ||
+      trimmed.contains(r'\')) {
+    return false;
+  }
+  if (!_beamFileNameRe.hasMatch(trimmed)) return false;
+  final dotIdx = trimmed.lastIndexOf('.');
+  if (dotIdx <= 0 || dotIdx == trimmed.length - 1) return false;
+  final stem = trimmed.substring(0, dotIdx).toLowerCase();
+  const reservedWindowsStems = <String>{
+    'con',
+    'prn',
+    'aux',
+    'nul',
+    'com1',
+    'com2',
+    'com3',
+    'com4',
+    'com5',
+    'com6',
+    'com7',
+    'com8',
+    'com9',
+    'lpt1',
+    'lpt2',
+    'lpt3',
+    'lpt4',
+    'lpt5',
+    'lpt6',
+    'lpt7',
+    'lpt8',
+    'lpt9',
+  };
+  if (reservedWindowsStems.contains(stem)) return false;
+  final ext = trimmed.substring(dotIdx + 1).toLowerCase();
+  if (forbiddenBeamExtensions.contains(ext)) return false;
+  return true;
+}

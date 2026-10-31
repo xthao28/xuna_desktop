@@ -42,6 +42,9 @@ void validateP256Signature(Uint8List signature) {
   }
 }
 
+/// Computes the lower-case 64-character SHA-256 hex digest of [bytes].
+String sha256Hex(Uint8List bytes) => sha256.convert(bytes).toString();
+
 /// Parses a canonical UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) or 32-hex
 /// string into 16 raw bytes.
 Uint8List uuidToBytes(String uuid) {

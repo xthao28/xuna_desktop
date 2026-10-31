@@ -850,6 +850,178 @@ void HandleMethodCallOnWorker(
     return;
   }
 
+  if (method == "readActiveWindowContext") {
+    int max_chars = 600;
+    if (const auto* mc_val = FindKey(args, "maxChars")) {
+      if (const auto* i32 = std::get_if<int32_t>(mc_val)) max_chars = *i32;
+      if (const auto* i64 = std::get_if<int64_t>(mc_val))
+        max_chars = static_cast<int>(*i64);
+    }
+    if (max_chars < 80) max_chars = 80;
+    if (max_chars > 1200) max_chars = 1200;
+
+    HWND hwnd = GetForegroundWindow();
+    wchar_t title_buf[512] = {};
+    if (hwnd != nullptr) {
+      GetWindowTextW(hwnd, title_buf, 512);
+    }
+    std::string window_title =
+        TruncateUtf8(WideToUtf8(std::wstring(title_buf)), 160);
+
+    std::string proc_name = "unknown";
+    bool is_elevated = false;
+    if (hwnd != nullptr) {
+      DWORD pid = 0;
+      GetWindowThreadProcessId(hwnd, &pid);
+      if (pid != 0) {
+        HANDLE h_proc =
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (h_proc != nullptr) {
+          wchar_t img_path[MAX_PATH] = {};
+          DWORD img_len = MAX_PATH;
+          if (QueryFullProcessImageNameW(h_proc, 0, img_path, &img_len)) {
+            std::wstring full(img_path, img_len);
+            size_t slash = full.find_last_of(L"\\/");
+            std::wstring base =
+                slash != std::wstring::npos ? full.substr(slash + 1) : full;
+            proc_name = WideToUtf8(base);
+          }
+          HANDLE h_tok = nullptr;
+          if (OpenProcessToken(h_proc, TOKEN_QUERY, &h_tok) &&
+              h_tok != nullptr) {
+            TOKEN_ELEVATION elev = {};
+            DWORD ret_len = 0;
+            if (GetTokenInformation(h_tok, TokenElevation, &elev, sizeof(elev),
+                                    &ret_len)) {
+              is_elevated = elev.TokenIsElevated != 0;
+            }
+            CloseHandle(h_tok);
+          }
+          CloseHandle(h_proc);
+        }
+      }
+    }
+
+    std::string focused_role = "window";
+    std::string visible_text;
+    IUIAutomation* uia = nullptr;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(CUIAutomation), nullptr,
+                                   CLSCTX_INPROC_SERVER,
+                                   __uuidof(IUIAutomation),
+                                   reinterpret_cast<void**>(&uia))) &&
+        uia != nullptr) {
+      IUIAutomationElement* focused = nullptr;
+      if (SUCCEEDED(uia->GetFocusedElement(&focused)) && focused != nullptr) {
+        BOOL is_pwd = FALSE;
+        focused->get_CurrentIsPassword(&is_pwd);
+        BSTR role_bstr = nullptr;
+        if (SUCCEEDED(focused->get_CurrentLocalizedControlType(&role_bstr)) &&
+            role_bstr != nullptr) {
+          focused_role = TruncateUtf8(
+              WideToUtf8(std::wstring(role_bstr, SysStringLen(role_bstr))), 40);
+          SysFreeString(role_bstr);
+        }
+        if (!is_pwd) {
+          BSTR name_bstr = nullptr;
+          if (SUCCEEDED(focused->get_CurrentName(&name_bstr)) &&
+              name_bstr != nullptr) {
+            visible_text =
+                WideToUtf8(std::wstring(name_bstr, SysStringLen(name_bstr)));
+            SysFreeString(name_bstr);
+          }
+          IUIAutomationValuePattern* val_pat = nullptr;
+          if (SUCCEEDED(focused->GetCurrentPatternAs(
+                  UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern),
+                  reinterpret_cast<void**>(&val_pat))) &&
+              val_pat != nullptr) {
+            BSTR bval = nullptr;
+            if (SUCCEEDED(val_pat->get_CurrentValue(&bval)) &&
+                bval != nullptr) {
+              std::string val_str =
+                  WideToUtf8(std::wstring(bval, SysStringLen(bval)));
+              SysFreeString(bval);
+              if (!val_str.empty()) {
+                if (!visible_text.empty()) visible_text += " — ";
+                visible_text += val_str;
+              }
+            }
+            val_pat->Release();
+          }
+        }
+        focused->Release();
+      }
+      uia->Release();
+    }
+
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("appName")] =
+        flutter::EncodableValue(proc_name);
+    out[flutter::EncodableValue("processName")] =
+        flutter::EncodableValue(proc_name);
+    out[flutter::EncodableValue("windowTitle")] =
+        flutter::EncodableValue(window_title);
+    out[flutter::EncodableValue("focusedRole")] =
+        flutter::EncodableValue(focused_role);
+    out[flutter::EncodableValue("visibleText")] =
+        flutter::EncodableValue(TruncateUtf8(visible_text, max_chars));
+    out[flutter::EncodableValue("isElevated")] =
+        flutter::EncodableValue(is_elevated);
+    result->Success(flutter::EncodableValue(out));
+    CoUninitialize();
+    return;
+  }
+
+  if (method == "readBrowserPageSummary") {
+    const auto* br_val = FindKey(args, "browser");
+    const auto* br_str = br_val ? std::get_if<std::string>(br_val) : nullptr;
+    std::string req_browser = br_str ? *br_str : "auto";
+    int max_chars = 800;
+    if (const auto* mc_val = FindKey(args, "maxChars")) {
+      if (const auto* i32 = std::get_if<int32_t>(mc_val)) max_chars = *i32;
+      if (const auto* i64 = std::get_if<int64_t>(mc_val))
+        max_chars = static_cast<int>(*i64);
+    }
+    if (max_chars < 80) max_chars = 80;
+    if (max_chars > 1600) max_chars = 1600;
+
+    std::string active_url;
+    std::string resolved_browser;
+    if (!QueryBrowserCurrentUrlUia(req_browser, &active_url,
+                                   &resolved_browser)) {
+      result->Error("invalid_args",
+                    "No active https:// browser tab found via UIA");
+      CoUninitialize();
+      return;
+    }
+
+    HWND hwnd = GetForegroundWindow();
+    wchar_t title_buf[512] = {};
+    if (hwnd != nullptr) {
+      GetWindowTextW(hwnd, title_buf, 512);
+    }
+    std::string page_title =
+        TruncateUtf8(WideToUtf8(std::wstring(title_buf)), 160);
+
+    flutter::EncodableList headings;
+    if (!page_title.empty()) {
+      headings.push_back(flutter::EncodableValue(page_title));
+    }
+    flutter::EncodableList actions;
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("url")] = flutter::EncodableValue(active_url);
+    out[flutter::EncodableValue("browser")] =
+        flutter::EncodableValue(resolved_browser);
+    out[flutter::EncodableValue("title")] = flutter::EncodableValue(page_title);
+    out[flutter::EncodableValue("headings")] =
+        flutter::EncodableValue(headings);
+    out[flutter::EncodableValue("actions")] = flutter::EncodableValue(actions);
+    out[flutter::EncodableValue("excerpt")] =
+        flutter::EncodableValue(TruncateUtf8(page_title, max_chars));
+    result->Success(flutter::EncodableValue(out));
+    CoUninitialize();
+    return;
+  }
+
   result->NotImplemented();
   CoUninitialize();
 }

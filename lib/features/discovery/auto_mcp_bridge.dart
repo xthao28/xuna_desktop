@@ -107,6 +107,18 @@ class AutoMcpBridge {
     return null;
   }
 
+  /// Returns `true` if `@playwright/mcp` (`playwright` / `playwright-mcp`) is
+  /// discovered in local MCP configuration (`UDC-13` S13.2).
+  bool get hasPlaywrightMcp {
+    for (final s in discoverServers()) {
+      if (s.id.contains('playwright') ||
+          s.args.any((a) => a.toLowerCase().contains('playwright'))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Calls [toolName] on [server] with [payloadJson] and redacts any sensitive tokens
   /// from the summary before returning.
   Future<String> callTool({

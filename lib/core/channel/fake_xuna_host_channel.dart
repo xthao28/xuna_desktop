@@ -52,6 +52,30 @@ class FakeXunaHostChannel implements XunaHostChannel {
     browser: 'edge',
   );
   String clipboardTextResult = '';
+  ActiveWindowContextSnapshot activeWindowContextResult =
+      const ActiveWindowContextSnapshot(
+        appName: 'VS Code',
+        processName: 'Code.exe',
+        windowTitle: 'host_tool_dispatcher.dart - xuna_pet - Visual Studio Code',
+        focusedRole: 'editor',
+        visibleText:
+            'UnhandledException: SocketException: Connection refused on port 47821',
+        isElevated: false,
+      );
+  BrowserPageSemanticSnapshot browserPageSummaryResult =
+      const BrowserPageSemanticSnapshot(
+        url: 'https://github.com/xthao28/xuna_pet/pull/42',
+        browser: 'edge',
+        title: 'feat(udc): Ambient Co-Pilot & Beam #42',
+        headings: <String>[
+          'feat(udc): Ambient Co-Pilot & Beam #42',
+          'Files changed (8)',
+          'All checks have passed',
+        ],
+        actions: <String>['Merge pull request', 'Add a review'],
+        excerpt:
+            'Implements S13.1 window.active_context, S13.2 browser.read_page, and S13.3 beam.transfer with zero firmware overhead.',
+      );
 
   /// Optional artificial delay before tool calls return (to test deadlines and
   /// cancellation).
@@ -164,6 +188,25 @@ class FakeXunaHostChannel implements XunaHostChannel {
     invokedMethods.add('lockScreen');
     await _delayAndThrowIfConfigured();
     return true;
+  }
+
+  @override
+  Future<ActiveWindowContextSnapshot> readActiveWindowContext({
+    int maxChars = 600,
+  }) async {
+    invokedMethods.add('readActiveWindowContext:$maxChars');
+    await _delayAndThrowIfConfigured();
+    return activeWindowContextResult;
+  }
+
+  @override
+  Future<BrowserPageSemanticSnapshot> readBrowserPageSummary({
+    String browser = 'auto',
+    int maxChars = 800,
+  }) async {
+    invokedMethods.add('readBrowserPageSummary:$browser:$maxChars');
+    await _delayAndThrowIfConfigured();
+    return browserPageSummaryResult;
   }
 
   @override

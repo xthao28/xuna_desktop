@@ -359,7 +359,10 @@ class ToolDescriptor {
         : (prefix == 'display' ||
                 prefix == 'workspace' ||
                 prefix == 'selection' ||
-                prefix == 'mcp')
+                prefix == 'mcp' ||
+                prefix == 'window' ||
+                prefix == 'beam' ||
+                prefix == 'action')
             ? ToolFamily.app
             : ToolFamily.fromWire(prefix);
     if (expectedFamily != null && family != expectedFamily) {
@@ -482,6 +485,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeBrowserCurrentUrl = false,
   bool includeDevWorkspaceTools = false,
   bool includeDeskCopilotTools = false,
+  bool includeAmbientCopilotTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -802,6 +806,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildDevWorkspaceTools(defaultPermission: defaultPermission),
     if (includeDeskCopilotTools)
       ...buildDeskCopilotTools(defaultPermission: defaultPermission),
+    if (includeAmbientCopilotTools)
+      ...buildAmbientCopilotTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -1185,6 +1191,251 @@ List<ToolDescriptor> buildDeskCopilotTools({
         risk: RiskTier.r2,
         observes: false,
         reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Builds the 5 `UDC-13` Seamless Ambient Co-Pilot tool descriptors (`S13.1`–`S13.5`):
+/// - `window.active_context` (`R1`, `observes: true`, family `app`)
+/// - `browser.read_page` (`R1`, `observes: true`, family `url`)
+/// - `beam.transfer` (`R2`, family `app`)
+/// - `workflow.batch_steps` (`R2`, family `workflow`)
+/// - `action.undo` (`R1`, family `app`)
+List<ToolDescriptor> buildAmbientCopilotTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'window.active_context',
+      description:
+          'Read active foreground window app, title, and visible text summary with secret redaction.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'maxChars': <String, Object?>{
+            'type': 'integer',
+            'minimum': 80,
+            'maximum': 1200,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'appName': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'focusedRole': <String, Object?>{'type': 'string', 'maxLength': 40},
+          'visibleSummary': <String, Object?>{
+            'type': 'string',
+            'maxLength': 1200,
+          },
+          'redactedCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+        },
+        'required': <String>[
+          'appName',
+          'windowTitle',
+          'visibleSummary',
+          'redactedCount',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'browser.read_page',
+      description:
+          'Read structured semantic summary (title, headings, interactive items, excerpt) of active https tab.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'browser': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['auto', 'edge', 'chrome', 'safari'],
+          },
+          'maxChars': <String, Object?>{
+            'type': 'integer',
+            'minimum': 80,
+            'maximum': 1600,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'browser': <String, Object?>{'type': 'string', 'maxLength': 24},
+          'host': <String, Object?>{'type': 'string', 'maxLength': 255},
+          'title': <String, Object?>{'type': 'string', 'maxLength': 160},
+          'headings': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 120},
+          },
+          'actions': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 120},
+          },
+          'excerpt': <String, Object?>{'type': 'string', 'maxLength': 1600},
+          'redactedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+        },
+        'required': <String>[
+          'browser',
+          'host',
+          'title',
+          'headings',
+          'actions',
+          'excerpt',
+          'redactedCount',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.url,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'beam.transfer',
+      description:
+          'Transfer a safe file, screenshot, or text snippet peer-to-peer over LAN with SHA-256 verification.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'direction': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['phone_to_host', 'host_to_phone'],
+          },
+          'kind': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['text', 'image', 'file'],
+          },
+          'fileName': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'sizeBytes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 26214400,
+          },
+          'sha256': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[0-9a-f]{64}$',
+          },
+          'dataBase64': <String, Object?>{'type': 'string', 'maxLength': 16384},
+        },
+        'required': <String>[
+          'direction',
+          'kind',
+          'fileName',
+          'sizeBytes',
+          'sha256',
+        ],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'transferId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'fileName': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'verifiedSha256': <String, Object?>{'type': 'boolean'},
+          'savedIn': <String, Object?>{'type': 'string', 'maxLength': 64},
+        },
+        'required': <String>[
+          'transferId',
+          'fileName',
+          'verifiedSha256',
+          'savedIn',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'workflow.batch_steps',
+      description:
+          'Validate all steps upfront and execute 1..5 bounded host actions atomically in one call.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'steps': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'tool': <String, Object?>{'type': 'string', 'maxLength': 64},
+                'arguments': <String, Object?>{'type': 'object'},
+              },
+              'required': <String>['tool'],
+              'additionalProperties': false,
+            },
+          },
+        },
+        'required': <String>['steps'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'completedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'completedTools': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 64},
+          },
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>['completedCount', 'completedTools', 'summary'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.workflow,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'action.undo',
+      description:
+          'Undo the most recent reversible host action within the 10-minute ledger window.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{},
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'undone': <String, Object?>{'type': 'boolean'},
+          'tool': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 200},
+        },
+        'required': <String>['undone', 'tool', 'summary'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
         permission: defaultPermission,
       ),
     ),
