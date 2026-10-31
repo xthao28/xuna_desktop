@@ -1401,7 +1401,10 @@ void main() {
           expect(sc['url'], equals(tc.url));
           expect(sc['host'], equals(tc.expectedHost));
           expect(sc['browser'], equals(tc.browser));
-          expect(channel.toasts.last.body, equals('XUNA: đã đọc liên kết ${tc.expectedHost}'));
+          expect(
+            channel.toasts.last.body,
+            equals('XUNA: đã đọc liên kết ${tc.expectedHost}'),
+          );
         }
 
         // Rejects http://, file://, chrome://, private IP, localhost
@@ -1457,511 +1460,520 @@ void main() {
     );
   });
 
-  group('UDC-11 S11.1–S11.3: Zero-config app/workspace discovery, display.wake, workspace.open, workspace.git_summary, and workspace.coding_agent', () {
-    test(
-      'discovers apps/CLIs and workspaces automatically (~/.claude.json, IDE storage.json, .git scan), executes display.wake, workspace.open, workspace.git_summary, and workspace.coding_agent (claude --continue) with zero raw path/prompt logging',
-      () async {
-        // Policy has NO manual apps configured (apps: []) to verify zero-config discovery!
-        final zeroConfigPolicy = HostPolicy(
-          schemaVersion: 1,
-          families: const <ToolFamily, FamilyPolicyDecision>{
-            ToolFamily.media: FamilyPolicyDecision.allow,
-            ToolFamily.app: FamilyPolicyDecision.allow,
-            ToolFamily.url: FamilyPolicyDecision.allow,
-            ToolFamily.workflow: FamilyPolicyDecision.allow,
-          },
-          apps: const <AllowedAppConfig>[],
-          urlDomains: const <String>['github.com'],
-          workflows: const <WorkflowConfig>[],
-          players: const <String>['spotify'],
-        );
-        await policyStore.savePolicy(zeroConfigPolicy);
-
-        // Create fake home & app directories inside tempDir
-        final fakeHome = Directory('${tempDir.path}/home');
-        await fakeHome.create(recursive: true);
-        final fakeAppsDir = Directory('${tempDir.path}/Applications');
-        await fakeAppsDir.create(recursive: true);
-        final fakeBinDir = Directory('${tempDir.path}/bin');
-        await fakeBinDir.create(recursive: true);
-
-        // Create fake macOS bundles + hard-denied app (Terminal.app)
-        await Directory('${fakeAppsDir.path}/Antigravity.app').create();
-        await Directory('${fakeAppsDir.path}/Visual Studio Code.app').create();
-        await Directory('${fakeAppsDir.path}/Terminal.app').create();
-
-        // Create fake CLI binaries (claude, agy)
-        final claudeBin = File('${fakeBinDir.path}/claude');
-        await claudeBin.writeAsString('#!/bin/sh\n', flush: true);
-        final agyBin = File('${fakeBinDir.path}/agy');
-        await agyBin.writeAsString('#!/bin/sh\n', flush: true);
-
-        // Create fake projects in ~/Documents/xuna_pet and ~/Projects/demo_app
-        final xunaDir = Directory('${fakeHome.path}/Documents/xuna_pet');
-        await Directory('${xunaDir.path}/.git').create(recursive: true);
-        await File('${xunaDir.path}/AGENTS.md').writeAsString('# XUNA', flush: true);
-
-        final demoDir = Directory('${fakeHome.path}/Projects/demo_app');
-        await Directory('${demoDir.path}/.git').create(recursive: true);
-
-        // Write ~/.claude.json referencing xuna_pet
-        final claudeJsonFile = File('${fakeHome.path}/.claude.json');
-        await claudeJsonFile.writeAsString(
-          jsonEncode(<String, Object?>{
-            'projects': <String, Object?>{
-              xunaDir.path: <String, Object?>{'hasTrustDialogAccepted': true},
+  group(
+    'UDC-11 S11.1–S11.3: Zero-config app/workspace discovery, display.wake, workspace.open, workspace.git_summary, and workspace.coding_agent',
+    () {
+      test(
+        'discovers apps/CLIs and workspaces automatically (~/.claude.json, IDE storage.json, .git scan), executes display.wake, workspace.open, workspace.git_summary, and workspace.coding_agent (claude --continue) with zero raw path/prompt logging',
+        () async {
+          // Policy has NO manual apps configured (apps: []) to verify zero-config discovery!
+          final zeroConfigPolicy = HostPolicy(
+            schemaVersion: 1,
+            families: const <ToolFamily, FamilyPolicyDecision>{
+              ToolFamily.media: FamilyPolicyDecision.allow,
+              ToolFamily.app: FamilyPolicyDecision.allow,
+              ToolFamily.url: FamilyPolicyDecision.allow,
+              ToolFamily.workflow: FamilyPolicyDecision.allow,
             },
-          }),
-          flush: true,
-        );
+            apps: const <AllowedAppConfig>[],
+            urlDomains: const <String>['github.com'],
+            workflows: const <WorkflowConfig>[],
+            players: const <String>['spotify'],
+          );
+          await policyStore.savePolicy(zeroConfigPolicy);
 
-        // Write Antigravity storage.json referencing demo_app
-        final agyStorageDir = Directory(
-          '${fakeHome.path}/Library/Application Support/Antigravity/User/globalStorage',
-        );
-        await agyStorageDir.create(recursive: true);
-        final agyStorageFile = File('${agyStorageDir.path}/storage.json');
-        await agyStorageFile.writeAsString(
-          jsonEncode(<String, Object?>{
-            'backupWorkspaces': <String, Object?>{
-              'folders': <Map<String, Object?>>[
-                <String, Object?>{'folderUri': Uri.directory(demoDir.path).toString()},
-              ],
+          // Create fake home & app directories inside tempDir
+          final fakeHome = Directory('${tempDir.path}/home');
+          await fakeHome.create(recursive: true);
+          final fakeAppsDir = Directory('${tempDir.path}/Applications');
+          await fakeAppsDir.create(recursive: true);
+          final fakeBinDir = Directory('${tempDir.path}/bin');
+          await fakeBinDir.create(recursive: true);
+
+          // Create fake macOS bundles + hard-denied app (Terminal.app)
+          await Directory('${fakeAppsDir.path}/Antigravity.app').create();
+          await Directory(
+            '${fakeAppsDir.path}/Visual Studio Code.app',
+          ).create();
+          await Directory('${fakeAppsDir.path}/Terminal.app').create();
+
+          // Create fake CLI binaries (claude, agy)
+          final claudeBin = File('${fakeBinDir.path}/claude');
+          await claudeBin.writeAsString('#!/bin/sh\n', flush: true);
+          final agyBin = File('${fakeBinDir.path}/agy');
+          await agyBin.writeAsString('#!/bin/sh\n', flush: true);
+
+          // Create fake projects in ~/Documents/xuna_pet and ~/Projects/demo_app
+          final xunaDir = Directory('${fakeHome.path}/Documents/xuna_pet');
+          await Directory('${xunaDir.path}/.git').create(recursive: true);
+          await File(
+            '${xunaDir.path}/AGENTS.md',
+          ).writeAsString('# XUNA', flush: true);
+
+          final demoDir = Directory('${fakeHome.path}/Projects/demo_app');
+          await Directory('${demoDir.path}/.git').create(recursive: true);
+
+          // Write ~/.claude.json referencing xuna_pet
+          final claudeJsonFile = File('${fakeHome.path}/.claude.json');
+          await claudeJsonFile.writeAsString(
+            jsonEncode(<String, Object?>{
+              'projects': <String, Object?>{
+                xunaDir.path: <String, Object?>{'hasTrustDialogAccepted': true},
+              },
+            }),
+            flush: true,
+          );
+
+          // Write Antigravity storage.json referencing demo_app
+          final agyStorageDir = Directory(
+            '${fakeHome.path}/Library/Application Support/Antigravity/User/globalStorage',
+          );
+          await agyStorageDir.create(recursive: true);
+          final agyStorageFile = File('${agyStorageDir.path}/storage.json');
+          await agyStorageFile.writeAsString(
+            jsonEncode(<String, Object?>{
+              'backupWorkspaces': <String, Object?>{
+                'folders': <Map<String, Object?>>[
+                  <String, Object?>{
+                    'folderUri': Uri.directory(demoDir.path).toString(),
+                  },
+                ],
+              },
+            }),
+            flush: true,
+          );
+
+          final launchedPlans = <CodingAgentLaunchPlan>[];
+
+          final appScanner = AutoAppScanner(
+            seedApps: const <DiscoveredApp>[
+              DiscoveredApp(
+                id: 'antigravity',
+                name: 'Antigravity',
+                kind: AppLaunchKind.bundle,
+                target: 'com.google.antigravity',
+                isCodingAgent: true,
+              ),
+              DiscoveredApp(
+                id: 'vscode',
+                name: 'Visual Studio Code',
+                kind: AppLaunchKind.bundle,
+                target: 'com.microsoft.VSCode',
+                isCodingAgent: true,
+              ),
+              DiscoveredApp(
+                id: 'terminal',
+                name: 'Terminal',
+                kind: AppLaunchKind.bundle,
+                target: 'com.apple.Terminal',
+              ),
+            ],
+            seedAgentBinaries: <String, String>{
+              'claude_code': claudeBin.path,
+              'antigravity': agyBin.path,
             },
-          }),
-          flush: true,
-        );
+            scanFileSystem: false,
+          );
+          final workspaceIndexer = AutoWorkspaceIndexer(
+            customScanRoots: <String>[
+              '${fakeHome.path}/Documents',
+              '${fakeHome.path}/Projects',
+            ],
+            customClaudeConfigPaths: <String>[claudeJsonFile.path],
+            customIdeStoragePaths: <String>[agyStorageFile.path],
+            scanDefaultLocations: false,
+            gitRunner: (executable, arguments) async {
+              return ProcessResult(
+                1,
+                0,
+                '## feat/udc-11-dev-resume...origin/feat/udc-11-dev-resume\n'
+                    ' M desktop/lib/features/tools/host_tool_dispatcher.dart\n'
+                    '?? docs/roadmap/device-control/UDC-11-dev-workspace-resume.md\n',
+                '',
+              );
+            },
+            agentLauncher: (plan) async {
+              launchedPlans.add(plan);
+            },
+          );
 
-        final launchedPlans = <CodingAgentLaunchPlan>[];
+          final udc11Dispatcher = HostToolDispatcher(
+            policyStore: policyStore,
+            channel: channel,
+            auditStore: auditStore,
+            stopController: stopController,
+            logger: logger,
+            enrollmentStore: enrollmentStore,
+            appScanner: appScanner,
+            workspaceIndexer: workspaceIndexer,
+          );
+          addTearDown(udc11Dispatcher.dispose);
 
-        final appScanner = AutoAppScanner(
-          seedApps: const <DiscoveredApp>[
-            DiscoveredApp(
-              id: 'antigravity',
-              name: 'Antigravity',
-              kind: AppLaunchKind.bundle,
-              target: 'com.google.antigravity',
-              isCodingAgent: true,
+          // 1. Verify AutoAppScanner found Antigravity, VS Code, Claude Code CLI, and excluded Terminal
+          final installedApps = appScanner.discoverApps();
+          final installedIds = installedApps.map((a) => a.id).toSet();
+          expect(installedIds, containsAll(<String>['antigravity', 'vscode']));
+          expect(installedIds, isNot(contains('terminal')));
+          expect(
+            appScanner.resolveCodingAgent('claude_code')?.executable,
+            equals(claudeBin.path),
+          );
+
+          // 2. Verify AutoWorkspaceIndexer discovered xuna_pet and demo_app and fuzzy matches
+          final workspaces = workspaceIndexer.discoverWorkspaces();
+          expect(
+            workspaces.map((w) => w.alias).toList(),
+            containsAll(<String>['xuna_pet', 'demo_app']),
+          );
+          final matchedFuzzy = workspaceIndexer.resolveWorkspace('xuna');
+          expect(matchedFuzzy?.alias, equals('xuna_pet'));
+          final matchedRecent = workspaceIndexer.resolveWorkspace('recent');
+          expect(matchedRecent, isNotNull);
+
+          final now = DateTime.utc(2026, 10, 31, 12, 0);
+
+          // 3. Execute display.wake (R1)
+          final wakeResp = await udc11Dispatcher.dispatch(
+            requestId: 701,
+            params: const ToolsCallParams(
+              name: 'display.wake',
+              arguments: <String, Object?>{},
+              invocationId: '70100000-0000-4000-8000-000000000001',
+              deadlineMs: 5000,
             ),
-            DiscoveredApp(
-              id: 'vscode',
-              name: 'Visual Studio Code',
-              kind: AppLaunchKind.bundle,
-              target: 'com.microsoft.VSCode',
-              isCodingAgent: true,
+            nowUtc: now,
+          );
+          expect(
+            (wakeResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+            equals('ok'),
+          );
+          expect(
+            (wakeResp.result['structuredContent']
+                as Map<String, Object?>)['woken'],
+            isTrue,
+          );
+          expect(channel.displayWakeCount, equals(1));
+
+          // 4. Execute zero-config app.launch for "antigravity" (R2) without manual host-policy.json entry
+          const launchArgs = <String, Object?>{'id': 'antigravity'};
+          final launchResp = await udc11Dispatcher.dispatch(
+            requestId: 702,
+            params: ToolsCallParams(
+              name: 'app.launch',
+              arguments: launchArgs,
+              invocationId: '70200000-0000-4000-8000-000000000002',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '70200000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(launchArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
             ),
-            DiscoveredApp(
-              id: 'terminal',
-              name: 'Terminal',
-              kind: AppLaunchKind.bundle,
-              target: 'com.apple.Terminal',
+            nowUtc: now,
+          );
+          expect(
+            (launchResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+            equals('ok'),
+          );
+          expect(
+            (launchResp.result['structuredContent']
+                as Map<String, Object?>)['id'],
+            equals('antigravity'),
+          );
+
+          // 5. Execute workspace.git_summary (R1)
+          final gitResp = await udc11Dispatcher.dispatch(
+            requestId: 703,
+            params: const ToolsCallParams(
+              name: 'workspace.git_summary',
+              arguments: <String, Object?>{'project': 'xuna_pet'},
+              invocationId: '70300000-0000-4000-8000-000000000003',
+              deadlineMs: 5000,
             ),
-          ],
-          seedAgentBinaries: <String, String>{
-            'claude_code': claudeBin.path,
-            'antigravity': agyBin.path,
-          },
-          scanFileSystem: false,
-        );
-        final workspaceIndexer = AutoWorkspaceIndexer(
-          customScanRoots: <String>[
-            '${fakeHome.path}/Documents',
-            '${fakeHome.path}/Projects',
-          ],
-          customClaudeConfigPaths: <String>[claudeJsonFile.path],
-          customIdeStoragePaths: <String>[agyStorageFile.path],
-          scanDefaultLocations: false,
-          gitRunner: (executable, arguments) async {
-            return ProcessResult(
-              1,
-              0,
-              '## feat/udc-11-dev-resume...origin/feat/udc-11-dev-resume\n'
-              ' M desktop/lib/features/tools/host_tool_dispatcher.dart\n'
-              '?? docs/roadmap/device-control/UDC-11-dev-workspace-resume.md\n',
-              '',
-            );
-          },
-          agentLauncher: (plan) async {
-            launchedPlans.add(plan);
-          },
-        );
+            nowUtc: now,
+          );
+          expect(
+            (gitResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+            equals('ok'),
+          );
+          final gitSc =
+              gitResp.result['structuredContent'] as Map<String, Object?>;
+          expect(gitSc['workspace'], equals('xuna_pet'));
+          expect(gitSc['branch'], equals('feat/udc-11-dev-resume'));
+          expect(gitSc['clean'], isFalse);
+          expect(gitSc['modifiedCount'], equals(1));
+          expect(gitSc['untrackedCount'], equals(1));
 
-        final udc11Dispatcher = HostToolDispatcher(
-          policyStore: policyStore,
-          channel: channel,
-          auditStore: auditStore,
-          stopController: stopController,
-          logger: logger,
-          enrollmentStore: enrollmentStore,
-          appScanner: appScanner,
-          workspaceIndexer: workspaceIndexer,
-        );
-        addTearDown(udc11Dispatcher.dispose);
-
-        // 1. Verify AutoAppScanner found Antigravity, VS Code, Claude Code CLI, and excluded Terminal
-        final installedApps = appScanner.discoverApps();
-        final installedIds = installedApps.map((a) => a.id).toSet();
-        expect(installedIds, containsAll(<String>['antigravity', 'vscode']));
-        expect(installedIds, isNot(contains('terminal')));
-        expect(
-          appScanner.resolveCodingAgent('claude_code')?.executable,
-          equals(claudeBin.path),
-        );
-
-        // 2. Verify AutoWorkspaceIndexer discovered xuna_pet and demo_app and fuzzy matches
-        final workspaces = workspaceIndexer.discoverWorkspaces();
-        expect(
-          workspaces.map((w) => w.alias).toList(),
-          containsAll(<String>['xuna_pet', 'demo_app']),
-        );
-        final matchedFuzzy = workspaceIndexer.resolveWorkspace('xuna');
-        expect(matchedFuzzy?.alias, equals('xuna_pet'));
-        final matchedRecent = workspaceIndexer.resolveWorkspace('recent');
-        expect(matchedRecent, isNotNull);
-
-        final now = DateTime.utc(2026, 10, 31, 12, 0);
-
-        // 3. Execute display.wake (R1)
-        final wakeResp = await udc11Dispatcher.dispatch(
-          requestId: 701,
-          params: const ToolsCallParams(
-            name: 'display.wake',
-            arguments: <String, Object?>{},
-            invocationId: '70100000-0000-4000-8000-000000000001',
-            deadlineMs: 5000,
-          ),
-          nowUtc: now,
-        );
-        expect(
-          (wakeResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
-          equals('ok'),
-        );
-        expect(
-          (wakeResp.result['structuredContent'] as Map<String, Object?>)['woken'],
-          isTrue,
-        );
-        expect(channel.displayWakeCount, equals(1));
-
-        // 4. Execute zero-config app.launch for "antigravity" (R2) without manual host-policy.json entry
-        const launchArgs = <String, Object?>{'id': 'antigravity'};
-        final launchResp = await udc11Dispatcher.dispatch(
-          requestId: 702,
-          params: ToolsCallParams(
-            name: 'app.launch',
-            arguments: launchArgs,
-            invocationId: '70200000-0000-4000-8000-000000000002',
-            deadlineMs: 5000,
-            approval: ApprovalToken(
-              approvalId: '70200000-0000-4000-8000-000000000099',
-              argsSha256: argsSha256(launchArgs),
-              expiresAt: now.add(const Duration(minutes: 2)),
+          // 6. Execute workspace.open (R2)
+          const openWsArgs = <String, Object?>{
+            'project': 'xuna',
+            'ide': 'antigravity',
+          };
+          final openWsResp = await udc11Dispatcher.dispatch(
+            requestId: 704,
+            params: ToolsCallParams(
+              name: 'workspace.open',
+              arguments: openWsArgs,
+              invocationId: '70400000-0000-4000-8000-000000000004',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '70400000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(openWsArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
             ),
-          ),
-          nowUtc: now,
-        );
-        expect(
-          (launchResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
-          equals('ok'),
-        );
-        expect(
-          (launchResp.result['structuredContent'] as Map<String, Object?>)['id'],
-          equals('antigravity'),
-        );
+            nowUtc: now,
+          );
+          expect(
+            (openWsResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+            equals('ok'),
+          );
+          expect(launchedPlans.last.executable, equals(agyBin.path));
+          expect(
+            launchedPlans.last.arguments,
+            equals(<String>[xunaDir.absolute.path]),
+          );
 
-        // 5. Execute workspace.git_summary (R1)
-        final gitResp = await udc11Dispatcher.dispatch(
-          requestId: 703,
-          params: const ToolsCallParams(
-            name: 'workspace.git_summary',
-            arguments: <String, Object?>{'project': 'xuna_pet'},
-            invocationId: '70300000-0000-4000-8000-000000000003',
-            deadlineMs: 5000,
-          ),
-          nowUtc: now,
-        );
-        expect(
-          (gitResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
-          equals('ok'),
-        );
-        final gitSc = gitResp.result['structuredContent'] as Map<String, Object?>;
-        expect(gitSc['workspace'], equals('xuna_pet'));
-        expect(gitSc['branch'], equals('feat/udc-11-dev-resume'));
-        expect(gitSc['clean'], isFalse);
-        expect(gitSc['modifiedCount'], equals(1));
-        expect(gitSc['untrackedCount'], equals(1));
-
-        // 6. Execute workspace.open (R2)
-        const openWsArgs = <String, Object?>{
-          'project': 'xuna',
-          'ide': 'antigravity',
-        };
-        final openWsResp = await udc11Dispatcher.dispatch(
-          requestId: 704,
-          params: ToolsCallParams(
-            name: 'workspace.open',
-            arguments: openWsArgs,
-            invocationId: '70400000-0000-4000-8000-000000000004',
-            deadlineMs: 5000,
-            approval: ApprovalToken(
-              approvalId: '70400000-0000-4000-8000-000000000099',
-              argsSha256: argsSha256(openWsArgs),
-              expiresAt: now.add(const Duration(minutes: 2)),
+          // 7. Execute workspace.coding_agent (R2) -> claude --continue "<prompt>"
+          const secretPrompt =
+              'Tiếp tục làm UDC-11 trên nhánh feat/udc-11-dev-resume (đang sửa 2 tệp).';
+          const agentArgs = <String, Object?>{
+            'project': 'xuna_pet',
+            'agent': 'claude_code',
+            'prompt': secretPrompt,
+            'resumeLast': true,
+          };
+          final agentResp = await udc11Dispatcher.dispatch(
+            requestId: 705,
+            params: ToolsCallParams(
+              name: 'workspace.coding_agent',
+              arguments: agentArgs,
+              invocationId: '70500000-0000-4000-8000-000000000005',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '70500000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(agentArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
             ),
-          ),
-          nowUtc: now,
-        );
-        expect(
-          (openWsResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
-          equals('ok'),
-        );
-        expect(launchedPlans.last.executable, equals(agyBin.path));
-        expect(
-          launchedPlans.last.arguments,
-          equals(<String>[xunaDir.absolute.path]),
-        );
+            nowUtc: now,
+          );
+          expect(
+            (agentResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
+            equals('ok'),
+          );
+          final agentSc =
+              agentResp.result['structuredContent'] as Map<String, Object?>;
+          expect(agentSc['workspace'], equals('xuna_pet'));
+          expect(agentSc['agent'], equals('claude_code'));
+          expect(agentSc['resumed'], isTrue);
+          expect(agentSc['promptSent'], isTrue);
+          expect(launchedPlans.last.executable, equals(claudeBin.path));
+          expect(
+            launchedPlans.last.arguments,
+            equals(<String>['--continue', secretPrompt]),
+          );
+          expect(
+            launchedPlans.last.workingDirectory,
+            equals(xunaDir.absolute.path),
+          );
 
-        // 7. Execute workspace.coding_agent (R2) -> claude --continue "<prompt>"
-        const secretPrompt =
-            'Tiếp tục làm UDC-11 trên nhánh feat/udc-11-dev-resume (đang sửa 2 tệp).';
-        const agentArgs = <String, Object?>{
-          'project': 'xuna_pet',
-          'agent': 'claude_code',
-          'prompt': secretPrompt,
-          'resumeLast': true,
-        };
-        final agentResp = await udc11Dispatcher.dispatch(
-          requestId: 705,
-          params: ToolsCallParams(
-            name: 'workspace.coding_agent',
-            arguments: agentArgs,
-            invocationId: '70500000-0000-4000-8000-000000000005',
-            deadlineMs: 5000,
-            approval: ApprovalToken(
-              approvalId: '70500000-0000-4000-8000-000000000099',
-              argsSha256: argsSha256(agentArgs),
-              expiresAt: now.add(const Duration(minutes: 2)),
-            ),
-          ),
-          nowUtc: now,
-        );
-        expect(
-          (agentResp.result['_meta'] as Map<String, Object?>)['xuna/status'],
-          equals('ok'),
-        );
-        final agentSc =
-            agentResp.result['structuredContent'] as Map<String, Object?>;
-        expect(agentSc['workspace'], equals('xuna_pet'));
-        expect(agentSc['agent'], equals('claude_code'));
-        expect(agentSc['resumed'], isTrue);
-        expect(agentSc['promptSent'], isTrue);
-        expect(launchedPlans.last.executable, equals(claudeBin.path));
-        expect(
-          launchedPlans.last.arguments,
-          equals(<String>['--continue', secretPrompt]),
-        );
-        expect(
-          launchedPlans.last.workingDirectory,
-          equals(xunaDir.absolute.path),
-        );
+          // 8. Verify zero raw paths, git commit messages, or prompt text in logs or audit
+          for (final entry in logger.entries) {
+            final serialized = jsonEncode(entry.fields);
+            expect(serialized, isNot(contains(xunaDir.path)));
+            expect(serialized, isNot(contains(secretPrompt)));
+            expect(serialized, isNot(contains('feat/udc-11-dev-resume')));
+          }
+          final audits = await auditStore.readRecent();
+          for (final record in audits) {
+            final line = jsonEncode(record.toJson());
+            expect(line, isNot(contains(xunaDir.path)));
+            expect(line, isNot(contains(secretPrompt)));
+          }
+        },
+      );
+    },
+  );
 
-        // 8. Verify zero raw paths, git commit messages, or prompt text in logs or audit
-        for (final entry in logger.entries) {
-          final serialized = jsonEncode(entry.fields);
-          expect(serialized, isNot(contains(xunaDir.path)));
-          expect(serialized, isNot(contains(secretPrompt)));
-          expect(serialized, isNot(contains('feat/udc-11-dev-resume')));
-        }
-        final audits = await auditStore.readRecent();
-        for (final record in audits) {
-          final line = jsonEncode(record.toJson());
-          expect(line, isNot(contains(xunaDir.path)));
-          expect(line, isNot(contains(secretPrompt)));
-        }
-      },
-    );
-  });
+  group(
+    'UDC-12 S12.2–S12.3: selection.read (secret redaction), host.lock_screen, workspace.watch_task, and AutoMcpBridge',
+    () {
+      test(
+        'executes selection.read with secret redaction, host.lock_screen, workspace.watch_task, and AutoMcpBridge (mcp.list_servers & mcp.call) without exposing MCP env secrets',
+        () async {
+          final zeroConfigPolicy = HostPolicy(
+            schemaVersion: 1,
+            families: const <ToolFamily, FamilyPolicyDecision>{
+              ToolFamily.media: FamilyPolicyDecision.allow,
+              ToolFamily.app: FamilyPolicyDecision.allow,
+              ToolFamily.url: FamilyPolicyDecision.allow,
+              ToolFamily.workflow: FamilyPolicyDecision.allow,
+            },
+            apps: const <AllowedAppConfig>[],
+            urlDomains: const <String>['github.com'],
+            workflows: const <WorkflowConfig>[],
+            players: const <String>['spotify'],
+          );
+          await policyStore.savePolicy(zeroConfigPolicy);
 
-  group('UDC-12 S12.2–S12.3: selection.read (secret redaction), host.lock_screen, workspace.watch_task, and AutoMcpBridge', () {
-    test(
-      'executes selection.read with secret redaction, host.lock_screen, workspace.watch_task, and AutoMcpBridge (mcp.list_servers & mcp.call) without exposing MCP env secrets',
-      () async {
-        final zeroConfigPolicy = HostPolicy(
-          schemaVersion: 1,
-          families: const <ToolFamily, FamilyPolicyDecision>{
-            ToolFamily.media: FamilyPolicyDecision.allow,
-            ToolFamily.app: FamilyPolicyDecision.allow,
-            ToolFamily.url: FamilyPolicyDecision.allow,
-            ToolFamily.workflow: FamilyPolicyDecision.allow,
-          },
-          apps: const <AllowedAppConfig>[],
-          urlDomains: const <String>['github.com'],
-          workflows: const <WorkflowConfig>[],
-          players: const <String>['spotify'],
-        );
-        await policyStore.savePolicy(zeroConfigPolicy);
+          final fakeHome = Directory('${tempDir.path}/udc12_home');
+          await fakeHome.create(recursive: true);
+          final xunaDir = Directory('${fakeHome.path}/Documents/xuna_pet');
+          await Directory('${xunaDir.path}/.git').create(recursive: true);
+          await File('${xunaDir.path}/PROCESS.md').writeAsString(
+            '# PROCESS\nStatus: **Done** — all tests PASS\n',
+            flush: true,
+          );
 
-        final fakeHome = Directory('${tempDir.path}/udc12_home');
-        await fakeHome.create(recursive: true);
-        final xunaDir = Directory('${fakeHome.path}/Documents/xuna_pet');
-        await Directory('${xunaDir.path}/.git').create(recursive: true);
-        await File('${xunaDir.path}/PROCESS.md').writeAsString(
-          '# PROCESS\nStatus: **Done** — all tests PASS\n',
-          flush: true,
-        );
-
-        final mcpConfigFile = File('${fakeHome.path}/.claude.json');
-        await mcpConfigFile.writeAsString(
-          jsonEncode(<String, Object?>{
-            'mcpServers': <String, Object?>{
-              'github': <String, Object?>{
-                'command': 'npx',
-                'args': <String>['-y', '@modelcontextprotocol/server-github'],
-                'env': <String, Object?>{
-                  'GITHUB_PERSONAL_ACCESS_TOKEN':
-                      'ghp_SuperSecretToken9876543210abcdef',
+          final mcpConfigFile = File('${fakeHome.path}/.claude.json');
+          await mcpConfigFile.writeAsString(
+            jsonEncode(<String, Object?>{
+              'mcpServers': <String, Object?>{
+                'github': <String, Object?>{
+                  'command': 'npx',
+                  'args': <String>['-y', '@modelcontextprotocol/server-github'],
+                  'env': <String, Object?>{
+                    'GITHUB_PERSONAL_ACCESS_TOKEN':
+                        'ghp_SuperSecretToken9876543210abcdef',
+                  },
                 },
+                'bad_shell': <String, Object?>{'command': 'powershell.exe'},
               },
-              'bad_shell': <String, Object?>{
-                'command': 'powershell.exe',
-              },
+            }),
+            flush: true,
+          );
+
+          final mcpBridge = AutoMcpBridge(
+            customConfigPaths: <String>[mcpConfigFile.path],
+            scanDefaultLocations: false,
+            invoker: (server, toolName, payload) async {
+              return 'PR #42 (${payload['repo']}): CI passed, token sk-1234567890abcdef1234';
             },
-          }),
-          flush: true,
-        );
+          );
+          final workspaceIndexer = AutoWorkspaceIndexer(
+            customScanRoots: <String>['${fakeHome.path}/Documents'],
+            scanDefaultLocations: false,
+            gitRunner: (executable, arguments) async {
+              return ProcessResult(1, 0, '## main...origin/main\n', '');
+            },
+          );
 
-        final mcpBridge = AutoMcpBridge(
-          customConfigPaths: <String>[mcpConfigFile.path],
-          scanDefaultLocations: false,
-          invoker: (server, toolName, payload) async {
-            return 'PR #42 (${payload['repo']}): CI passed, token sk-1234567890abcdef1234';
-          },
-        );
-        final workspaceIndexer = AutoWorkspaceIndexer(
-          customScanRoots: <String>['${fakeHome.path}/Documents'],
-          scanDefaultLocations: false,
-          gitRunner: (executable, arguments) async {
-            return ProcessResult(
-              1,
-              0,
-              '## main...origin/main\n',
-              '',
-            );
-          },
-        );
+          final udc12Dispatcher = HostToolDispatcher(
+            policyStore: policyStore,
+            channel: channel,
+            auditStore: auditStore,
+            stopController: stopController,
+            logger: logger,
+            enrollmentStore: enrollmentStore,
+            workspaceIndexer: workspaceIndexer,
+            mcpBridge: mcpBridge,
+          );
+          addTearDown(udc12Dispatcher.dispose);
 
-        final udc12Dispatcher = HostToolDispatcher(
-          policyStore: policyStore,
-          channel: channel,
-          auditStore: auditStore,
-          stopController: stopController,
-          logger: logger,
-          enrollmentStore: enrollmentStore,
-          workspaceIndexer: workspaceIndexer,
-          mcpBridge: mcpBridge,
-        );
-        addTearDown(udc12Dispatcher.dispose);
+          final now = DateTime.utc(2026, 10, 31, 13, 0);
 
-        final now = DateTime.utc(2026, 10, 31, 13, 0);
-
-        // 1. selection.read redacts secrets and logs zero clipboard text
-        channel.clipboardTextResult =
-            'NullPointerException at Auth.kt:42 with OPENAI_API_KEY=sk-projabcdef1234567890 and Bearer eyJhbGciOiJIUzI1NiJ9';
-        final selResp = await udc12Dispatcher.dispatch(
-          requestId: 801,
-          params: const ToolsCallParams(
-            name: 'selection.read',
-            arguments: <String, Object?>{'maxChars': 500},
-            invocationId: '80100000-0000-4000-8000-000000000001',
-            deadlineMs: 5000,
-          ),
-          nowUtc: now,
-        );
-        final selSc =
-            selResp.result['structuredContent'] as Map<String, Object?>;
-        expect(selSc['redactedCount'], greaterThanOrEqualTo(2));
-        expect(selSc['text'] as String, contains('[REDACTED]'));
-        expect(selSc['text'] as String, isNot(contains('sk-projabcdef')));
-        expect(selSc['text'] as String, isNot(contains('eyJhbGci')));
-
-        // 2. host.lock_screen locks the workstation
-        final lockResp = await udc12Dispatcher.dispatch(
-          requestId: 802,
-          params: const ToolsCallParams(
-            name: 'host.lock_screen',
-            arguments: <String, Object?>{},
-            invocationId: '80200000-0000-4000-8000-000000000002',
-            deadlineMs: 5000,
-          ),
-          nowUtc: now,
-        );
-        expect(
-          (lockResp.result['structuredContent'] as Map<String, Object?>)['locked'],
-          isTrue,
-        );
-        expect(channel.lockScreenCount, equals(1));
-
-        // 3. workspace.watch_task inspects task status
-        final watchResp = await udc12Dispatcher.dispatch(
-          requestId: 803,
-          params: const ToolsCallParams(
-            name: 'workspace.watch_task',
-            arguments: <String, Object?>{'project': 'xuna'},
-            invocationId: '80300000-0000-4000-8000-000000000003',
-            deadlineMs: 5000,
-          ),
-          nowUtc: now,
-        );
-        final watchSc =
-            watchResp.result['structuredContent'] as Map<String, Object?>;
-        expect(watchSc['workspace'], equals('xuna_pet'));
-        expect(watchSc['status'], equals('completed'));
-
-        // 4. mcp.list_servers returns github server without env secrets and excludes powershell
-        final mcpListResp = await udc12Dispatcher.dispatch(
-          requestId: 804,
-          params: const ToolsCallParams(
-            name: 'mcp.list_servers',
-            arguments: <String, Object?>{},
-            invocationId: '80400000-0000-4000-8000-000000000004',
-            deadlineMs: 5000,
-          ),
-          nowUtc: now,
-        );
-        final listJson = jsonEncode(mcpListResp.result);
-        expect(listJson, contains('"id":"github"'));
-        expect(listJson, isNot(contains('bad_shell')));
-        expect(listJson, isNot(contains('ghp_SuperSecretToken')));
-
-        // 5. mcp.call executes with R2 approval and redacts any leaked token in output
-        const mcpCallArgs = <String, Object?>{
-          'server': 'github',
-          'tool': 'get_pull_request',
-          'payloadJson': '{"repo":"xthao28/xuna_pet"}',
-        };
-        final mcpCallResp = await udc12Dispatcher.dispatch(
-          requestId: 805,
-          params: ToolsCallParams(
-            name: 'mcp.call',
-            arguments: mcpCallArgs,
-            invocationId: '80500000-0000-4000-8000-000000000005',
-            deadlineMs: 5000,
-            approval: ApprovalToken(
-              approvalId: '80500000-0000-4000-8000-000000000099',
-              argsSha256: argsSha256(mcpCallArgs),
-              expiresAt: now.add(const Duration(minutes: 2)),
+          // 1. selection.read redacts secrets and logs zero clipboard text
+          channel.clipboardTextResult =
+              'NullPointerException at Auth.kt:42 with OPENAI_API_KEY=sk-projabcdef1234567890 and Bearer eyJhbGciOiJIUzI1NiJ9';
+          final selResp = await udc12Dispatcher.dispatch(
+            requestId: 801,
+            params: const ToolsCallParams(
+              name: 'selection.read',
+              arguments: <String, Object?>{'maxChars': 500},
+              invocationId: '80100000-0000-4000-8000-000000000001',
+              deadlineMs: 5000,
             ),
-          ),
-          nowUtc: now,
-        );
-        final mcpCallSc =
-            mcpCallResp.result['structuredContent'] as Map<String, Object?>;
-        expect(mcpCallSc['server'], equals('github'));
-        expect(mcpCallSc['tool'], equals('get_pull_request'));
-        expect(mcpCallSc['summary'] as String, contains('PR #42'));
-        expect(mcpCallSc['summary'] as String, isNot(contains('sk-123456')));
-      },
-    );
-  });
+            nowUtc: now,
+          );
+          final selSc =
+              selResp.result['structuredContent'] as Map<String, Object?>;
+          expect(selSc['redactedCount'], greaterThanOrEqualTo(2));
+          expect(selSc['text'] as String, contains('[REDACTED]'));
+          expect(selSc['text'] as String, isNot(contains('sk-projabcdef')));
+          expect(selSc['text'] as String, isNot(contains('eyJhbGci')));
+
+          // 2. host.lock_screen locks the workstation
+          final lockResp = await udc12Dispatcher.dispatch(
+            requestId: 802,
+            params: const ToolsCallParams(
+              name: 'host.lock_screen',
+              arguments: <String, Object?>{},
+              invocationId: '80200000-0000-4000-8000-000000000002',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          expect(
+            (lockResp.result['structuredContent']
+                as Map<String, Object?>)['locked'],
+            isTrue,
+          );
+          expect(channel.lockScreenCount, equals(1));
+
+          // 3. workspace.watch_task inspects task status
+          final watchResp = await udc12Dispatcher.dispatch(
+            requestId: 803,
+            params: const ToolsCallParams(
+              name: 'workspace.watch_task',
+              arguments: <String, Object?>{'project': 'xuna'},
+              invocationId: '80300000-0000-4000-8000-000000000003',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final watchSc =
+              watchResp.result['structuredContent'] as Map<String, Object?>;
+          expect(watchSc['workspace'], equals('xuna_pet'));
+          expect(watchSc['status'], equals('completed'));
+
+          // 4. mcp.list_servers returns github server without env secrets and excludes powershell
+          final mcpListResp = await udc12Dispatcher.dispatch(
+            requestId: 804,
+            params: const ToolsCallParams(
+              name: 'mcp.list_servers',
+              arguments: <String, Object?>{},
+              invocationId: '80400000-0000-4000-8000-000000000004',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final listJson = jsonEncode(mcpListResp.result);
+          expect(listJson, contains('"id":"github"'));
+          expect(listJson, isNot(contains('bad_shell')));
+          expect(listJson, isNot(contains('ghp_SuperSecretToken')));
+
+          // 5. mcp.call executes with R2 approval and redacts any leaked token in output
+          const mcpCallArgs = <String, Object?>{
+            'server': 'github',
+            'tool': 'get_pull_request',
+            'payloadJson': '{"repo":"xthao28/xuna_pet"}',
+          };
+          final mcpCallResp = await udc12Dispatcher.dispatch(
+            requestId: 805,
+            params: ToolsCallParams(
+              name: 'mcp.call',
+              arguments: mcpCallArgs,
+              invocationId: '80500000-0000-4000-8000-000000000005',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '80500000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(mcpCallArgs),
+                expiresAt: now.add(const Duration(minutes: 2)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final mcpCallSc =
+              mcpCallResp.result['structuredContent'] as Map<String, Object?>;
+          expect(mcpCallSc['server'], equals('github'));
+          expect(mcpCallSc['tool'], equals('get_pull_request'));
+          expect(mcpCallSc['summary'] as String, contains('PR #42'));
+          expect(mcpCallSc['summary'] as String, isNot(contains('sk-123456')));
+        },
+      );
+    },
+  );
 
   group(
     'UDC-13 S13.1–S13.5: window.active_context, browser.read_page, beam.transfer, workflow.batch_steps (validate-all-before-run), and action.undo',
@@ -2294,18 +2306,15 @@ void main() {
               wokenMacs.add(mac);
               return true;
             },
-            commandTransport: ({
-              required tv,
-              required operation,
-              required payload,
-            }) async {
-              tvCommands.add(<String, Object?>{
-                'tvId': tv.id,
-                'operation': operation,
-                ...payload,
-              });
-              return const <String, Object?>{'ok': true};
-            },
+            commandTransport:
+                ({required tv, required operation, required payload}) async {
+                  tvCommands.add(<String, Object?>{
+                    'tvId': tv.id,
+                    'operation': operation,
+                    ...payload,
+                  });
+                  return const <String, Object?>{'ok': true};
+                },
           );
 
           final smartHomeBridge = AutoSmartHomeBridge(
@@ -2585,7 +2594,8 @@ void main() {
             nowUtc: now,
           );
           final meetStatusSc =
-              meetStatusResp.result['structuredContent'] as Map<String, Object?>;
+              meetStatusResp.result['structuredContent']
+                  as Map<String, Object?>;
           expect(meetStatusSc['inMeeting'], isTrue);
           expect(meetStatusSc['app'], equals('zoom'));
           expect(meetStatusSc['micMuted'], isFalse);
@@ -2728,8 +2738,10 @@ void main() {
             ),
             nowUtc: now,
           );
-          final capsules = (listCapResp.result['structuredContent']
-              as Map<String, Object?>)['capsules'] as List<Object?>;
+          final capsules =
+              (listCapResp.result['structuredContent']
+                      as Map<String, Object?>)['capsules']
+                  as List<Object?>;
           expect(capsules, hasLength(1));
 
           // 3. Rehydrate workspace capsule (R2)
@@ -2931,6 +2943,83 @@ void main() {
           final habitSc =
               habitResp.result['structuredContent'] as Map<String, Object?>;
           expect(habitSc['proposals'] as List<Object?>, isNotEmpty);
+        },
+      );
+
+      testWidgets(
+        'SYM-UI S-UI.2: DesktopAgentWindow renders Cộng sinh tab with Workspace Capsules, Pocket, Watchdogs & Habit Proposals',
+        (tester) async {
+          final symSvc = AutoSymbioticService();
+          symSvc.captureWorkspaceCapsule(
+            project: 'xuna_pet',
+            branch: 'feat/sym-ui',
+            dirtyCount: 2,
+            nextStepHint: 'Kiểm tra tab Cộng sinh',
+          );
+          symSvc.pushPocketItem(
+            rawText: 'https://github.com/xthao28/xuna_pet',
+            label: 'Repo XUNA',
+          );
+          await tester.runAsync(
+            () => symSvc.registerProcessOrPortWatchdog(
+              targetKind: 'process',
+              processName: 'cargo',
+            ),
+          );
+          symSvc.recordToolExecution('workspace.git_summary');
+          symSvc.recordToolExecution('dev.ports');
+          symSvc.recordToolExecution('workspace.git_summary');
+          symSvc.recordToolExecution('dev.ports');
+
+          final fakeWs = _FakeWebSocketChannel();
+          final sessionClient = XtpSessionClient(
+            wsUri: Uri.parse('ws://127.0.0.1:9999/v1/hosts/connect'),
+            channel: channel,
+            enrollmentStore: enrollmentStore,
+            policyStore: policyStore,
+            dispatcher: dispatcher,
+            stopController: stopController,
+            logger: logger,
+            connector: (_) => fakeWs,
+            enableAutoReconnect: false,
+          );
+          final agentController = DesktopAgentController(
+            channel: channel,
+            enrollmentStore: enrollmentStore,
+            policyStore: policyStore,
+            auditStore: auditStore,
+            stopController: stopController,
+            sessionClient: sessionClient,
+            logger: logger,
+            symbioticService: symSvc,
+          );
+          agentController.onInit();
+
+          await tester.pumpWidget(
+            MaterialApp(home: DesktopAgentWindow(controller: agentController)),
+          );
+
+          await tester.tap(find.text('Cộng sinh'));
+          await tester.pump();
+
+          expect(agentController.activeTab.value, AgentWindowTab.symbiotic);
+          expect(agentController.workspaceCapsules, hasLength(1));
+          expect(agentController.pocketItems, hasLength(1));
+          expect(agentController.activeWatchdogs, hasLength(1));
+          expect(agentController.habitProposals, isNotEmpty);
+
+          expect(find.textContaining('xuna_pet @ feat/sym-ui'), findsOneWidget);
+          expect(find.textContaining('Repo XUNA'), findsOneWidget);
+          expect(find.text('[process] cargo'), findsOneWidget);
+
+          await tester.ensureVisible(find.text('Xóa tất cả'));
+          await tester.tap(find.text('Xóa tất cả'));
+          await tester.pump();
+          expect(agentController.activeWatchdogs, isEmpty);
+
+          agentController.onClose();
+          await tester.runAsync(() => sessionClient.dispose());
+          await tester.runAsync(() => fakeWs.inbound.close());
         },
       );
     },

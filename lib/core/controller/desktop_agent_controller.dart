@@ -5,6 +5,7 @@ import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
+import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
@@ -13,7 +14,7 @@ import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Navigation tabs inside the Desktop Agent settings window.
-enum AgentWindowTab { enrollment, policy, permissions, audit }
+enum AgentWindowTab { enrollment, policy, permissions, audit, symbiotic }
 
 /// GetX controller driving the Desktop Agent tray status and settings window.
 class DesktopAgentController extends GetxController {
@@ -27,6 +28,7 @@ class DesktopAgentController extends GetxController {
     required this.logger,
     this.lanServer,
     this.computerUseManager,
+    this.symbioticService,
   });
 
   final XunaHostChannel channel;
@@ -38,6 +40,7 @@ class DesktopAgentController extends GetxController {
   final ContentFreeLogger logger;
   final LanOfflineServer? lanServer;
   final ComputerUseSessionManager? computerUseManager;
+  final AutoSymbioticService? symbioticService;
 
   final activeTab = AgentWindowTab.enrollment.obs;
   final sessionPhase = HostSessionPhase.disconnected.obs;
@@ -51,6 +54,10 @@ class DesktopAgentController extends GetxController {
   final activeCuSession = Rxn<ComputerUseSessionState>();
   final permissionsSnapshot = const HostPermissionSnapshot().obs;
   final recentAuditRecords = <AuditLogRecord>[].obs;
+  final workspaceCapsules = <WorkspaceCapsuleEntry>[].obs;
+  final pocketItems = <UniversalPocketItem>[].obs;
+  final activeWatchdogs = <Map<String, Object?>>[].obs;
+  final habitProposals = <Map<String, Object?>>[].obs;
 
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
@@ -178,6 +185,26 @@ class DesktopAgentController extends GetxController {
 
   Future<void> refreshAudit() async {
     recentAuditRecords.assignAll(await auditStore.readRecent(limit: 50));
+  }
+
+  /// Refreshes the SYM-1 / SYM-2 symbiotic state from [symbioticService] (`SYM-UI` S-UI.2).
+  void refreshSymbioticState() {
+    final svc = symbioticService;
+    if (svc == null) return;
+    workspaceCapsules.assignAll(svc.listWorkspaceCapsules());
+    pocketItems.assignAll(svc.listPocketItems());
+    activeWatchdogs.assignAll(
+      svc.listAndClearWatchdogs(action: 'list').watchdogs,
+    );
+    habitProposals.assignAll(svc.proposeHabitWorkflows());
+  }
+
+  /// Clears all active watchdogs in [symbioticService] and refreshes (`SYM-UI` S-UI.2).
+  void clearAllWatchdogs() {
+    final svc = symbioticService;
+    if (svc == null) return;
+    svc.listAndClearWatchdogs(action: 'clear_all');
+    refreshSymbioticState();
   }
 
   Future<void> reloadPolicy() async {

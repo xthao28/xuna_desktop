@@ -38,10 +38,7 @@ class DesktopAgentWindow extends StatelessWidget {
         return Container(
           decoration: cuSession != null
               ? BoxDecoration(
-                  border: Border.all(
-                    color: const Color(0xFFE67E22),
-                    width: 4,
-                  ),
+                  border: Border.all(color: const Color(0xFFE67E22), width: 4),
                 )
               : null,
           child: Column(
@@ -88,6 +85,7 @@ class DesktopAgentWindow extends StatelessWidget {
                     AgentWindowTab.policy => _buildPolicyTab(),
                     AgentWindowTab.permissions => _buildPermissionsTab(),
                     AgentWindowTab.audit => _buildAuditTab(),
+                    AgentWindowTab.symbiotic => _buildSymbioticTab(),
                   },
                 ),
               ),
@@ -181,6 +179,7 @@ class DesktopAgentWindow extends StatelessWidget {
             _tabButton(AgentWindowTab.policy, 'Chính sách', current),
             _tabButton(AgentWindowTab.permissions, 'Quyền hệ thống', current),
             _tabButton(AgentWindowTab.audit, 'Nhật ký', current),
+            _tabButton(AgentWindowTab.symbiotic, 'Cộng sinh', current),
           ],
         );
       }),
@@ -202,6 +201,8 @@ class DesktopAgentWindow extends StatelessWidget {
           controller.refreshAudit();
         } else if (tab == AgentWindowTab.permissions) {
           controller.refreshPermissions();
+        } else if (tab == AgentWindowTab.symbiotic) {
+          controller.refreshSymbioticState();
         }
       },
       child: Text(label),
@@ -474,6 +475,152 @@ class DesktopAgentWindow extends StatelessWidget {
             ),
           );
         },
+      );
+    });
+  }
+
+  Widget _buildSymbioticTab() {
+    return Obx(() {
+      final capsules = controller.workspaceCapsules;
+      final items = controller.pocketItems;
+      final watchdogs = controller.activeWatchdogs;
+      final proposals = controller.habitProposals;
+
+      return ListView(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Không gian Cộng sinh XUNA (SYM-1..4)',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+              OutlinedButton(
+                onPressed: controller.refreshSymbioticState,
+                child: const Text('Làm mới'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Hộp thời gian dự án (${capsules.length})',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  if (capsules.isEmpty)
+                    const Text('Chưa có hộp thời gian nào được đóng băng.')
+                  else
+                    ...capsules.map(
+                      (c) => ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          '${c.project} @ ${c.branch} (${c.dirtyCount} uncommitted)',
+                        ),
+                        subtitle: Text('Bước tiếp: ${c.nextStepHint}'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Túi đồ xuyên thiết bị (${items.length})',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  if (items.isEmpty)
+                    const Text('Túi đồ của XUNA đang trống.')
+                  else
+                    ...items.map(
+                      (item) => ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          '[${item.kind.toUpperCase()}] ${item.label}',
+                        ),
+                        subtitle: Text(item.preview),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Đội tuần tra đang chạy (${watchdogs.length})',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      if (watchdogs.isNotEmpty)
+                        OutlinedButton(
+                          onPressed: controller.clearAllWatchdogs,
+                          child: const Text('Xóa tất cả'),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (watchdogs.isEmpty)
+                    const Text('Không có tiến trình hay cổng nào đang canh.')
+                  else
+                    ...watchdogs.map(
+                      (w) => ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text('[${w['kind']}] ${w['target']}'),
+                        subtitle: Text('${w['summary']}'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Quy trình tự học từ thói quen (${proposals.length})',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  ...proposals.map(
+                    (p) => ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('${p['title']} (${p['occurrences']}x)'),
+                      subtitle: Text('Câu lệnh gọi: "${p['triggerPhrase']}"'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       );
     });
   }
