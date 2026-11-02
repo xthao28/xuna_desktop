@@ -383,6 +383,9 @@ class ToolDescriptor {
                             prefix == 'heartbeat' ||
                             prefix == 'canvas' ||
                             prefix == 'pipeline' ||
+                            prefix == 'memory' ||
+                            prefix == 'subagent' ||
+                            prefix == 'schedule' ||
                             name == 'tv.launch_app')
                         ? ToolFamily.app
                         : ToolFamily.fromWire(prefix);
@@ -3171,12 +3174,103 @@ const Set<String> allowedUniversalExportFormats = <String>{
   'html',
 };
 
-/// Builds the 5 `XUNA ClawPulse` & `XunaScript Universal Composable Engine` (`CLAW-1`–`CLAW-3`, `UNIV-1`) tool descriptors:
+/// Allowed actions for `skill.workshop_sync` (`WORKSHOP-1`).
+const Set<String> allowedSkillWorkshopActions = <String>{
+  'sync_to_disk',
+  'hot_reload_from_disk',
+  'rollback_version',
+  'compact_index',
+};
+
+/// Allowed actions for `memory.markdown_vault` (`MIND-1`).
+const Set<String> allowedMemoryVaultActions = <String>{
+  'read_vault',
+  'append_note',
+  'pre_compaction_flush',
+  'sync_to_disk',
+};
+
+/// Allowed Markdown files inside the local XUNA Memory Vault (`MIND-1`).
+const Set<String> allowedMemoryVaultTargetFiles = <String>{
+  'XUNA_SOUL.md',
+  'OWNER_PROFILE.md',
+  'MEMORY_JOURNAL.md',
+};
+
+/// Allowed actions for `subagent.spawn_and_poll` (`MIND-1`, `SWARM-1`).
+const Set<String> allowedSubagentActions = <String>{
+  'spawn',
+  'spawn_swarm',
+  'poll',
+  'list_active',
+  'read_blackboard',
+};
+
+/// Specialist Sub-Agent roles for the Zero-Token Multi-Specialist Swarm (`SWARM-1`).
+const Set<String> allowedSubagentSpecialistRoles = <String>{
+  'scout_harvester',
+  'analyst_reconciler',
+  'executor_organizer',
+  'critic_verifier',
+};
+
+/// Role-scoped primitive whitelist (`SWARM-1`):
+/// `scout_harvester` and `critic_verifier` are strictly read-only and cannot write or rename files.
+const Map<String, Set<String>> roleScopedPrimitiveAllowlist =
+    <String, Set<String>>{
+  'scout_harvester': <String>{
+    'source.filesystem',
+    'source.clipboard',
+    'source.http_fetch',
+    'source.web_http',
+    'sensor.hash_delta',
+    'parse.universal',
+  },
+  'analyst_reconciler': <String>{
+    'parse.universal',
+    'transform.pipeline',
+  },
+  'executor_organizer': <String>{
+    'file.batch_ops',
+    'export.artifact',
+    'canvas.dynamic_a2ui',
+  },
+  'critic_verifier': <String>{
+    'source.filesystem',
+    'parse.universal',
+    'transform.pipeline',
+  },
+};
+
+/// Allowed actions for `schedule.cron_and_hooks` (`MIND-1`).
+const Set<String> allowedScheduleHookActions = <String>{
+  'register',
+  'trigger_event',
+  'list',
+  'remove',
+};
+
+/// Allowed lifecycle events and cron triggers for `schedule.cron_and_hooks` (`MIND-1`).
+const Set<String> allowedLifecycleEvents = <String>{
+  'cron_daily',
+  'on_morning_wake',
+  'on_file_drop',
+  'on_before_sleep',
+  'on_git_commit',
+};
+
+/// Builds the 11 `XUNA ClawPulse`, `XunaScript Universal Composable Engine`, `ClawWorkshop` & `ClawMind` (`CLAW-1`–`CLAW-3`, `UNIV-1`, `WORKSHOP-1`, `MIND-1`) tool descriptors:
 /// - `skill.markdown_bridge` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `skill.record_correction` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `heartbeat.configure_and_tick` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `canvas.present` (`R1`, `observes: false`, `reversible: true`, family `app`)
 /// - `pipeline.execute_universal` (`R2`, `observes: false`, `reversible: true`, family `app`)
+/// - `skill.workshop_sync` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `skill.chain_and_test` (`R2`, `observes: false`, `reversible: true`, family `app`)
+/// - `memory.markdown_vault` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `browser.semantic_snapshot` (`R1`, `observes: true`, `reversible: true`, family `url`)
+/// - `subagent.spawn_and_poll` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `schedule.cron_and_hooks` (`R1`, `observes: false`, `reversible: true`, family `app`)
 List<ToolDescriptor> buildClawPulseTools({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
 }) {
@@ -3493,6 +3587,462 @@ List<ToolDescriptor> buildClawPulseTools({
       policy: ToolPolicyMeta(
         family: ToolFamily.app,
         risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'skill.workshop_sync',
+      description:
+          'Sync forged skills to disk (SKILL.md + recipe.json), hot-reload modified skills from disk, rollback to a prior version, or emit a compact progressive-disclosure index.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'sync_to_disk',
+              'hot_reload_from_disk',
+              'rollback_version',
+              'compact_index',
+            ],
+          },
+          'skillId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'workshopFolder': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'syncedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'hotReloadedCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'activeVersion': <String, Object?>{'type': 'integer', 'minimum': 1},
+          'compactIndex': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'action',
+          'syncedCount',
+          'hotReloadedCount',
+          'activeVersion',
+          'compactIndex',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'skill.chain_and_test',
+      description:
+          'Execute a multi-skill DAG chain with {{variable}} template interpolation, run self-test assertions, and optionally bind auto-trigger on Heartbeat delta.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'chainSkillIds': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 64},
+          },
+          'runtimeParams': <String, Object?>{
+            'type': 'object',
+          },
+          'autoTriggerOnDelta': <String, Object?>{
+            'type': 'boolean',
+          },
+        },
+        'required': <String>['chainSkillIds'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'chainId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'executedSkillIds': <String, Object?>{'type': 'array'},
+          'interpolatedGoal': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+          'passedAssertions': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'totalAssertions': <String, Object?>{'type': 'integer', 'minimum': 1},
+          'selfTestPassed': <String, Object?>{'type': 'boolean'},
+          'autoTriggerOnDelta': <String, Object?>{'type': 'boolean'},
+          'undoSnapshotId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'chainId',
+          'executedSkillIds',
+          'interpolatedGoal',
+          'passedAssertions',
+          'totalAssertions',
+          'selfTestPassed',
+          'autoTriggerOnDelta',
+          'undoSnapshotId',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'memory.markdown_vault',
+      description:
+          'Read, append, sync to disk, or run pre-compaction memory flush into local transparent Markdown files (XUNA_SOUL.md, OWNER_PROFILE.md, MEMORY_JOURNAL.md) with automatic secret scrubbing.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'read_vault',
+              'append_note',
+              'pre_compaction_flush',
+              'sync_to_disk',
+            ],
+          },
+          'targetFile': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'XUNA_SOUL.md',
+              'OWNER_PROFILE.md',
+              'MEMORY_JOURNAL.md',
+            ],
+          },
+          'noteContent': <String, Object?>{
+            'type': 'string',
+            'maxLength': 2000,
+          },
+          'sessionTranscript': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'vaultFolder': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'vaultFolder': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'soulMarkdown': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'ownerProfileMarkdown': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'memoryJournalMarkdown': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'flushedFactsCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'redactedSecretsCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'action',
+          'vaultFolder',
+          'soulMarkdown',
+          'ownerProfileMarkdown',
+          'memoryJournalMarkdown',
+          'flushedFactsCount',
+          'redactedSecretsCount',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'browser.semantic_snapshot',
+      description:
+          'Parse raw DOM/HTML into a compact OpenClaw-style ARIA semantic accessibility tree with numbered [ref=e1]..[ref=eN] interactive refs, cutting token usage by 80-90% vs screenshots.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'rawHtml': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'pageTitle': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'maxElements': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 50,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'pageTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'elementCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'tokenReductionPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 99,
+          },
+          'compactAriaTree': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'elements': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'snapshotId',
+          'pageTitle',
+          'elementCount',
+          'tokenReductionPercent',
+          'compactAriaTree',
+          'elements',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.url,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'subagent.spawn_and_poll',
+      description:
+          'Spawn an isolated background sub-agent worker or a 4-specialist Zero-Token Sub-Agent Swarm with a Shared Blackboard, poll progress, or list active workers.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'spawn',
+              'spawn_swarm',
+              'poll',
+              'list_active',
+              'read_blackboard',
+            ],
+          },
+          'taskGoal': <String, Object?>{
+            'type': 'string',
+            'maxLength': 400,
+          },
+          'workerId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'tokenBudget': <String, Object?>{
+            'type': 'integer',
+            'minimum': 256,
+            'maximum': 8192,
+          },
+          'sourceFolder': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'specialistRoles': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'string',
+              'enum': <String>[
+                'scout_harvester',
+                'analyst_reconciler',
+                'executor_organizer',
+                'critic_verifier',
+              ],
+            },
+          },
+          'enableCriticVerification': <String, Object?>{
+            'type': 'boolean',
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'workerId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'status': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'progressPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+          'tokenBudget': <String, Object?>{'type': 'integer', 'minimum': 256},
+          'tokensUsed': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'llmTokensUsed': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'contextSavedPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+          'distilledResultVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 1200,
+          },
+          'activeWorkers': <String, Object?>{'type': 'array'},
+          'blackboardEntries': <String, Object?>{'type': 'array'},
+          'criticPassed': <String, Object?>{'type': 'boolean'},
+          'criticConfidenceScore': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+          'specialistBreakdown': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'action',
+          'workerId',
+          'status',
+          'progressPercent',
+          'tokenBudget',
+          'tokensUsed',
+          'distilledResultVi',
+          'activeWorkers',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'schedule.cron_and_hooks',
+      description:
+          'Register, trigger, list, or remove autonomous cron jobs and event-driven lifecycle hooks (cron_daily, on_morning_wake, on_file_drop, on_before_sleep, on_git_commit) bound to forged skills.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['register', 'trigger_event', 'list', 'remove'],
+          },
+          'hookId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'eventOrCron': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'cron_daily',
+              'on_morning_wake',
+              'on_file_drop',
+              'on_before_sleep',
+              'on_git_commit',
+            ],
+          },
+          'targetSkillId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'labelVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'hookId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'eventOrCron': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'targetSkillId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'triggeredCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'activeHooks': <String, Object?>{'type': 'array'},
+          'undoSnapshotId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'action',
+          'hookId',
+          'eventOrCron',
+          'targetSkillId',
+          'triggeredCount',
+          'activeHooks',
+          'undoSnapshotId',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
         observes: false,
         reversible: true,
         permission: defaultPermission,

@@ -446,6 +446,9 @@ class HostPolicyEvaluator {
                             prefix == 'heartbeat' ||
                             prefix == 'canvas' ||
                             prefix == 'pipeline' ||
+                            prefix == 'memory' ||
+                            prefix == 'subagent' ||
+                            prefix == 'schedule' ||
                             toolName == 'tv.launch_app')
                         ? ToolFamily.app
                         : ToolFamily.fromWire(prefix);
@@ -1500,6 +1503,271 @@ class HostPolicyEvaluator {
           }
         }
         effectiveRisk = RiskTier.r2;
+      case 'skill.workshop_sync':
+        final action = arguments['action'];
+        final skillId = arguments['skillId'];
+        final workshopFolder = arguments['workshopFolder'];
+        const allowedWorkshopKeys = <String>{
+          'action',
+          'skillId',
+          'workshopFolder',
+        };
+        if (arguments.keys.any((k) => !allowedWorkshopKeys.contains(k)) ||
+            action is! String ||
+            !allowedSkillWorkshopActions.contains(action) ||
+            (skillId != null &&
+                (skillId is! String || !isValidShortId(skillId))) ||
+            (action == 'rollback_version' &&
+                (skillId is! String || !isValidShortId(skillId))) ||
+            (workshopFolder != null &&
+                (workshopFolder is! String ||
+                    !isValidSandboxFolderName(workshopFolder)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'skill.chain_and_test':
+        final chainSkillIds = arguments['chainSkillIds'];
+        final runtimeParams = arguments['runtimeParams'];
+        final autoTriggerOnDelta = arguments['autoTriggerOnDelta'];
+        const allowedChainKeys = <String>{
+          'chainSkillIds',
+          'runtimeParams',
+          'autoTriggerOnDelta',
+        };
+        if (arguments.keys.any((k) => !allowedChainKeys.contains(k)) ||
+            chainSkillIds is! List ||
+            chainSkillIds.isEmpty ||
+            chainSkillIds.length > 5 ||
+            (autoTriggerOnDelta != null && autoTriggerOnDelta is! bool)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        for (final id in chainSkillIds) {
+          if (id is! String || !isValidShortId(id)) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r2,
+              errorCode: 'schema_mismatch',
+            );
+          }
+        }
+        if (runtimeParams != null) {
+          if (runtimeParams is! Map || runtimeParams.length > 10) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r2,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          for (final entry in runtimeParams.entries) {
+            final k = entry.key;
+            final v = entry.value;
+            if (k is! String ||
+                !isValidShortId(k) ||
+                v is! String ||
+                !isSafeTemplateParameterValue(v)) {
+              return const PolicyEvaluationResult(
+                allowed: false,
+                status: XtpStatus.denied,
+                effectiveRisk: RiskTier.r2,
+                errorCode: 'skill_template_param_unsafe',
+              );
+            }
+          }
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'memory.markdown_vault':
+        final action = arguments['action'];
+        final targetFile = arguments['targetFile'];
+        final noteContent = arguments['noteContent'];
+        final sessionTranscript = arguments['sessionTranscript'];
+        final vaultFolder = arguments['vaultFolder'];
+        const allowedMemoryKeys = <String>{
+          'action',
+          'targetFile',
+          'noteContent',
+          'sessionTranscript',
+          'vaultFolder',
+        };
+        if (arguments.keys.any((k) => !allowedMemoryKeys.contains(k)) ||
+            action is! String ||
+            !allowedMemoryVaultActions.contains(action) ||
+            (targetFile != null &&
+                (targetFile is! String ||
+                    !allowedMemoryVaultTargetFiles.contains(targetFile))) ||
+            (noteContent != null &&
+                (noteContent is! String ||
+                    noteContent.length > 2000 ||
+                    !isSafeClipboardWriteText(noteContent))) ||
+            (sessionTranscript != null &&
+                (sessionTranscript is! String ||
+                    !isSafeClipboardWriteText(sessionTranscript))) ||
+            (vaultFolder != null &&
+                (vaultFolder is! String ||
+                    !isValidSandboxFolderName(vaultFolder))) ||
+            (action == 'append_note' &&
+                (noteContent is! String || noteContent.trim().isEmpty)) ||
+            (action == 'pre_compaction_flush' &&
+                (sessionTranscript is! String ||
+                    sessionTranscript.trim().isEmpty))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (noteContent is String &&
+            containsForbiddenSkillMarkdownPattern(noteContent)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'memory_vault_content_unsafe',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'browser.semantic_snapshot':
+        final rawHtml = arguments['rawHtml'];
+        final pageTitle = arguments['pageTitle'];
+        final maxElements = arguments['maxElements'];
+        const allowedSnapKeys = <String>{
+          'rawHtml',
+          'pageTitle',
+          'maxElements',
+        };
+        if (arguments.keys.any((k) => !allowedSnapKeys.contains(k)) ||
+            (rawHtml != null &&
+                (rawHtml is! String || !isSafeClipboardWriteText(rawHtml))) ||
+            (pageTitle != null &&
+                (pageTitle is! String ||
+                    pageTitle.trim().isEmpty ||
+                    pageTitle.length > 120 ||
+                    !isSafeAgentPrompt(pageTitle))) ||
+            (maxElements != null &&
+                (maxElements is! int || maxElements < 1 || maxElements > 50))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'subagent.spawn_and_poll':
+        final action = arguments['action'];
+        final taskGoal = arguments['taskGoal'];
+        final workerId = arguments['workerId'];
+        final tokenBudget = arguments['tokenBudget'];
+        final sourceFolder = arguments['sourceFolder'];
+        final specialistRoles = arguments['specialistRoles'];
+        final enableCriticVerification = arguments['enableCriticVerification'];
+        const allowedSubKeys = <String>{
+          'action',
+          'taskGoal',
+          'workerId',
+          'tokenBudget',
+          'sourceFolder',
+          'specialistRoles',
+          'enableCriticVerification',
+        };
+        if (arguments.keys.any((k) => !allowedSubKeys.contains(k)) ||
+            action is! String ||
+            !allowedSubagentActions.contains(action) ||
+            (taskGoal != null &&
+                (taskGoal is! String ||
+                    taskGoal.trim().isEmpty ||
+                    taskGoal.length > 400 ||
+                    !isSafeAgentPrompt(taskGoal))) ||
+            ((action == 'spawn' || action == 'spawn_swarm') &&
+                (taskGoal is! String || taskGoal.trim().isEmpty)) ||
+            (workerId != null &&
+                (workerId is! String || !isValidShortId(workerId))) ||
+            (tokenBudget != null &&
+                (tokenBudget is! int ||
+                    tokenBudget < 256 ||
+                    tokenBudget > 8192)) ||
+            (sourceFolder != null &&
+                (sourceFolder is! String ||
+                    !isValidSandboxFolderName(sourceFolder))) ||
+            (enableCriticVerification != null &&
+                enableCriticVerification is! bool)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (specialistRoles != null) {
+          if (specialistRoles is! List ||
+              specialistRoles.isEmpty ||
+              specialistRoles.length > 4 ||
+              specialistRoles.any(
+                (r) =>
+                    r is! String ||
+                    !allowedSubagentSpecialistRoles.contains(r.trim()),
+              )) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.denied,
+              effectiveRisk: RiskTier.r1,
+              errorCode: 'subagent_role_forbidden',
+            );
+          }
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'schedule.cron_and_hooks':
+        final action = arguments['action'];
+        final hookId = arguments['hookId'];
+        final eventOrCron = arguments['eventOrCron'];
+        final targetSkillId = arguments['targetSkillId'];
+        final labelVi = arguments['labelVi'];
+        const allowedHookKeys = <String>{
+          'action',
+          'hookId',
+          'eventOrCron',
+          'targetSkillId',
+          'labelVi',
+        };
+        if (arguments.keys.any((k) => !allowedHookKeys.contains(k)) ||
+            action is! String ||
+            !allowedScheduleHookActions.contains(action) ||
+            (hookId != null &&
+                (hookId is! String || !isValidShortId(hookId))) ||
+            (eventOrCron != null &&
+                (eventOrCron is! String ||
+                    !allowedLifecycleEvents.contains(eventOrCron))) ||
+            (targetSkillId != null &&
+                (targetSkillId is! String || !isValidShortId(targetSkillId))) ||
+            (labelVi != null &&
+                (labelVi is! String ||
+                    labelVi.trim().isEmpty ||
+                    labelVi.length > 120 ||
+                    !isSafeAgentPrompt(labelVi))) ||
+            (action == 'register' &&
+                (eventOrCron is! String || targetSkillId is! String)) ||
+            (action == 'trigger_event' && eventOrCron is! String) ||
+            (action == 'remove' && hookId is! String)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
       case 'workspace.coding_agent':
         final proj = arguments['project'];
         final agent = arguments['agent'];
@@ -3106,4 +3374,104 @@ List<String> inferUniversalPrimitivesForGoal(String goal) {
     'export.artifact',
     'canvas.dynamic_a2ui',
   ];
+}
+
+/// Validates a dynamic `{{key}}` template parameter value for `skill.chain_and_test` (`WORKSHOP-1`):
+/// rejects path traversal (`..`), shell pipes/commands, and forbidden markdown patterns.
+bool isSafeTemplateParameterValue(String? value) {
+  if (value == null) return false;
+  final trimmed = value.trim();
+  if (trimmed.isEmpty || trimmed.length > 120) return false;
+  if (trimmed.contains('..') ||
+      trimmed.contains('|') ||
+      trimmed.contains(';') ||
+      trimmed.contains('`') ||
+      trimmed.contains(r'$(')) {
+    return false;
+  }
+  if (containsForbiddenSkillMarkdownPattern(trimmed)) {
+    return false;
+  }
+  return isSafeAgentPrompt(trimmed);
+}
+
+final RegExp _templatePlaceholderRe =
+    RegExp(r'\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}');
+
+/// Safely interpolates `{{variable}}` placeholders in [template] using [params] (`WORKSHOP-1`).
+String interpolateSkillTemplate(
+  String template,
+  Map<String, String> params,
+) {
+  if (template.isEmpty || params.isEmpty) return template;
+  return template.replaceAllMapped(_templatePlaceholderRe, (match) {
+    final key = match.group(1) ?? '';
+    final replacement = params[key];
+    if (replacement != null && isSafeTemplateParameterValue(replacement)) {
+      return replacement.trim();
+    }
+    return match.group(0) ?? '';
+  });
+}
+
+/// Checks whether a Sub-Agent specialist [role] is permitted to invoke a XunaScript [primitive] (`SWARM-1`).
+/// `scout_harvester` and `critic_verifier` are strictly read-only.
+bool isPrimitiveAllowedForSubagentRole(String role, String primitive) {
+  final allowed = roleScopedPrimitiveAllowlist[role.trim()];
+  if (allowed == null) return false;
+  return allowed.contains(primitive.trim());
+}
+
+/// Decomposes a compound natural-language [compoundGoal] into a deterministic
+/// Zero-Token Specialist Sub-Agent Swarm plan (`SWARM-1`).
+List<Map<String, Object>> decomposeGoalIntoSpecialistSwarm(
+  String compoundGoal, {
+  List<String>? requestedRoles,
+  bool enableCriticVerification = true,
+}) {
+  final roles = (requestedRoles != null && requestedRoles.isNotEmpty)
+      ? requestedRoles
+          .where((r) => allowedSubagentSpecialistRoles.contains(r))
+          .toList()
+      : <String>[
+          'scout_harvester',
+          'analyst_reconciler',
+          'executor_organizer',
+          if (enableCriticVerification) 'critic_verifier',
+        ];
+  final inferredPrimitives = inferUniversalPrimitivesForGoal(compoundGoal);
+  final swarmPlan = <Map<String, Object>>[];
+  for (final role in roles) {
+    final roleAllowlist =
+        roleScopedPrimitiveAllowlist[role] ?? const <String>{};
+    final scopedPrimitives =
+        inferredPrimitives.where((p) => roleAllowlist.contains(p)).toList();
+    final effectivePrimitives = scopedPrimitives.isNotEmpty
+        ? scopedPrimitives
+        : roleAllowlist.take(2).toList();
+    String subGoalVi;
+    switch (role) {
+      case 'scout_harvester':
+        subGoalVi =
+            'Quét song song dữ liệu thô & trích xuất trường chuẩn hóa lên Shared Blackboard (Read-Only)';
+      case 'analyst_reconciler':
+        subGoalVi =
+            'Đối chiếu chéo, gom nhóm & tính toán số liệu từ Shared Blackboard (0 LLM Token)';
+      case 'executor_organizer':
+        subGoalVi =
+            'Thực thi sắp xếp file / xuất báo cáo thông qua ReversibleActionLedger có Undo';
+      case 'critic_verifier':
+      default:
+        subGoalVi =
+            'Kiểm toán chéo tổng số học, schema & phát hiện lệch dữ liệu trước khi chốt';
+    }
+    swarmPlan.add(<String, Object>{
+      'role': role,
+      'subGoalVi': subGoalVi,
+      'allowedPrimitives': effectivePrimitives,
+      'readOnly': role == 'scout_harvester' || role == 'critic_verifier',
+      'llmTokensUsed': 0,
+    });
+  }
+  return swarmPlan;
 }

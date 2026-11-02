@@ -2093,6 +2093,294 @@ class PipelineExecuteUniversalTool extends HostToolHandler {
   }
 }
 
+/// Disk-Backed Skill Workshop, Hot-Reload, Version Rollback & Progressive Disclosure
+/// Compact Index (`skill.workshop_sync`, `WORKSHOP-2`).
+class SkillWorkshopSyncTool implements HostToolHandler {
+  const SkillWorkshopSyncTool();
+
+  @override
+  String get name => 'skill.workshop_sync';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final skillId = context.arguments['skillId'] as String?;
+    final workshopFolder = context.arguments['workshopFolder'] as String?;
+
+    final res = context.symbioticService.syncSkillWorkshop(
+      action: action,
+      skillId: skillId,
+      workshopFolder: workshopFolder,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'workshopFolder': res.workshopFolder,
+        'syncedCount': res.syncedCount,
+        'version': res.version,
+        'compactIndex': res.compactIndex,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Workshop (${res.action}): ${res.syncedCount} kỹ năng (v${res.version})',
+    );
+  }
+}
+
+/// Multi-Skill DAG Pipe Chaining, Parameterized Template Interpolation (`{{var}}`),
+/// Automated Self-Test Bench & Heartbeat Auto-Trigger (`skill.chain_and_test`, `WORKSHOP-2`).
+class SkillChainAndTestTool implements HostToolHandler {
+  const SkillChainAndTestTool();
+
+  @override
+  String get name => 'skill.chain_and_test';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawIds = context.arguments['chainSkillIds'] as List;
+    final chainSkillIds = rawIds.whereType<String>().toList(growable: false);
+    final rawParams = context.arguments['runtimeParams'];
+    final runtimeParams = rawParams is Map
+        ? rawParams.map(
+            (key, value) => MapEntry(key.toString(), value.toString()),
+          )
+        : null;
+    final autoTriggerOnDelta =
+        (context.arguments['autoTriggerOnDelta'] as bool?) ?? false;
+
+    final res = context.symbioticService.executeSkillChainAndTest(
+      chainSkillIds: chainSkillIds,
+      runtimeParams: runtimeParams,
+      autoTriggerOnDelta: autoTriggerOnDelta,
+      nowUtc: context.nowUtc,
+    );
+
+    context.actionLedger.pushEntry(
+      ReversibleActionEntry(
+        originalTool: name,
+        inverseTool: 'canvas.present',
+        inverseArgs: const <String, Object?>{'action': 'clear'},
+        description:
+            'hoàn tác chuỗi kỹ năng ${res.chainId} (${res.undoSnapshotId})',
+        recordedAt: context.nowUtc,
+      ),
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'chainId': res.chainId,
+        'executedSkills': res.executedSkills,
+        'passedAssertions': res.passedAssertions,
+        'totalAssertions': res.totalAssertions,
+        'selfTestPassed': res.selfTestPassed,
+        'autoTriggerOnDelta': res.autoTriggerOnDelta,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'đã chạy chuỗi ${res.executedSkills.length} kỹ năng (Self-Test ${res.passedAssertions}/${res.totalAssertions} PASS)',
+    );
+  }
+}
+
+/// Transparent Markdown Memory Vault & Pre-Compaction Flush (`memory.markdown_vault`, `MIND-2`).
+class MemoryMarkdownVaultTool implements HostToolHandler {
+  const MemoryMarkdownVaultTool();
+
+  @override
+  String get name => 'memory.markdown_vault';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final targetFile = context.arguments['targetFile'] as String?;
+    final noteContent = context.arguments['noteContent'] as String?;
+    final sessionTranscript = context.arguments['sessionTranscript'] as String?;
+    final vaultFolder = context.arguments['vaultFolder'] as String?;
+
+    final res = context.symbioticService.manageMarkdownMemoryVault(
+      action: action,
+      targetFile: targetFile,
+      noteContent: noteContent,
+      sessionTranscript: sessionTranscript,
+      vaultFolder: vaultFolder,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'vaultFolder': res.vaultFolder,
+        'soulMarkdown': res.soulMarkdown,
+        'ownerProfileMarkdown': res.ownerProfileMarkdown,
+        'memoryJournalMarkdown': res.memoryJournalMarkdown,
+        'flushedFactsCount': res.flushedFactsCount,
+        'redactedSecretsCount': res.redactedSecretsCount,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Memory Vault (${res.action}): lưu ${res.flushedFactsCount} mục vào ${res.vaultFolder}',
+    );
+  }
+}
+
+/// Semantic Browser ARIA Snapshotter (`browser.semantic_snapshot`, `MIND-2`).
+class BrowserSemanticSnapshotTool implements HostToolHandler {
+  const BrowserSemanticSnapshotTool();
+
+  @override
+  String get name => 'browser.semantic_snapshot';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawHtml = context.arguments['rawHtml'] as String?;
+    final pageTitle = context.arguments['pageTitle'] as String?;
+    final maxElements = (context.arguments['maxElements'] as int?) ?? 25;
+
+    final res = context.symbioticService.captureSemanticBrowserSnapshot(
+      rawHtml: rawHtml,
+      pageTitle: pageTitle,
+      maxElements: maxElements,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'snapshotId': res.snapshotId,
+        'pageTitle': res.pageTitle,
+        'elementCount': res.elementCount,
+        'tokenReductionPercent': res.tokenReductionPercent,
+        'compactAriaTree': res.compactAriaTree,
+        'elements': res.elements,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'ARIA Snapshot: ${res.elementCount} phần tử (giảm ${res.tokenReductionPercent}% token)',
+    );
+  }
+}
+
+/// Delegated Background Sub-Agent & Zero-Token Specialist Swarm Spawner (`subagent.spawn_and_poll`, `MIND-2`, `SWARM-2`).
+class SubagentSpawnAndPollTool implements HostToolHandler {
+  const SubagentSpawnAndPollTool();
+
+  @override
+  String get name => 'subagent.spawn_and_poll';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final taskGoal = context.arguments['taskGoal'] as String?;
+    final workerId = context.arguments['workerId'] as String?;
+    final tokenBudget = (context.arguments['tokenBudget'] as int?) ?? 2048;
+    final sourceFolder = context.arguments['sourceFolder'] as String?;
+    final rawRoles = context.arguments['specialistRoles'] as List<Object?>?;
+    final specialistRoles = rawRoles
+        ?.whereType<String>()
+        .map((r) => r.trim())
+        .toList(growable: false);
+    final enableCriticVerification =
+        (context.arguments['enableCriticVerification'] as bool?) ?? true;
+
+    final res = context.symbioticService.spawnOrPollSubagent(
+      action: action,
+      taskGoal: taskGoal,
+      workerId: workerId,
+      tokenBudget: tokenBudget,
+      sourceFolder: sourceFolder,
+      specialistRoles: specialistRoles,
+      enableCriticVerification: enableCriticVerification,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'workerId': res.workerId,
+        'status': res.status,
+        'progressPercent': res.progressPercent,
+        'tokenBudget': res.tokenBudget,
+        'tokensUsed': res.tokensUsed,
+        'llmTokensUsed': res.llmTokensUsed,
+        'contextSavedPercent': res.contextSavedPercent,
+        'distilledResultVi': res.distilledResultVi,
+        'activeWorkers': res.activeWorkers,
+        'blackboardEntries': res.blackboardEntries,
+        'criticPassed': res.criticPassed,
+        'criticConfidenceScore': res.criticConfidenceScore,
+        'specialistBreakdown': res.specialistBreakdown,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Sub-Agent [${res.workerId}]: ${res.status} (0 LLM Token, Critic ${res.criticConfidenceScore}%)',
+    );
+  }
+}
+
+/// Autonomous Cron & Event-Driven Lifecycle Hooks (`schedule.cron_and_hooks`, `MIND-2`).
+class ScheduleCronAndHooksTool implements HostToolHandler {
+  const ScheduleCronAndHooksTool();
+
+  @override
+  String get name => 'schedule.cron_and_hooks';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final hookId = context.arguments['hookId'] as String?;
+    final eventOrCron = context.arguments['eventOrCron'] as String?;
+    final targetSkillId = context.arguments['targetSkillId'] as String?;
+    final labelVi = context.arguments['labelVi'] as String?;
+
+    final res = context.symbioticService.manageCronAndHooks(
+      action: action,
+      hookId: hookId,
+      eventOrCron: eventOrCron,
+      targetSkillId: targetSkillId,
+      labelVi: labelVi,
+      nowUtc: context.nowUtc,
+    );
+
+    if (action == 'register' || action == 'trigger_event') {
+      context.actionLedger.pushEntry(
+        ReversibleActionEntry(
+          originalTool: name,
+          inverseTool: name,
+          inverseArgs: <String, Object?>{
+            'action': 'remove',
+            'hookId': res.hookId,
+          },
+          description:
+              'hoàn tác Hook tự trị ${res.hookId} (${res.undoSnapshotId})',
+          recordedAt: context.nowUtc,
+        ),
+      );
+    }
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'hookId': res.hookId,
+        'eventOrCron': res.eventOrCron,
+        'targetSkillId': res.targetSkillId,
+        'triggeredCount': res.triggeredCount,
+        'activeHooks': res.activeHooks,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Lifecycle Hook (${res.action}): ${res.hookId} -> ${res.targetSkillId}',
+    );
+  }
+}
+
 /// Registry and dispatcher for all MVP, Dev Workspace, Desk Co-Pilot, Ambient Co-Pilot, Smart TV/Home, and Symbiotic Co-Pilot tools (`UDC-3` §5.6.5, `UDC-11`..`UDC-15`).
 class HostToolDispatcher {
   HostToolDispatcher({
@@ -2184,6 +2472,12 @@ class HostToolDispatcher {
           const HeartbeatConfigureAndTickTool(),
           const CanvasPresentTool(),
           const PipelineExecuteUniversalTool(),
+          const SkillWorkshopSyncTool(),
+          const SkillChainAndTestTool(),
+          const MemoryMarkdownVaultTool(),
+          const BrowserSemanticSnapshotTool(),
+          const SubagentSpawnAndPollTool(),
+          const ScheduleCronAndHooksTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -2257,6 +2551,10 @@ class HostToolDispatcher {
     'teach.record_session',
     'skill.markdown_bridge',
     'skill.record_correction',
+    'skill.workshop_sync',
+    'memory.markdown_vault',
+    'browser.semantic_snapshot',
+    'subagent.spawn_and_poll',
     'heartbeat.configure_and_tick',
     'screen.capture',
     'ui.inspect',
