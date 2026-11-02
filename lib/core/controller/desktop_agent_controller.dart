@@ -62,6 +62,7 @@ class DesktopAgentController extends GetxController {
   final isTeachRecording = false.obs;
   final lastHeartbeatStatus = Rxn<HeartbeatStatusSnapshot>();
   final activeLiveCanvas = Rxn<LiveCanvasSurfaceSnapshot>();
+  final frontierStatusSummaryVi = ''.obs;
 
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
@@ -262,6 +263,51 @@ class DesktopAgentController extends GetxController {
     final snap = svc.presentLiveCanvas(action: 'present_invoice_table');
     refreshSymbioticState();
     return snap;
+  }
+
+  /// Feeds a dropped file into the Living Overlay Drop-Zone and synthesizes a Bio-Acoustic chirp (`FRONTIER-1`, `FRONTIER-2`).
+  String? feedOverlayDropAndVocalizeFromUi({
+    String droppedItemName = 'hoa_don_thang_11.csv',
+    String vocalKind = 'happy_chirp',
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final dropRes = svc.manageOverlayAndDropZone(
+      mode: 'feed_drop_item',
+      anchor: 'mac_notch',
+      droppedItemName: droppedItemName,
+    );
+    final vocalRes = svc.vocalizeAndSenseProsody(
+      mode: 'synthesize_vocal',
+      vocalKind: vocalKind,
+      speechRateWpm: 105,
+      rmsEnergyDb: -25,
+    );
+    frontierStatusSummaryVi.value =
+        '${dropRes.summaryVi}\n${vocalRes.summaryVi}';
+    refreshSymbioticState();
+    return frontierStatusSummaryVi.value;
+  }
+
+  /// Updates the Bi-Temporal ChronoGraph and starts a 4-7-8 Mindful Co-Breathing ritual (`FRONTIER-3`, `FRONTIER-4`).
+  String? updateChronoGraphAndRitualFromUi({
+    String objectVal = 'XUNA Frontier 2026',
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final graphRes = svc.manageTemporalLifeGraph(
+      mode: 'upsert_temporal_edge',
+      subject: 'Chủ nhân',
+      predicate: 'đang_tập_trung_dự_án',
+      object: objectVal,
+    );
+    final ritualRes = svc.executeMindfulRitualAndPlaydate(
+      mode: 'start_breathing_478',
+    );
+    frontierStatusSummaryVi.value =
+        '${graphRes.summaryVi}\n${ritualRes.summaryVi}';
+    refreshSymbioticState();
+    return frontierStatusSummaryVi.value;
   }
 
   /// Synthesizes a quick citizen tool (e.g., Invoice Harvester) from Desktop UI (`FORGE-3`).

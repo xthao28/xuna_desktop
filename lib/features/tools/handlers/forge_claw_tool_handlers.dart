@@ -647,6 +647,172 @@ class ScheduleCronAndHooksTool implements HostToolHandler {
   }
 }
 
+/// Living Overlay & Drag-and-Drop Feed-to-Process (`companion.overlay_and_drop`, `FRONTIER-1`).
+class CompanionOverlayAndDropTool implements HostToolHandler {
+  const CompanionOverlayAndDropTool();
+
+  @override
+  String get name => 'companion.overlay_and_drop';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final mode = context.arguments['mode'] as String;
+    final anchor = context.arguments['anchor'] as String?;
+    final droppedItemName = context.arguments['droppedItemName'] as String?;
+    final droppedContent = context.arguments['droppedContent'] as String?;
+    final targetAction = context.arguments['targetAction'] as String?;
+
+    final res = context.symbioticService.manageOverlayAndDropZone(
+      mode: mode,
+      anchor: anchor,
+      droppedItemName: droppedItemName,
+      droppedContent: droppedContent,
+      targetAction: targetAction,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'mode': res.mode,
+        'overlayVisible': res.overlayVisible,
+        'anchor': res.anchor,
+        'munchAnimation': res.munchAnimation,
+        'routedTarget': res.routedTarget,
+        'redactedSecretsCount': res.redactedSecretsCount,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Overlay (${res.anchor}): ${res.munchAnimation} -> ${res.routedTarget}',
+    );
+  }
+}
+
+/// Bio-Acoustic Procedural Vocalizer & Prosody Sensing (`acoustic.vocalize_and_sense`, `FRONTIER-2`).
+class AcousticVocalizeAndSenseTool implements HostToolHandler {
+  const AcousticVocalizeAndSenseTool();
+
+  @override
+  String get name => 'acoustic.vocalize_and_sense';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final mode = context.arguments['mode'] as String;
+    final vocalKind = context.arguments['vocalKind'] as String?;
+    final themeId = context.arguments['themeId'] as String?;
+    final speechRateWpm = context.arguments['speechRateWpm'] as int?;
+    final rmsEnergyDb = context.arguments['rmsEnergyDb'] as int?;
+    final pauseRatioPercent = context.arguments['pauseRatioPercent'] as int?;
+
+    final res = context.symbioticService.vocalizeAndSenseProsody(
+      mode: mode,
+      vocalKind: vocalKind,
+      themeId: themeId,
+      speechRateWpm: speechRateWpm,
+      rmsEnergyDb: rmsEnergyDb,
+      pauseRatioPercent: pauseRatioPercent,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'mode': res.mode,
+        'vocalKind': res.vocalKind,
+        'sampleRateHz': res.sampleRateHz,
+        'pcmByteCount': res.pcmByteCount,
+        'wavSha256': res.wavSha256,
+        'detectedOwnerTone': res.detectedOwnerTone,
+        'empathyAdjustmentVi': res.empathyAdjustmentVi,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Bio-Acoustic [${res.vocalKind}]: ${res.pcmByteCount}B PCM · Tone: ${res.detectedOwnerTone}',
+    );
+  }
+}
+
+/// Bi-Temporal Knowledge Graph & Memory Constellation (`memory.temporal_graph`, `FRONTIER-3`).
+class MemoryTemporalGraphTool implements HostToolHandler {
+  const MemoryTemporalGraphTool();
+
+  @override
+  String get name => 'memory.temporal_graph';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final mode = context.arguments['mode'] as String;
+    final subject = context.arguments['subject'] as String?;
+    final predicate = context.arguments['predicate'] as String?;
+    final object = context.arguments['object'] as String?;
+    final validFromIso = context.arguments['validFromIso'] as String?;
+
+    final res = context.symbioticService.manageTemporalLifeGraph(
+      mode: mode,
+      subject: subject,
+      predicate: predicate,
+      object: object,
+      validFromIso: validFromIso,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'mode': res.mode,
+        'activeEdgesCount': res.activeEdgesCount,
+        'historicalEdgesCount': res.historicalEdgesCount,
+        'supersededEdgeId': res.supersededEdgeId,
+        'temporalNarrativeVi': res.temporalNarrativeVi,
+        'constellationNodes': res.constellationNodes,
+        'constellationEdges': res.constellationEdges,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'ChronoGraph: ${res.activeEdgesCount} active / ${res.historicalEdgesCount} historical',
+    );
+  }
+}
+
+/// Embodied Mindful Rituals, StandBy OLED Dock & Neighbor Playdate (`ritual.mindful_and_playdate`, `FRONTIER-4`).
+class RitualMindfulAndPlaydateTool implements HostToolHandler {
+  const RitualMindfulAndPlaydateTool();
+
+  @override
+  String get name => 'ritual.mindful_and_playdate';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final mode = context.arguments['mode'] as String;
+    final durationMinutes = context.arguments['durationMinutes'] as int?;
+    final focusGoal = context.arguments['focusGoal'] as String?;
+    final neighborShortId = context.arguments['neighborShortId'] as String?;
+    final giftMessage = context.arguments['giftMessage'] as String?;
+
+    final res = context.symbioticService.executeMindfulRitualAndPlaydate(
+      mode: mode,
+      durationMinutes: durationMinutes,
+      focusGoal: focusGoal,
+      neighborShortId: neighborShortId,
+      giftMessage: giftMessage,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'mode': res.mode,
+        'activeRitual': res.activeRitual,
+        'cadencePattern': res.cadencePattern,
+        'standbyDockActive': res.standbyDockActive,
+        'unlockedKeepsakeVi': res.unlockedKeepsakeVi,
+        'playdateSummaryVi': res.playdateSummaryVi,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Ritual [${res.activeRitual}]: ${res.unlockedKeepsakeVi}',
+    );
+  }
+}
+
 const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
   ForgeSynthesizeSkillTool(),
   ForgeRunSkillTool(),
@@ -664,4 +830,8 @@ const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
   BrowserSemanticSnapshotTool(),
   SubagentSpawnAndPollTool(),
   ScheduleCronAndHooksTool(),
+  CompanionOverlayAndDropTool(),
+  AcousticVocalizeAndSenseTool(),
+  MemoryTemporalGraphTool(),
+  RitualMindfulAndPlaydateTool(),
 ];

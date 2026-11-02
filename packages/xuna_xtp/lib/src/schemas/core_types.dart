@@ -345,6 +345,53 @@ const Set<String> allowedLifecycleEvents = <String>{
   'on_git_commit',
 };
 
+/// Allowed modes for `companion.overlay_and_drop` (`FRONTIER-1`).
+const Set<String> allowedCompanionOverlayModes = <String>{
+  'toggle_overlay',
+  'set_anchor',
+  'feed_drop_item',
+  'status',
+};
+
+/// Allowed screen anchors for `companion.overlay_and_drop` (`FRONTIER-1`).
+const Set<String> allowedCompanionOverlayAnchors = <String>{
+  'mac_notch',
+  'top_right',
+  'bottom_right',
+  'floating_dock',
+};
+
+/// Allowed modes for `acoustic.vocalize_and_sense` (`FRONTIER-2`).
+const Set<String> allowedAcousticModes = <String>{
+  'synthesize_vocal',
+  'sense_prosody',
+};
+
+/// Allowed non-verbal vocalization kinds for `acoustic.vocalize_and_sense` (`FRONTIER-2`).
+const Set<String> allowedAcousticVocalKinds = <String>{
+  'happy_chirp',
+  'curious_trill',
+  'sleepy_coo',
+  'purr_nuzzle',
+  'eureka_chime',
+  'empathy_sigh',
+};
+
+/// Allowed modes for `memory.temporal_graph` (`FRONTIER-3`).
+const Set<String> allowedTemporalGraphModes = <String>{
+  'upsert_temporal_edge',
+  'query_timeline',
+  'render_constellation',
+};
+
+/// Allowed modes for `ritual.mindful_and_playdate` (`FRONTIER-4`).
+const Set<String> allowedRitualModes = <String>{
+  'start_breathing_478',
+  'start_symbiotic_pomodoro',
+  'toggle_standby_dock',
+  'send_neighbor_playdate',
+};
+
 /// Normative allowlist of key combinations for `input.key` (`UDC-8` §4.2).
 const Set<String> allowedInputKeyCombos = <String>{
   'Enter',
@@ -710,7 +757,8 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   }
   if (toolName == 'tv.list_devices' ||
       toolName == 'tv.control' ||
-      prefix == 'meeting') {
+      prefix == 'meeting' ||
+      prefix == 'acoustic') {
     return ToolFamily.media;
   }
   if (prefix == 'system') {
@@ -741,6 +789,8 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
       prefix == 'memory' ||
       prefix == 'subagent' ||
       prefix == 'schedule' ||
+      prefix == 'companion' ||
+      prefix == 'ritual' ||
       toolName == 'tv.launch_app') {
     return ToolFamily.app;
   }

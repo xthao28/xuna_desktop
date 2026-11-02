@@ -762,6 +762,45 @@ class DesktopAgentWindow extends StatelessWidget {
               ),
             ),
           ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      const Text(
+                        'XUNA Frontier 2026 · Living Overlay, Âm Thanh Sinh Học & ChronoGraph',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      OutlinedButton(
+                        onPressed: () =>
+                            controller.feedOverlayDropAndVocalizeFromUi(),
+                        child: const Text('Thả Tệp Mép Màn Hình & Tiếng Kêu'),
+                      ),
+                      OutlinedButton(
+                        onPressed: () =>
+                            controller.updateChronoGraphAndRitualFromUi(),
+                        child: const Text('Chòm Sao Ký Ức & Hít Thở 4-7-8'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    controller.frontierStatusSummaryVi.value.isEmpty
+                        ? 'Sẵn sàng: Kéo-thả tệp vào miệng XUNA (mac_notch / góc màn hình), tổng hợp sóng âm 16-bit PCM & đồ thị ký ức thời gian.'
+                        : controller.frontierStatusSummaryVi.value,
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
       );
     });

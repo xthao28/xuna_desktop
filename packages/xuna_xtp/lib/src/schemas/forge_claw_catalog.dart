@@ -322,7 +322,7 @@ List<ToolDescriptor> buildOmniForgeTools({
   ];
 }
 
-/// Builds the 11 `XUNA ClawPulse`, `XunaScript Universal Composable Engine`, `ClawWorkshop` & `ClawMind` (`CLAW-1`–`CLAW-3`, `UNIV-1`, `WORKSHOP-1`, `MIND-1`) tool descriptors:
+/// Builds the 15 `XUNA ClawPulse`, `XunaScript Universal Composable Engine`, `ClawWorkshop`, `ClawMind` & `Frontier 2026` (`CLAW-1`–`CLAW-3`, `UNIV-1`, `WORKSHOP-1`, `MIND-1`, `FRONTIER-1`–`FRONTIER-4`) tool descriptors:
 /// - `skill.markdown_bridge` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `skill.record_correction` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `heartbeat.configure_and_tick` (`R1`, `observes: true`, `reversible: true`, family `app`)
@@ -334,6 +334,10 @@ List<ToolDescriptor> buildOmniForgeTools({
 /// - `browser.semantic_snapshot` (`R1`, `observes: true`, `reversible: true`, family `url`)
 /// - `subagent.spawn_and_poll` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `schedule.cron_and_hooks` (`R1`, `observes: false`, `reversible: true`, family `app`)
+/// - `companion.overlay_and_drop` (`R1`, `observes: false`, `reversible: true`, family `app`)
+/// - `acoustic.vocalize_and_sense` (`R1`, `observes: false`, `reversible: true`, family `media`)
+/// - `memory.temporal_graph` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `ritual.mindful_and_playdate` (`R1`, `observes: false`, `reversible: true`, family `app`)
 List<ToolDescriptor> buildClawPulseTools({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
 }) {
@@ -1099,6 +1103,321 @@ List<ToolDescriptor> buildClawPulseTools({
           'triggeredCount',
           'activeHooks',
           'undoSnapshotId',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'companion.overlay_and_drop',
+      description:
+          'Control the always-on-top Pixel Overlay Window (Notch/Island/Corner anchor) and feed dropped files, URLs, or text snippets to XUNA with secret scrubbing.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'toggle_overlay',
+              'set_anchor',
+              'feed_drop_item',
+              'status',
+            ],
+          },
+          'anchor': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'mac_notch',
+              'top_right',
+              'bottom_right',
+              'floating_dock',
+            ],
+          },
+          'droppedItemName': <String, Object?>{
+            'type': 'string',
+            'maxLength': 180,
+          },
+          'droppedContent': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'targetAction': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+        },
+        'required': <String>['mode'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'overlayVisible': <String, Object?>{'type': 'boolean'},
+          'anchor': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'munchAnimation': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'routedTarget': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'redactedSecretsCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'mode',
+          'overlayVisible',
+          'anchor',
+          'munchAnimation',
+          'routedTarget',
+          'redactedSecretsCount',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'acoustic.vocalize_and_sense',
+      description:
+          'Synthesize non-verbal procedural R2-D2/Wall-E style pixel chirp/purr/trill PCM audio and sense acoustic prosody (speech rate, energy, pauses) with 0 raw audio retention.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['synthesize_vocal', 'sense_prosody'],
+          },
+          'vocalKind': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'happy_chirp',
+              'curious_trill',
+              'sleepy_coo',
+              'purr_nuzzle',
+              'eureka_chime',
+              'empathy_sigh',
+            ],
+          },
+          'themeId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'speechRateWpm': <String, Object?>{
+            'type': 'integer',
+            'minimum': 20,
+            'maximum': 320,
+          },
+          'rmsEnergyDb': <String, Object?>{
+            'type': 'integer',
+            'minimum': -80,
+            'maximum': 0,
+          },
+          'pauseRatioPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+        },
+        'required': <String>['mode'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'vocalKind': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'sampleRateHz': <String, Object?>{'type': 'integer', 'minimum': 8000},
+          'pcmByteCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'wavSha256': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'detectedOwnerTone': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'empathyAdjustmentVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'mode',
+          'vocalKind',
+          'sampleRateHz',
+          'pcmByteCount',
+          'wavSha256',
+          'detectedOwnerTone',
+          'empathyAdjustmentVi',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.media,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'memory.temporal_graph',
+      description:
+          'Upsert time-stamped subject-predicate-object edges into the Bi-Temporal Knowledge Graph (validFrom..validUntil) or render the interactive Memory Constellation.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'upsert_temporal_edge',
+              'query_timeline',
+              'render_constellation',
+            ],
+          },
+          'subject': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'predicate': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'object': <String, Object?>{
+            'type': 'string',
+            'maxLength': 200,
+          },
+          'validFromIso': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+        },
+        'required': <String>['mode'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'activeEdgesCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'historicalEdgesCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'supersededEdgeId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'temporalNarrativeVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 400,
+          },
+          'constellationNodes': <String, Object?>{'type': 'array'},
+          'constellationEdges': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'mode',
+          'activeEdgesCount',
+          'historicalEdgesCount',
+          'supersededEdgeId',
+          'temporalNarrativeVi',
+          'constellationNodes',
+          'constellationEdges',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'ritual.mindful_and_playdate',
+      description:
+          'Start 4-7-8 breathing cadence, co-working symbiotic Pomodoro with pixel keepsakes, Nightstand Standby Dock mode, or E2E signed Pet-to-Pet Playdate.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'start_breathing_478',
+              'start_symbiotic_pomodoro',
+              'toggle_standby_dock',
+              'send_neighbor_playdate',
+            ],
+          },
+          'durationMinutes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 90,
+          },
+          'focusGoal': <String, Object?>{
+            'type': 'string',
+            'maxLength': 200,
+          },
+          'neighborShortId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 32,
+          },
+          'giftMessage': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+        },
+        'required': <String>['mode'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'activeRitual': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'cadencePattern': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'standbyDockActive': <String, Object?>{'type': 'boolean'},
+          'unlockedKeepsakeVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'playdateSummaryVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'mode',
+          'activeRitual',
+          'cadencePattern',
+          'standbyDockActive',
+          'unlockedKeepsakeVi',
+          'playdateSummaryVi',
           'summaryVi',
         ],
         'additionalProperties': false,

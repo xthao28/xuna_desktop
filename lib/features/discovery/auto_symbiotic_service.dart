@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'symbiotic/frontier_2026_service.dart';
 import 'symbiotic/heartbeat_canvas_service.dart';
 import 'symbiotic/memory_aria_service.dart';
 import 'symbiotic/omniforge_service.dart';
@@ -11,6 +12,7 @@ import 'symbiotic/universal_pipeline_service.dart';
 import 'symbiotic/watchdog_coach_service.dart';
 import 'symbiotic/workspace_pocket_service.dart';
 
+export 'symbiotic/frontier_2026_service.dart';
 export 'symbiotic/heartbeat_canvas_service.dart';
 export 'symbiotic/memory_aria_service.dart';
 export 'symbiotic/omniforge_service.dart';
@@ -82,6 +84,10 @@ class AutoSymbioticService {
       workshopService: workshop,
       forgeService: forge,
     );
+    frontier2026 = Frontier2026Service(
+      pocketService: workspacePocket,
+      canvasService: heartbeatCanvas,
+    );
   }
 
   late final SymbioticVitalsService vitals;
@@ -93,6 +99,7 @@ class AutoSymbioticService {
   late final SkillWorkshopService workshop;
   late final MemoryAriaService memoryAria;
   late final SubagentCronService subagentCron;
+  late final Frontier2026Service frontier2026;
 
   bool get isTeachRecordingActive => forge.isTeachRecordingActive;
   HeartbeatStatusSnapshot? get lastHeartbeatStatus =>
@@ -638,5 +645,107 @@ class AutoSymbioticService {
     targetSkillId: targetSkillId,
     labelVi: labelVi,
     nowUtc: nowUtc,
+  );
+
+  // ── FRONTIER-1..4: Living Overlay, Bio-Acoustic, ChronoGraph & Rituals ───
+
+  ({
+    String mode,
+    bool overlayVisible,
+    String anchor,
+    String munchAnimation,
+    String routedTarget,
+    int redactedSecretsCount,
+    String summaryVi,
+  })
+  manageOverlayAndDropZone({
+    required String mode,
+    String? anchor,
+    String? droppedItemName,
+    String? droppedContent,
+    String? targetAction,
+    DateTime? nowUtc,
+  }) => frontier2026.manageOverlayAndDropZone(
+    mode: mode,
+    anchor: anchor,
+    droppedItemName: droppedItemName,
+    droppedContent: droppedContent,
+    targetAction: targetAction,
+    nowUtc: nowUtc,
+  );
+
+  ({
+    String mode,
+    String vocalKind,
+    int sampleRateHz,
+    int pcmByteCount,
+    String wavSha256,
+    String detectedOwnerTone,
+    String empathyAdjustmentVi,
+    String summaryVi,
+  })
+  vocalizeAndSenseProsody({
+    required String mode,
+    String? vocalKind,
+    String? themeId,
+    int? speechRateWpm,
+    int? rmsEnergyDb,
+    int? pauseRatioPercent,
+  }) => frontier2026.vocalizeAndSenseProsody(
+    mode: mode,
+    vocalKind: vocalKind,
+    themeId: themeId,
+    speechRateWpm: speechRateWpm,
+    rmsEnergyDb: rmsEnergyDb,
+    pauseRatioPercent: pauseRatioPercent,
+  );
+
+  ({
+    String mode,
+    int activeEdgesCount,
+    int historicalEdgesCount,
+    String supersededEdgeId,
+    String temporalNarrativeVi,
+    List<Map<String, Object?>> constellationNodes,
+    List<Map<String, Object?>> constellationEdges,
+    String summaryVi,
+  })
+  manageTemporalLifeGraph({
+    required String mode,
+    String? subject,
+    String? predicate,
+    String? object,
+    String? validFromIso,
+    DateTime? nowUtc,
+  }) => frontier2026.manageTemporalLifeGraph(
+    mode: mode,
+    subject: subject,
+    predicate: predicate,
+    object: object,
+    validFromIso: validFromIso,
+    nowUtc: nowUtc,
+  );
+
+  ({
+    String mode,
+    String activeRitual,
+    String cadencePattern,
+    bool standbyDockActive,
+    String unlockedKeepsakeVi,
+    String playdateSummaryVi,
+    String summaryVi,
+  })
+  executeMindfulRitualAndPlaydate({
+    required String mode,
+    int? durationMinutes,
+    String? focusGoal,
+    String? neighborShortId,
+    String? giftMessage,
+  }) => frontier2026.executeMindfulRitualAndPlaydate(
+    mode: mode,
+    durationMinutes: durationMinutes,
+    focusGoal: focusGoal,
+    neighborShortId: neighborShortId,
+    giftMessage: giftMessage,
   );
 }
