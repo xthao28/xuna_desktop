@@ -3814,12 +3814,7 @@ void main() {
             MaterialApp(home: DesktopAgentWindow(controller: agentController)),
           );
 
-          // Verify the main navigation bar only exposes the 4 core operational tabs
-          // without the prototype 'Cộng sinh' tab.
-          expect(find.text('Cộng sinh'), findsNothing);
-
-          agentController.activeTab.value = AgentWindowTab.symbiotic;
-          agentController.refreshSymbioticState();
+          await tester.tap(find.text('Cộng sinh'));
           await tester.pump();
 
           expect(agentController.activeTab.value, AgentWindowTab.symbiotic);

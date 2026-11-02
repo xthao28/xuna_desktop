@@ -199,7 +199,7 @@ class AgentHeaderBar extends StatelessWidget {
   }
 }
 
-/// Top pill navigation bar switching between the 4 core Desktop Agent tabs.
+/// Top pill navigation bar switching between the 5 Desktop Agent tabs.
 class AgentTabBar extends StatelessWidget {
   const AgentTabBar({super.key, required this.controller});
 
@@ -210,6 +210,7 @@ class AgentTabBar extends StatelessWidget {
     AgentWindowTab.policy,
     AgentWindowTab.permissions,
     AgentWindowTab.audit,
+    AgentWindowTab.symbiotic,
   ];
 
   static String _tabLabel(AgentWindowTab tab) => switch (tab) {
