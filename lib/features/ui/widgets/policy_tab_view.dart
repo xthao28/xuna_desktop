@@ -33,13 +33,13 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
 
   static String _familyDescription(ToolFamily family) => switch (family) {
         ToolFamily.media =>
-          'Phát / tạm dừng nhạc, chuyển bài, âm lượng, giọng kêu sinh học XUNA.',
+          'Phát / tạm dừng nhạc, chuyển bài và điều chỉnh âm lượng hệ thống.',
         ToolFamily.app =>
-          'Mở ứng dụng, kiểm tra không gian làm việc, Xưởng Kỹ Năng OmniForge & điều khiển UIA 0-Screenshot.',
+          'Mở ứng dụng trong danh sách cho phép và kiểm tra trạng thái cửa sổ.',
         ToolFamily.url =>
-          'Mở liên kết HTTPS hợp lệ và đọc tóm tắt tab trình duyệt đang mở.',
+          'Mở liên kết HTTPS hợp lệ thuộc các tên miền được phép.',
         ToolFamily.workflow =>
-          'Chạy quy trình Shortcuts / tự động hóa thói quen đã phê duyệt.',
+          'Chạy quy trình Shortcuts / tự động hóa đã được phê duyệt.',
         _ => '',
       };
 

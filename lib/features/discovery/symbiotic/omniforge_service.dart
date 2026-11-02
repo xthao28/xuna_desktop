@@ -512,13 +512,6 @@ class OmniForgeService {
 
   /// Lists forged skills as strongly typed entries for the Desktop UI (`FORGE-3`).
   List<ForgedSkillEntry> listForgedSkillEntries() {
-    if (_forgedSkills.isEmpty) {
-      synthesizeSkill(
-        goal:
-            'Tự động tải toàn bộ hóa đơn PDF/XML trên trang đang mở và gom bảng kê Excel',
-        category: 'web_harvest_invoices',
-      );
-    }
     return List<ForgedSkillEntry>.unmodifiable(_forgedSkills);
   }
 

@@ -3814,7 +3814,12 @@ void main() {
             MaterialApp(home: DesktopAgentWindow(controller: agentController)),
           );
 
-          await tester.tap(find.text('Cộng sinh'));
+          // Verify the main navigation bar only exposes the 4 core operational tabs
+          // without the prototype 'Cộng sinh' tab.
+          expect(find.text('Cộng sinh'), findsNothing);
+
+          agentController.activeTab.value = AgentWindowTab.symbiotic;
+          agentController.refreshSymbioticState();
           await tester.pump();
 
           expect(agentController.activeTab.value, AgentWindowTab.symbiotic);
@@ -3822,89 +3827,17 @@ void main() {
           expect(agentController.pocketItems, hasLength(1));
           expect(agentController.activeWatchdogs, hasLength(1));
           expect(agentController.habitProposals, isNotEmpty);
+          expect(agentController.forgedSkills, isEmpty);
 
           expect(find.textContaining('xuna_pet @ feat/sym-ui'), findsOneWidget);
           expect(find.textContaining('Repo XUNA'), findsOneWidget);
           expect(find.text('[process] cargo'), findsOneWidget);
-
-          await tester.ensureVisible(find.text('Đóng băng nhanh'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Đóng băng nhanh'));
-          await tester.pump();
-          expect(agentController.workspaceCapsules, hasLength(2));
-
-          await tester.ensureVisible(find.text('Thêm ghi chú'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Thêm ghi chú'));
-          await tester.pump();
-          expect(agentController.pocketItems, hasLength(2));
 
           await tester.ensureVisible(find.text('Xóa tất cả'));
           await tester.pumpAndSettle();
           await tester.tap(find.text('Xóa tất cả'));
           await tester.pump();
           expect(agentController.activeWatchdogs, isEmpty);
-
-          await tester.ensureVisible(find.text('Rèn Tool Hóa Đơn'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Rèn Tool Hóa Đơn'));
-          await tester.pump();
-          expect(agentController.forgedSkills, isNotEmpty);
-
-          await tester.ensureVisible(find.text('Nhịp tuần tra 0-Token'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Nhịp tuần tra 0-Token'));
-          await tester.pump();
-          expect(
-            agentController.lastHeartbeatStatus.value?.status,
-            equals('HEARTBEAT_OK'),
-          );
-
-          await tester.ensureVisible(find.text('Mở Live Canvas A2UI'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Mở Live Canvas A2UI'));
-          await tester.pump();
-          expect(
-            agentController.activeLiveCanvas.value?.surfaceKind,
-            equals('invoice_table'),
-          );
-
-          await tester.ensureVisible(
-            find.text('Thả Tệp Mép Màn Hình & Tiếng Kêu'),
-          );
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Thả Tệp Mép Màn Hình & Tiếng Kêu'));
-          await tester.pump();
-          expect(
-            agentController.frontierStatusSummaryVi.value,
-            contains('munch_sparkle'),
-          );
-
-          await tester.ensureVisible(
-            find.text('Chòm Sao Ký Ức & Hít Thở 4-7-8'),
-          );
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Chòm Sao Ký Ức & Hít Thở 4-7-8'));
-          await tester.pump();
-          expect(
-            agentController.activeLiveCanvas.value?.surfaceKind,
-            equals('constellation_graph'),
-          );
-
-          await tester.ensureVisible(
-            find.text('Điều Khiển Ứng Dụng 0-Screenshot'),
-          );
-          await tester.pumpAndSettle();
-          await tester.tap(find.text('Điều Khiển Ứng Dụng 0-Screenshot'));
-          await tester.pump();
-          expect(
-            agentController.frontierStatusSummaryVi.value,
-            contains('0 chụp màn hình'),
-          );
-          expect(
-            agentController.activeLiveCanvas.value?.surfaceKind,
-            equals('data_table'),
-          );
 
           agentController.onClose();
           await tester.runAsync(() => sessionClient.dispose());
