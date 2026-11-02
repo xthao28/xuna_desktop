@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(55));
+        expect(toolsList, hasLength(60));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -3061,6 +3061,224 @@ void main() {
               teachCompileResp.result['structuredContent']
                   as Map<String, Object?>;
           expect(teachCompileSc['compiledSkillId'], isNotEmpty);
+
+          // 8. CLAW-1..4: SKILL.md bridge, Self-Improving Corrections, Zero-Token Heartbeat, Live Canvas A2UI & Lane Concurrency
+          final exportMdResp = await sym1Dispatcher.dispatch(
+            requestId: 1219,
+            params: ToolsCallParams(
+              name: 'skill.markdown_bridge',
+              arguments: <String, Object?>{
+                'action': 'export_skill_md',
+                'skillId': forgedId,
+              },
+              invocationId: '12190000-0000-4000-8000-000000000019',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final exportMdSc =
+              exportMdResp.result['structuredContent'] as Map<String, Object?>;
+          expect(exportMdSc['securityVerified'], isTrue);
+          expect(
+            exportMdSc['skillMarkdown'] as String,
+            contains('self_heal_generation:'),
+          );
+
+          final corrResp = await sym1Dispatcher.dispatch(
+            requestId: 1220,
+            params: ToolsCallParams(
+              name: 'skill.record_correction',
+              arguments: <String, Object?>{
+                'action': 'record',
+                'skillId': forgedId,
+                'correctionNote':
+                    'Trang thuế mới đổi nút Tải PDF sang góc phải bảng',
+              },
+              invocationId: '12200000-0000-4000-8000-000000000020',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final corrSc =
+              corrResp.result['structuredContent'] as Map<String, Object?>;
+          expect(corrSc['selfHealGeneration'], equals(1));
+          expect(corrSc['correctionRules'] as List<Object?>, hasLength(1));
+
+          final hbOkResp = await sym1Dispatcher.dispatch(
+            requestId: 1221,
+            params: const ToolsCallParams(
+              name: 'heartbeat.configure_and_tick',
+              arguments: <String, Object?>{
+                'action': 'tick',
+                'checkName': 'Canh hóa đơn mới',
+                'intervalMinutes': 30,
+                'simulateDelta': false,
+              },
+              invocationId: '12210000-0000-4000-8000-000000000021',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final hbOkSc =
+              hbOkResp.result['structuredContent'] as Map<String, Object?>;
+          expect(hbOkSc['status'], equals('HEARTBEAT_OK'));
+          expect(hbOkSc['llmTokensUsed'], equals(0));
+          expect(hbOkSc['suppressedNotification'], isTrue);
+
+          final canvasResp = await sym1Dispatcher.dispatch(
+            requestId: 1222,
+            params: const ToolsCallParams(
+              name: 'canvas.present',
+              arguments: <String, Object?>{
+                'action': 'present_invoice_table',
+                'title': 'Bảng kê hóa đơn tương tác A2UI',
+              },
+              invocationId: '12220000-0000-4000-8000-000000000022',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final canvasSc =
+              canvasResp.result['structuredContent'] as Map<String, Object?>;
+          expect(canvasSc['surfaceKind'], equals('invoice_table'));
+          expect(canvasSc['rows'] as List<Object?>, hasLength(3));
+          expect(sym1Dispatcher.parallelReadLaneCount, greaterThan(0));
+          expect(sym1Dispatcher.serialActionLaneCount, greaterThan(0));
+
+          // 9. UNIV-2: XunaScript Universal Composable Engine (Real dart:io + Multi-Domain Parsing + Reconcile + SHA-256 Heartbeat)
+          final univTempDir = Directory.systemTemp.createTempSync(
+            'xuna_univ_pipeline_test_',
+          );
+          try {
+            // Write real unstructured CV text and XML candidate records to disk
+            File('${univTempDir.path}/cv_minh_anh.txt').writeAsStringSync(
+              'Ứng viên: Nguyễn Minh Anh\n'
+              'Email: minhanh.hr@example.com | SĐT: 0912345678\n'
+              'Kinh nghiệm: 4 năm làm Python, Marketing, SQL và AI.',
+            );
+            File('${univTempDir.path}/candidates_extra.xml').writeAsStringSync(
+              '<Candidates>'
+              '<Candidate><name>Trần Hoàng Nam</name><skills>Flutter, Dart</skills><yearsExp>3</yearsExp></Candidate>'
+              '</Candidates>',
+            );
+
+            // Real SHA-256 directory heartbeat: tick 1 establishes baseline (HEARTBEAT_OK),
+            // adding a file triggers HEARTBEAT_ALERT on tick 2!
+            final hbDir1 = sym1Dispatcher.symbioticService
+                .configureAndTickHeartbeat(
+                  checkName: 'Canh thư mục CV ứng viên',
+                  watchedDirectoryPath: univTempDir.path,
+                );
+            expect(hbDir1.status, equals('HEARTBEAT_OK'));
+            expect(hbDir1.deltaDetected, isFalse);
+
+            final hbDirSame = sym1Dispatcher.symbioticService
+                .configureAndTickHeartbeat(
+                  checkName: 'Canh thư mục CV ứng viên',
+                  watchedDirectoryPath: univTempDir.path,
+                );
+            expect(hbDirSame.status, equals('HEARTBEAT_OK'));
+
+            File(
+              '${univTempDir.path}/photo_raw.jpg',
+            ).writeAsBytesSync(const <int>[0xFF, 0xD8, 0xFF, 0xD9]);
+            final hbDirAlert = sym1Dispatcher.symbioticService
+                .configureAndTickHeartbeat(
+                  checkName: 'Canh thư mục CV ứng viên',
+                  watchedDirectoryPath: univTempDir.path,
+                );
+            expect(hbDirAlert.status, equals('HEARTBEAT_ALERT'));
+            expect(hbDirAlert.deltaDetected, isTrue);
+
+            // Real UTF-8 BOM CSV export + Universal Parse + Reconcile on disk
+            final parsedCvRows = sym1Dispatcher.symbioticService
+                .parseUniversalContent(
+                  File(
+                    '${univTempDir.path}/cv_minh_anh.txt',
+                  ).readAsStringSync(),
+                  sourceName: 'cv_minh_anh.txt',
+                );
+            expect(parsedCvRows, hasLength(1));
+            expect(
+              parsedCvRows.first['email'],
+              equals('minhanh.hr@example.com'),
+            );
+            expect(parsedCvRows.first['skills'] as String, contains('Python'));
+
+            final exportedCsvPath = sym1Dispatcher.symbioticService
+                .exportUniversalArtifactToDisk(
+                  filePath: '${univTempDir.path}/BangUngVien_UTF8.csv',
+                  format: 'csv',
+                  titleVi: 'Danh sách ứng viên HR',
+                  rows: parsedCvRows,
+                );
+            final rawBytes = File(exportedCsvPath).readAsBytesSync();
+            expect(
+              rawBytes.sublist(0, 3),
+              equals(const <int>[0xEF, 0xBB, 0xBF]),
+            );
+            final csvText = File(exportedCsvPath).readAsStringSync();
+            expect(csvText, contains('minhanh.hr@example.com'));
+
+            // Real batch file rename + 1-click undo on disk
+            final renamedPairs = sym1Dispatcher.symbioticService
+                .executeBatchFileOpsInDirectory(
+                  directoryPath: univTempDir.path,
+                  prefix: 'XUNA_Batch',
+                );
+            expect(renamedPairs, isNotEmpty);
+            expect(File(renamedPairs.first.newPath).existsSync(), isTrue);
+            final restoredCount = sym1Dispatcher.symbioticService
+                .undoLastBatchFileOps();
+            expect(restoredCount, equals(renamedPairs.length));
+            expect(File(renamedPairs.first.oldPath).existsSync(), isTrue);
+
+            // Dispatch pipeline.execute_universal (R2) for 2-table order reconciliation
+            const univArgs = <String, Object?>{
+              'goal': 'Đối soát bảng đơn hàng và sao kê vận chuyển tháng 11',
+              'primitives': <String>[
+                'parse.universal',
+                'transform.pipeline',
+                'export.artifact',
+                'canvas.dynamic_a2ui',
+              ],
+              'rawInputText':
+                  'id,amount\nDH-01,500000\nDH-02,900000\nDH-03,300000',
+              'secondaryInputText': 'id,amount\nDH-01,500000\nDH-02,850000',
+              'exportFormat': 'csv',
+              'outputFileName': 'DoiSoat_Thang11.csv',
+            };
+            final univResp = await sym1Dispatcher.dispatch(
+              requestId: 1223,
+              params: ToolsCallParams(
+                name: 'pipeline.execute_universal',
+                arguments: univArgs,
+                invocationId: '12230000-0000-4000-8000-000000000023',
+                deadlineMs: 5000,
+                approval: ApprovalToken(
+                  approvalId: '12230000-0000-4000-8000-000000000099',
+                  argsSha256: argsSha256(univArgs),
+                  expiresAt: now.add(const Duration(minutes: 5)),
+                ),
+              ),
+              nowUtc: now,
+            );
+            final univSc =
+                univResp.result['structuredContent'] as Map<String, Object?>;
+            expect(univSc['category'], equals('spreadsheet_reconciler'));
+            expect(univSc['canvasSurfaceKind'], equals('diff_reconcile'));
+            expect(univSc['processedCount'], equals(3));
+            final reconcileRows = (univSc['rows'] as List<Object?>)
+                .cast<Map<String, Object?>>();
+            expect(reconcileRows[0]['status'], equals('khop_100'));
+            expect(reconcileRows[1]['status'], equals('lech_gia_tri'));
+            expect(reconcileRows[1]['delta'], equals(-50000));
+            expect(reconcileRows[2]['status'], equals('thieu_du_lieu'));
+          } finally {
+            if (univTempDir.existsSync()) {
+              univTempDir.deleteSync(recursive: true);
+            }
+          }
         },
       );
 
@@ -3153,6 +3371,24 @@ void main() {
           await tester.tap(find.text('Rèn Tool Hóa Đơn'));
           await tester.pump();
           expect(agentController.forgedSkills, isNotEmpty);
+
+          await tester.ensureVisible(find.text('Nhịp tuần tra 0-Token'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Nhịp tuần tra 0-Token'));
+          await tester.pump();
+          expect(
+            agentController.lastHeartbeatStatus.value?.status,
+            equals('HEARTBEAT_OK'),
+          );
+
+          await tester.ensureVisible(find.text('Mở Live Canvas A2UI'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Mở Live Canvas A2UI'));
+          await tester.pump();
+          expect(
+            agentController.activeLiveCanvas.value?.surfaceKind,
+            equals('invoice_table'),
+          );
 
           agentController.onClose();
           await tester.runAsync(() => sessionClient.dispose());

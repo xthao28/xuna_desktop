@@ -379,6 +379,10 @@ class ToolDescriptor {
                             prefix == 'coach' ||
                             prefix == 'forge' ||
                             prefix == 'teach' ||
+                            prefix == 'skill' ||
+                            prefix == 'heartbeat' ||
+                            prefix == 'canvas' ||
+                            prefix == 'pipeline' ||
                             name == 'tv.launch_app')
                         ? ToolFamily.app
                         : ToolFamily.fromWire(prefix);
@@ -508,6 +512,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeSymbioticEvolutionTools = false,
   bool includeSymbioticSentinelTools = false,
   bool includeOmniForgeTools = false,
+  bool includeClawPulseTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -840,6 +845,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildSymbioticSentinelTools(defaultPermission: defaultPermission),
     if (includeOmniForgeTools)
       ...buildOmniForgeTools(defaultPermission: defaultPermission),
+    if (includeClawPulseTools)
+      ...buildClawPulseTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -2765,7 +2772,7 @@ List<ToolDescriptor> buildSymbioticSentinelTools({
   ];
 }
 
-/// Allowed skill categories for `forge.synthesize_skill` (`FORGE-1`).
+/// Allowed skill categories for `forge.synthesize_skill` (`FORGE-1`, `UNIV-1`).
 const Set<String> allowedForgeSkillCategories = <String>{
   'auto',
   'web_harvest_invoices',
@@ -2773,6 +2780,11 @@ const Set<String> allowedForgeSkillCategories = <String>{
   'smart_file_janitor',
   'spreadsheet_reconciler',
   'lead_harvester',
+  'hr_cv_scanner',
+  'ecommerce_price_radar',
+  'content_news_digest',
+  'media_batch_renamer',
+  'universal_data_pipeline',
   'custom_script',
 };
 
@@ -2821,6 +2833,11 @@ List<ToolDescriptor> buildOmniForgeTools({
               'smart_file_janitor',
               'spreadsheet_reconciler',
               'lead_harvester',
+              'hr_cv_scanner',
+              'ecommerce_price_radar',
+              'content_news_digest',
+              'media_batch_renamer',
+              'universal_data_pipeline',
               'custom_script',
             ],
           },
@@ -3096,6 +3113,386 @@ List<ToolDescriptor> buildOmniForgeTools({
       policy: ToolPolicyMeta(
         family: ToolFamily.app,
         risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Allowed actions for `skill.markdown_bridge` (`CLAW-1`).
+const Set<String> allowedSkillMarkdownActions = <String>{
+  'export_skill_md',
+  'import_skill_md',
+};
+
+/// Allowed actions for `skill.record_correction` (`CLAW-1`).
+const Set<String> allowedSkillCorrectionActions = <String>{
+  'record',
+  'list',
+};
+
+/// Allowed actions for `heartbeat.configure_and_tick` (`CLAW-2`).
+const Set<String> allowedHeartbeatActions = <String>{
+  'configure',
+  'tick',
+  'status',
+};
+
+/// Allowed actions for `canvas.present` (`CLAW-3`, `UNIV-1`).
+const Set<String> allowedCanvasActions = <String>{
+  'present_invoice_table',
+  'present_workflow_board',
+  'present_data_table',
+  'present_kanban_board',
+  'present_diff_reconcile',
+  'present_metric_cards',
+  'clear',
+};
+
+/// The 8 Universal Atomic Primitives of the XunaScript Composable Engine (`UNIV-1`).
+const Set<String> allowedUniversalPrimitives = <String>{
+  'source.filesystem',
+  'source.web_http',
+  'parse.universal',
+  'transform.pipeline',
+  'file.batch_ops',
+  'export.artifact',
+  'sensor.hash_delta',
+  'canvas.dynamic_a2ui',
+};
+
+/// Allowed artifact export formats for `pipeline.execute_universal` (`UNIV-1`).
+const Set<String> allowedUniversalExportFormats = <String>{
+  'csv',
+  'json',
+  'md',
+  'html',
+};
+
+/// Builds the 5 `XUNA ClawPulse` & `XunaScript Universal Composable Engine` (`CLAW-1`–`CLAW-3`, `UNIV-1`) tool descriptors:
+/// - `skill.markdown_bridge` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `skill.record_correction` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `heartbeat.configure_and_tick` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `canvas.present` (`R1`, `observes: false`, `reversible: true`, family `app`)
+/// - `pipeline.execute_universal` (`R2`, `observes: false`, `reversible: true`, family `app`)
+List<ToolDescriptor> buildClawPulseTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'skill.markdown_bridge',
+      description:
+          'Export a forged XUNA skill as an OpenClaw-compatible SKILL.md document or import a safe SKILL.md into the sandboxed OmniForge library.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['export_skill_md', 'import_skill_md'],
+          },
+          'skillId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'markdownContent': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'skillId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'titleVi': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'skillMarkdown': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'securityVerified': <String, Object?>{'type': 'boolean'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'action',
+          'skillId',
+          'titleVi',
+          'skillMarkdown',
+          'securityVerified',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'skill.record_correction',
+      description:
+          'Record a self-improving correction rule on a forged skill when a portal layout changes or the owner gives feedback.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['record', 'list'],
+          },
+          'skillId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'correctionNote': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+        },
+        'required': <String>['skillId'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'skillId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'selfHealGeneration': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'correctionRules': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'skillId',
+          'selfHealGeneration',
+          'correctionRules',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'heartbeat.configure_and_tick',
+      description:
+          'Run or configure XUNA Zero-Token 2-Tier Heartbeat patrol (Tier-1 0-token local sensor pre-check returning HEARTBEAT_OK or HEARTBEAT_ALERT).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['configure', 'tick', 'status'],
+          },
+          'checkName': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+          'intervalMinutes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 5,
+            'maximum': 720,
+          },
+          'simulateDelta': <String, Object?>{
+            'type': 'boolean',
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'status': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['HEARTBEAT_OK', 'HEARTBEAT_ALERT'],
+          },
+          'deltaDetected': <String, Object?>{'type': 'boolean'},
+          'llmTokensUsed': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'suppressedNotification': <String, Object?>{'type': 'boolean'},
+          'intervalMinutes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 5,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'status',
+          'deltaDetected',
+          'llmTokensUsed',
+          'suppressedNotification',
+          'intervalMinutes',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'canvas.present',
+      description:
+          'Push an interactive A2UI Live Canvas surface (data table, kanban, diff reconcile, metric cards, invoice table, or workflow board) to Desktop and Mobile.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'present_invoice_table',
+              'present_workflow_board',
+              'present_data_table',
+              'present_kanban_board',
+              'present_diff_reconcile',
+              'present_metric_cards',
+              'clear',
+            ],
+          },
+          'title': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'sourceSkillId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'canvasId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'surfaceKind': <String, Object?>{'type': 'string', 'maxLength': 40},
+          'titleVi': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'columns': <String, Object?>{'type': 'array'},
+          'rows': <String, Object?>{'type': 'array'},
+          'actions': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'canvasId',
+          'surfaceKind',
+          'titleVi',
+          'columns',
+          'rows',
+          'actions',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'pipeline.execute_universal',
+      description:
+          'Execute a composable XunaScript pipeline across the 8 universal primitives (file/web source, universal parse, transform/reconcile, batch file ops, export, and A2UI canvas).',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'goal': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 400,
+          },
+          'primitives': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'string',
+              'enum': <String>[
+                'source.filesystem',
+                'source.web_http',
+                'parse.universal',
+                'transform.pipeline',
+                'file.batch_ops',
+                'export.artifact',
+                'sensor.hash_delta',
+                'canvas.dynamic_a2ui',
+              ],
+            },
+          },
+          'sourceFolder': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'rawInputText': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'secondaryInputText': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'exportFormat': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['csv', 'json', 'md', 'html'],
+          },
+          'outputFileName': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+        },
+        'required': <String>['goal'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'pipelineId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'category': <String, Object?>{'type': 'string', 'maxLength': 40},
+          'executedPrimitives': <String, Object?>{'type': 'array'},
+          'processedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'exportedFile': <String, Object?>{'type': 'string', 'maxLength': 160},
+          'canvasSurfaceKind': <String, Object?>{
+            'type': 'string',
+            'maxLength': 40,
+          },
+          'rows': <String, Object?>{'type': 'array'},
+          'undoSnapshotId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'pipelineId',
+          'category',
+          'executedPrimitives',
+          'processedCount',
+          'exportedFile',
+          'canvasSurfaceKind',
+          'rows',
+          'undoSnapshotId',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
         observes: false,
         reversible: true,
         permission: defaultPermission,

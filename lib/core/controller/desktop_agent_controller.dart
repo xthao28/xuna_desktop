@@ -60,6 +60,8 @@ class DesktopAgentController extends GetxController {
   final habitProposals = <Map<String, Object?>>[].obs;
   final forgedSkills = <ForgedSkillEntry>[].obs;
   final isTeachRecording = false.obs;
+  final lastHeartbeatStatus = Rxn<HeartbeatStatusSnapshot>();
+  final activeLiveCanvas = Rxn<LiveCanvasSurfaceSnapshot>();
 
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
@@ -201,6 +203,65 @@ class DesktopAgentController extends GetxController {
     habitProposals.assignAll(svc.proposeHabitWorkflows());
     forgedSkills.assignAll(svc.listForgedSkillEntries());
     isTeachRecording.value = svc.isTeachRecordingActive;
+    lastHeartbeatStatus.value = svc.lastHeartbeatStatus;
+    activeLiveCanvas.value = svc.activeLiveCanvas;
+  }
+
+  /// Runs a Zero-Token 2-Tier Heartbeat tick from the Desktop UI (`CLAW-2`).
+  HeartbeatStatusSnapshot? runZeroTokenHeartbeatFromUi({
+    bool simulateDelta = false,
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final snap = svc.configureAndTickHeartbeat(
+      action: 'tick',
+      simulateDelta: simulateDelta,
+    );
+    refreshSymbioticState();
+    return snap;
+  }
+
+  /// Records a self-healing layout correction rule on a skill from the Desktop UI (`CLAW-1`).
+  Map<String, Object?>? recordQuickSkillCorrectionFromUi(
+    String skillId, {
+    String correctionNote =
+        'Trang thuế mới đổi nút Tải PDF sang góc phải bảng hóa đơn',
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final res = svc.recordSkillCorrection(
+      action: 'record',
+      skillId: skillId,
+      correctionNote: correctionNote,
+    );
+    refreshSymbioticState();
+    return <String, Object?>{
+      'skillId': res.skillId,
+      'selfHealGeneration': res.selfHealGeneration,
+      'correctionRules': res.correctionRules,
+      'summaryVi': res.summaryVi,
+    };
+  }
+
+  /// Exports a forged skill as an OpenClaw-compatible `SKILL.md` string (`CLAW-1`).
+  String? exportSkillMarkdownFromUi(String skillId) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final res = svc.bridgeSkillMarkdown(
+      action: 'export_skill_md',
+      skillId: skillId,
+    );
+    refreshSymbioticState();
+    return res.skillMarkdown;
+  }
+
+  /// Presents the interactive A2UI Live Canvas surface from the Desktop UI (`CLAW-3`).
+  LiveCanvasSurfaceSnapshot? presentInvoiceLiveCanvasFromUi() {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final snap = svc.presentLiveCanvas(action: 'present_invoice_table');
+    refreshSymbioticState();
+    return snap;
   }
 
   /// Synthesizes a quick citizen tool (e.g., Invoice Harvester) from Desktop UI (`FORGE-3`).

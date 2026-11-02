@@ -442,6 +442,10 @@ class HostPolicyEvaluator {
                             prefix == 'coach' ||
                             prefix == 'forge' ||
                             prefix == 'teach' ||
+                            prefix == 'skill' ||
+                            prefix == 'heartbeat' ||
+                            prefix == 'canvas' ||
+                            prefix == 'pipeline' ||
                             toolName == 'tv.launch_app')
                         ? ToolFamily.app
                         : ToolFamily.fromWire(prefix);
@@ -1301,6 +1305,201 @@ class HostPolicyEvaluator {
           );
         }
         effectiveRisk = RiskTier.r1;
+      case 'skill.markdown_bridge':
+        final action = arguments['action'];
+        final skillId = arguments['skillId'];
+        final markdownContent = arguments['markdownContent'];
+        const allowedMdKeys = <String>{
+          'action',
+          'skillId',
+          'markdownContent',
+        };
+        if (arguments.keys.any((k) => !allowedMdKeys.contains(k)) ||
+            action is! String ||
+            !allowedSkillMarkdownActions.contains(action) ||
+            (skillId != null &&
+                (skillId is! String || !isValidShortId(skillId))) ||
+            (action == 'export_skill_md' &&
+                (skillId is! String || !isValidShortId(skillId))) ||
+            (action == 'import_skill_md' &&
+                (markdownContent is! String ||
+                    markdownContent.trim().isEmpty ||
+                    markdownContent.length > 4000))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (markdownContent is String &&
+            containsForbiddenSkillMarkdownPattern(markdownContent)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'skill_markdown_forbidden_command',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'skill.record_correction':
+        final action = arguments['action'];
+        final skillId = arguments['skillId'];
+        final correctionNote = arguments['correctionNote'];
+        const allowedCorrKeys = <String>{
+          'action',
+          'skillId',
+          'correctionNote',
+        };
+        if (arguments.keys.any((k) => !allowedCorrKeys.contains(k)) ||
+            skillId is! String ||
+            !isValidShortId(skillId) ||
+            (action != null &&
+                (action is! String ||
+                    !allowedSkillCorrectionActions.contains(action))) ||
+            (correctionNote != null &&
+                (correctionNote is! String ||
+                    correctionNote.trim().isEmpty ||
+                    correctionNote.length > 240 ||
+                    !isSafeAgentPrompt(correctionNote))) ||
+            ((action == null || action == 'record') &&
+                (correctionNote is! String || correctionNote.trim().isEmpty))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'heartbeat.configure_and_tick':
+        final action = arguments['action'];
+        final checkName = arguments['checkName'];
+        final intervalMinutes = arguments['intervalMinutes'];
+        final simulateDelta = arguments['simulateDelta'];
+        const allowedHbKeys = <String>{
+          'action',
+          'checkName',
+          'intervalMinutes',
+          'simulateDelta',
+        };
+        if (arguments.keys.any((k) => !allowedHbKeys.contains(k)) ||
+            (action != null &&
+                (action is! String ||
+                    !allowedHeartbeatActions.contains(action))) ||
+            (checkName != null &&
+                (checkName is! String ||
+                    checkName.trim().isEmpty ||
+                    checkName.length > 80 ||
+                    !isSafeAgentPrompt(checkName))) ||
+            (intervalMinutes != null &&
+                (intervalMinutes is! int ||
+                    intervalMinutes < 5 ||
+                    intervalMinutes > 720)) ||
+            (simulateDelta != null && simulateDelta is! bool)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'canvas.present':
+        final action = arguments['action'];
+        final title = arguments['title'];
+        final sourceSkillId = arguments['sourceSkillId'];
+        const allowedCanvasKeys = <String>{
+          'action',
+          'title',
+          'sourceSkillId',
+        };
+        if (arguments.keys.any((k) => !allowedCanvasKeys.contains(k)) ||
+            (action != null &&
+                (action is! String ||
+                    !allowedCanvasActions.contains(action))) ||
+            (title != null &&
+                (title is! String ||
+                    title.trim().isEmpty ||
+                    title.length > 120 ||
+                    !isSafeAgentPrompt(title))) ||
+            (sourceSkillId != null &&
+                (sourceSkillId is! String || !isValidShortId(sourceSkillId)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'pipeline.execute_universal':
+        final goal = arguments['goal'];
+        final primitives = arguments['primitives'];
+        final sourceFolder = arguments['sourceFolder'];
+        final rawInputText = arguments['rawInputText'];
+        final secondaryInputText = arguments['secondaryInputText'];
+        final exportFormat = arguments['exportFormat'];
+        final outputFileName = arguments['outputFileName'];
+        const allowedPipelineKeys = <String>{
+          'goal',
+          'primitives',
+          'sourceFolder',
+          'rawInputText',
+          'secondaryInputText',
+          'exportFormat',
+          'outputFileName',
+        };
+        if (arguments.keys.any((k) => !allowedPipelineKeys.contains(k)) ||
+            goal is! String ||
+            goal.trim().isEmpty ||
+            goal.length > 400 ||
+            !isSafeAgentPrompt(goal) ||
+            (sourceFolder != null &&
+                (sourceFolder is! String ||
+                    !isValidSandboxFolderName(sourceFolder))) ||
+            (rawInputText != null &&
+                (rawInputText is! String ||
+                    !isSafeClipboardWriteText(rawInputText))) ||
+            (secondaryInputText != null &&
+                (secondaryInputText is! String ||
+                    !isSafeClipboardWriteText(secondaryInputText))) ||
+            (exportFormat != null &&
+                (exportFormat is! String ||
+                    !allowedUniversalExportFormats.contains(exportFormat))) ||
+            (outputFileName != null &&
+                (outputFileName is! String ||
+                    !isValidBeamFileName(outputFileName)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (primitives != null) {
+          if (primitives is! List ||
+              primitives.isEmpty ||
+              primitives.length > 8) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r2,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          for (final p in primitives) {
+            if (p is! String || !allowedUniversalPrimitives.contains(p)) {
+              return const PolicyEvaluationResult(
+                allowed: false,
+                status: XtpStatus.denied,
+                effectiveRisk: RiskTier.r2,
+                errorCode: 'pipeline_primitive_forbidden',
+              );
+            }
+          }
+        }
+        effectiveRisk = RiskTier.r2;
       case 'workspace.coding_agent':
         final proj = arguments['project'];
         final agent = arguments['agent'];
@@ -2731,17 +2930,24 @@ const Set<String> allowedForgeDocumentExtensions = <String>{
   'pdf',
   'xml',
   'csv',
+  'tsv',
   'xlsx',
   'xls',
   'docx',
   'doc',
   'txt',
+  'md',
+  'html',
+  'log',
   'json',
   'zip',
   'png',
   'jpg',
   'jpeg',
   'webp',
+  'svg',
+  'heic',
+  'raw',
 };
 
 /// Returns `true` if [ext] (with or without leading `.`) is an allowed safe
@@ -2781,4 +2987,123 @@ bool isValidSandboxFolderName(String? folder) {
     }
   }
   return _sandboxFolderRe.hasMatch(trimmed);
+}
+
+final List<RegExp> _forbiddenSkillMarkdownPatterns = <RegExp>[
+  RegExp(r'\brm\s+-rf\b', caseSensitive: false),
+  RegExp(r'\bcurl\b[^\n]*\|\s*(?:sh|bash|zsh)\b', caseSensitive: false),
+  RegExp(r'\bwget\b[^\n]*\|\s*(?:sh|bash|zsh)\b', caseSensitive: false),
+  RegExp(r'\binvoke-expression\b', caseSensitive: false),
+  RegExp(r'\biex\s+', caseSensitive: false),
+  RegExp(r'\bpowershell(?:\.exe)?\s+-(?:enc|encodedcommand)\b',
+      caseSensitive: false),
+  RegExp(r'\bsudo\s+', caseSensitive: false),
+  RegExp(r'(?:id_rsa|\.ssh/|\.env\b)', caseSensitive: false),
+];
+
+/// Returns `true` if an imported `SKILL.md` document contains dangerous shell
+/// execution or credential-harvesting patterns (`CLAW-1`).
+bool containsForbiddenSkillMarkdownPattern(String? markdown) {
+  if (markdown == null || markdown.trim().isEmpty) return false;
+  for (final pattern in _forbiddenSkillMarkdownPatterns) {
+    if (pattern.hasMatch(markdown)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Infers the ordered list of Universal Atomic Primitives (`UNIV-1`) required
+/// to satisfy [goal] across HR, E-Commerce, Content/Marketing, Media/Photo,
+/// Operations/Reconciliation, File Organization, and Web/Data pipelines.
+List<String> inferUniversalPrimitivesForGoal(String goal) {
+  final lower = goal.toLowerCase();
+  if (lower.contains('cv') ||
+      lower.contains('ứng viên') ||
+      lower.contains('tuyển dụng') ||
+      lower.contains('resume') ||
+      lower.contains('hr')) {
+    return const <String>[
+      'source.filesystem',
+      'parse.universal',
+      'transform.pipeline',
+      'export.artifact',
+      'canvas.dynamic_a2ui',
+    ];
+  }
+  if (lower.contains('giá') ||
+      lower.contains('shopee') ||
+      lower.contains('lazada') ||
+      lower.contains('tiktok') ||
+      lower.contains('đối thủ') ||
+      lower.contains('radar') ||
+      lower.contains('tồn kho')) {
+    return const <String>[
+      'source.web_http',
+      'parse.universal',
+      'sensor.hash_delta',
+      'transform.pipeline',
+      'canvas.dynamic_a2ui',
+    ];
+  }
+  if (lower.contains('tin tức') ||
+      lower.contains('tóm tắt') ||
+      lower.contains('bài viết') ||
+      lower.contains('content') ||
+      lower.contains('marketing') ||
+      lower.contains('nghiên cứu') ||
+      lower.contains('digest')) {
+    return const <String>[
+      'source.web_http',
+      'parse.universal',
+      'transform.pipeline',
+      'export.artifact',
+      'canvas.dynamic_a2ui',
+    ];
+  }
+  if (lower.contains('ảnh') ||
+      lower.contains('photo') ||
+      lower.contains('đổi tên') ||
+      lower.contains('rename') ||
+      lower.contains('media') ||
+      lower.contains('thiết kế')) {
+    return const <String>[
+      'source.filesystem',
+      'parse.universal',
+      'file.batch_ops',
+      'canvas.dynamic_a2ui',
+    ];
+  }
+  if (lower.contains('đối soát') ||
+      lower.contains('so khớp') ||
+      lower.contains('reconcil') ||
+      lower.contains('chênh lệch') ||
+      lower.contains('sao kê') ||
+      lower.contains('công nợ')) {
+    return const <String>[
+      'source.filesystem',
+      'parse.universal',
+      'transform.pipeline',
+      'export.artifact',
+      'canvas.dynamic_a2ui',
+    ];
+  }
+  if (lower.contains('dọn') ||
+      lower.contains('sắp xếp') ||
+      lower.contains('phân loại') ||
+      lower.contains('downloads') ||
+      lower.contains('desktop')) {
+    return const <String>[
+      'source.filesystem',
+      'file.batch_ops',
+      'canvas.dynamic_a2ui',
+    ];
+  }
+  return const <String>[
+    'source.filesystem',
+    'parse.universal',
+    'transform.pipeline',
+    'export.artifact',
+    'canvas.dynamic_a2ui',
+  ];
 }

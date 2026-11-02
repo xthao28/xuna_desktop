@@ -1018,6 +1018,9 @@ class ActionUndoTool extends HostToolHandler {
         errorCode: 'platform_unsupported',
       );
     }
+    if (entry.originalTool == 'pipeline.execute_universal') {
+      context.symbioticService.undoLastBatchFileOps();
+    }
     await executor(entry.inverseTool, entry.inverseArgs);
     return ToolHandlerOutput(
       text: 'Đã hoàn tác ${entry.originalTool} (${entry.description}).',
@@ -1907,6 +1910,189 @@ class ForgeExtractInvoicesToSheetTool extends HostToolHandler {
   }
 }
 
+class SkillMarkdownBridgeTool extends HostToolHandler {
+  const SkillMarkdownBridgeTool();
+
+  @override
+  String get name => 'skill.markdown_bridge';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final skillId = context.arguments['skillId'] as String?;
+    final markdownContent = context.arguments['markdownContent'] as String?;
+    final res = context.symbioticService.bridgeSkillMarkdown(
+      action: action,
+      skillId: skillId,
+      markdownContent: markdownContent,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'skillId': res.skillId,
+        'titleVi': res.titleVi,
+        'skillMarkdown': res.skillMarkdown,
+        'securityVerified': res.securityVerified,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: action == 'import_skill_md'
+          ? 'đã nhập kỹ năng SKILL.md (${res.titleVi})'
+          : 'đã xuất SKILL.md (${res.titleVi})',
+    );
+  }
+}
+
+class SkillRecordCorrectionTool extends HostToolHandler {
+  const SkillRecordCorrectionTool();
+
+  @override
+  String get name => 'skill.record_correction';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = (context.arguments['action'] as String?) ?? 'record';
+    final skillId = context.arguments['skillId'] as String;
+    final correctionNote = context.arguments['correctionNote'] as String?;
+    final res = context.symbioticService.recordSkillCorrection(
+      action: action,
+      skillId: skillId,
+      correctionNote: correctionNote,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'skillId': res.skillId,
+        'selfHealGeneration': res.selfHealGeneration,
+        'correctionRules': res.correctionRules,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: action == 'record'
+          ? 'đã ghi nhớ quy tắc tự sửa lỗi #${res.selfHealGeneration}'
+          : null,
+    );
+  }
+}
+
+class HeartbeatConfigureAndTickTool extends HostToolHandler {
+  const HeartbeatConfigureAndTickTool();
+
+  @override
+  String get name => 'heartbeat.configure_and_tick';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = (context.arguments['action'] as String?) ?? 'tick';
+    final checkName = context.arguments['checkName'] as String?;
+    final intervalMinutes = context.arguments['intervalMinutes'] as int?;
+    final simulateDelta =
+        (context.arguments['simulateDelta'] as bool?) ?? false;
+    final snap = context.symbioticService.configureAndTickHeartbeat(
+      action: action,
+      checkName: checkName,
+      intervalMinutes: intervalMinutes,
+      simulateDelta: simulateDelta,
+    );
+    return ToolHandlerOutput(
+      text: snap.summaryVi,
+      structuredContent: snap.toWireJson(),
+      toastBody: snap.deltaDetected
+          ? 'phát hiện mục mới trong nhịp tuần tra Heartbeat'
+          : null,
+    );
+  }
+}
+
+class CanvasPresentTool extends HostToolHandler {
+  const CanvasPresentTool();
+
+  @override
+  String get name => 'canvas.present';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action =
+        (context.arguments['action'] as String?) ?? 'present_invoice_table';
+    final title = context.arguments['title'] as String?;
+    final sourceSkillId = context.arguments['sourceSkillId'] as String?;
+    final snap = context.symbioticService.presentLiveCanvas(
+      action: action,
+      title: title,
+      sourceSkillId: sourceSkillId,
+    );
+    return ToolHandlerOutput(
+      text: snap.summaryVi,
+      structuredContent: snap.toWireJson(),
+      toastBody: action == 'clear'
+          ? null
+          : 'đã mở bảng tương tác Live Canvas (${snap.titleVi})',
+    );
+  }
+}
+
+class PipelineExecuteUniversalTool extends HostToolHandler {
+  const PipelineExecuteUniversalTool();
+
+  @override
+  String get name => 'pipeline.execute_universal';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final goal = context.arguments['goal'] as String;
+    final rawPrimitives = context.arguments['primitives'];
+    final primitives = rawPrimitives is List
+        ? rawPrimitives.whereType<String>().toList(growable: false)
+        : null;
+    final sourceFolder = context.arguments['sourceFolder'] as String?;
+    final rawInputText = context.arguments['rawInputText'] as String?;
+    final secondaryInputText =
+        context.arguments['secondaryInputText'] as String?;
+    final exportFormat =
+        (context.arguments['exportFormat'] as String?) ?? 'csv';
+    final outputFileName = context.arguments['outputFileName'] as String?;
+
+    final res = context.symbioticService.executeUniversalPipeline(
+      goal: goal,
+      primitives: primitives,
+      sourceFolder: sourceFolder,
+      rawInputText: rawInputText,
+      secondaryInputText: secondaryInputText,
+      exportFormat: exportFormat,
+      outputFileName: outputFileName,
+      nowUtc: context.nowUtc,
+    );
+
+    context.actionLedger.pushEntry(
+      ReversibleActionEntry(
+        originalTool: name,
+        inverseTool: 'canvas.present',
+        inverseArgs: const <String, Object?>{'action': 'clear'},
+        description:
+            'hoàn tác pipeline ${res.pipelineId} (${res.undoSnapshotId})',
+        recordedAt: context.nowUtc,
+      ),
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'pipelineId': res.pipelineId,
+        'category': res.category,
+        'executedPrimitives': res.executedPrimitives,
+        'processedCount': res.processedCount,
+        'exportedFile': res.exportedFile,
+        'canvasSurfaceKind': res.canvasSurfaceKind,
+        'rows': res.rows,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'đã chạy pipeline đa năng (${res.processedCount} mục -> ${res.exportedFile})',
+    );
+  }
+}
+
 /// Registry and dispatcher for all MVP, Dev Workspace, Desk Co-Pilot, Ambient Co-Pilot, Smart TV/Home, and Symbiotic Co-Pilot tools (`UDC-3` §5.6.5, `UDC-11`..`UDC-15`).
 class HostToolDispatcher {
   HostToolDispatcher({
@@ -1993,6 +2179,11 @@ class HostToolDispatcher {
           const ForgeListAndManageTool(),
           const TeachRecordSessionTool(),
           const ForgeExtractInvoicesToSheetTool(),
+          const SkillMarkdownBridgeTool(),
+          const SkillRecordCorrectionTool(),
+          const HeartbeatConfigureAndTickTool(),
+          const CanvasPresentTool(),
+          const PipelineExecuteUniversalTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -2026,6 +2217,50 @@ class HostToolDispatcher {
       LinkedHashMap<String, XtpResponse>();
   final Map<Object, ToolCancellationToken> _inFlightByRequestId =
       <Object, ToolCancellationToken>{};
+  Future<void> _serialLaneTail = Future<void>.value();
+  int _parallelReadLaneCount = 0;
+  int _serialActionLaneCount = 0;
+
+  /// Number of read-only / observation tool calls executed on the concurrent
+  /// `ParallelReadLane` (`CLAW-4`).
+  int get parallelReadLaneCount => _parallelReadLaneCount;
+
+  /// Number of state-changing tool calls serialized on `SerialActionLane` (`CLAW-4`).
+  int get serialActionLaneCount => _serialActionLaneCount;
+
+  static const Set<String> _parallelReadLaneTools = <String>{
+    'host.status',
+    'media.now_playing',
+    'app.list_allowed',
+    'workflow.list',
+    'browser.current_url',
+    'browser.read_page',
+    'workspace.git_summary',
+    'workspace.watch_task',
+    'workspace.capture_capsule',
+    'workspace.list_capsules',
+    'selection.read',
+    'window.active_context',
+    'mcp.list_servers',
+    'tv.list_devices',
+    'smarthome.list_entities',
+    'meeting.status',
+    'dev.ports',
+    'system.vitals',
+    'pocket.list_items',
+    'watchdog.watch_process_or_port',
+    'watchdog.watch_resource_threshold',
+    'watchdog.list_and_clear',
+    'habit.propose_workflow',
+    'forge.synthesize_skill',
+    'forge.list_and_manage',
+    'teach.record_session',
+    'skill.markdown_bridge',
+    'skill.record_correction',
+    'heartbeat.configure_and_tick',
+    'screen.capture',
+    'ui.inspect',
+  };
 
   /// Builds the `tools/list` manifest with current OS permission states.
   Future<List<ToolDescriptor>> buildManifest() async {
@@ -2046,6 +2281,7 @@ class HostToolDispatcher {
       includeSymbioticEvolutionTools: true,
       includeSymbioticSentinelTools: true,
       includeOmniForgeTools: true,
+      includeClawPulseTools: true,
     );
     if (computerUseManager == null) {
       return mvp;
@@ -2249,9 +2485,28 @@ class HostToolDispatcher {
       );
 
       final deadline = Duration(milliseconds: params.deadlineMs);
+      Future<ToolHandlerOutput?> runInAssignedLane() async {
+        if (_parallelReadLaneTools.contains(params.name)) {
+          _parallelReadLaneCount++;
+          return handler.execute(execContext);
+        }
+        _serialActionLaneCount++;
+        final prev = _serialLaneTail;
+        final gate = Completer<void>();
+        _serialLaneTail = gate.future;
+        try {
+          await prev;
+          return await handler.execute(execContext);
+        } finally {
+          if (!gate.isCompleted) {
+            gate.complete();
+          }
+        }
+      }
+
       final output = await Future.any<ToolHandlerOutput?>(
         <Future<ToolHandlerOutput?>>[
-          handler.execute(execContext),
+          runInAssignedLane(),
           cancelToken.onCancelled.then((_) => null),
         ],
       ).timeout(deadline);

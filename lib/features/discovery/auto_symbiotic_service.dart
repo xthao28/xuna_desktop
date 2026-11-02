@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Active localhost development port entry (`UDC-15` S15.3).
@@ -181,6 +182,10 @@ class ForgedSkillEntry {
     required this.createdAt,
     this.runCount = 0,
     this.lastRunSummaryVi,
+    this.selfHealGeneration = 0,
+    this.correctionRules = const <String>[],
+    this.primitives = const <String>[],
+    this.canvasSurfaceKind = 'data_table',
   });
 
   final String skillId;
@@ -198,25 +203,39 @@ class ForgedSkillEntry {
   final String createdAt;
   final int runCount;
   final String? lastRunSummaryVi;
+  final int selfHealGeneration;
+  final List<String> correctionRules;
+  final List<String> primitives;
+  final String canvasSurfaceKind;
 
-  ForgedSkillEntry copyWith({int? runCount, String? lastRunSummaryVi}) =>
-      ForgedSkillEntry(
-        skillId: skillId,
-        titleVi: titleVi,
-        category: category,
-        goal: goal,
-        targetFolder: targetFolder,
-        fileExtensions: fileExtensions,
-        detectedItemsCount: detectedItemsCount,
-        dryRunSample: dryRunSample,
-        selfDebugIterations: selfDebugIterations,
-        parameterFields: parameterFields,
-        scriptSteps: scriptSteps,
-        summaryVi: summaryVi,
-        createdAt: createdAt,
-        runCount: runCount ?? this.runCount,
-        lastRunSummaryVi: lastRunSummaryVi ?? this.lastRunSummaryVi,
-      );
+  ForgedSkillEntry copyWith({
+    int? runCount,
+    String? lastRunSummaryVi,
+    int? selfHealGeneration,
+    List<String>? correctionRules,
+    List<String>? primitives,
+    String? canvasSurfaceKind,
+  }) => ForgedSkillEntry(
+    skillId: skillId,
+    titleVi: titleVi,
+    category: category,
+    goal: goal,
+    targetFolder: targetFolder,
+    fileExtensions: fileExtensions,
+    detectedItemsCount: detectedItemsCount,
+    dryRunSample: dryRunSample,
+    selfDebugIterations: selfDebugIterations,
+    parameterFields: parameterFields,
+    scriptSteps: scriptSteps,
+    summaryVi: summaryVi,
+    createdAt: createdAt,
+    runCount: runCount ?? this.runCount,
+    lastRunSummaryVi: lastRunSummaryVi ?? this.lastRunSummaryVi,
+    selfHealGeneration: selfHealGeneration ?? this.selfHealGeneration,
+    correctionRules: correctionRules ?? this.correctionRules,
+    primitives: primitives ?? this.primitives,
+    canvasSurfaceKind: canvasSurfaceKind ?? this.canvasSurfaceKind,
+  );
 
   Map<String, Object?> toWireJson() => <String, Object?>{
     'skillId': skillId,
@@ -234,6 +253,71 @@ class ForgedSkillEntry {
     'createdAt': createdAt,
     'runCount': runCount,
     if (lastRunSummaryVi != null) 'lastRunSummaryVi': lastRunSummaryVi,
+    'selfHealGeneration': selfHealGeneration,
+    'correctionRules': correctionRules,
+    'primitives': primitives,
+    'canvasSurfaceKind': canvasSurfaceKind,
+  };
+}
+
+/// Snapshot of XUNA's Zero-Token 2-Tier Heartbeat (`CLAW-2`).
+class HeartbeatStatusSnapshot {
+  const HeartbeatStatusSnapshot({
+    required this.status,
+    required this.deltaDetected,
+    required this.llmTokensUsed,
+    required this.suppressedNotification,
+    required this.intervalMinutes,
+    required this.checkName,
+    required this.summaryVi,
+  });
+
+  final String status;
+  final bool deltaDetected;
+  final int llmTokensUsed;
+  final bool suppressedNotification;
+  final int intervalMinutes;
+  final String checkName;
+  final String summaryVi;
+
+  Map<String, Object?> toWireJson() => <String, Object?>{
+    'status': status,
+    'deltaDetected': deltaDetected,
+    'llmTokensUsed': llmTokensUsed,
+    'suppressedNotification': suppressedNotification,
+    'intervalMinutes': intervalMinutes,
+    'summaryVi': summaryVi,
+  };
+}
+
+/// Interactive Agent-to-UI (`A2UI`) Live Canvas surface (`CLAW-3`).
+class LiveCanvasSurfaceSnapshot {
+  const LiveCanvasSurfaceSnapshot({
+    required this.canvasId,
+    required this.surfaceKind,
+    required this.titleVi,
+    required this.columns,
+    required this.rows,
+    required this.actions,
+    required this.summaryVi,
+  });
+
+  final String canvasId;
+  final String surfaceKind;
+  final String titleVi;
+  final List<String> columns;
+  final List<Map<String, Object?>> rows;
+  final List<String> actions;
+  final String summaryVi;
+
+  Map<String, Object?> toWireJson() => <String, Object?>{
+    'canvasId': canvasId,
+    'surfaceKind': surfaceKind,
+    'titleVi': titleVi,
+    'columns': columns,
+    'rows': rows,
+    'actions': actions,
+    'summaryVi': summaryVi,
   };
 }
 
@@ -311,8 +395,19 @@ class AutoSymbioticService {
   final List<String> _recentToolHistory = <String>[];
   final List<ForgedSkillEntry> _forgedSkills = <ForgedSkillEntry>[];
   final List<TeachDemonstrationStep> _teachSteps = <TeachDemonstrationStep>[];
+  int _heartbeatIntervalMinutes = 30;
+  String _heartbeatCheckName = 'Tuần tra đa năng (File / Giá / Dữ liệu)';
+  HeartbeatStatusSnapshot? _lastHeartbeatStatus;
+  LiveCanvasSurfaceSnapshot? _activeLiveCanvas;
+  int _canvasSeq = 0;
+  int _pipelineSeq = 0;
+  final Map<String, String> _sensorHashByTarget = <String, String>{};
+  final List<({String oldPath, String newPath})> _lastBatchFileRenames =
+      <({String oldPath, String newPath})>[];
 
   bool get isTeachRecordingActive => _teachRecordingActive;
+  HeartbeatStatusSnapshot? get lastHeartbeatStatus => _lastHeartbeatStatus;
+  LiveCanvasSurfaceSnapshot? get activeLiveCanvas => _activeLiveCanvas;
 
   /// Last text written to the clipboard in memory (for test verification; never logged).
   String get debugLastClipboardText => _lastWrittenClipboard;
@@ -1073,7 +1168,7 @@ class AutoSymbioticService {
     return proposals;
   }
 
-  /// Infers the best `OMNIFORGE` skill category from a natural-language [goal] (`FORGE-1`).
+  /// Infers the best `OMNIFORGE` / Universal skill category from a natural-language [goal] (`FORGE-1`, `UNIV-2`).
   static String inferForgeSkillCategory(String goal) {
     final lower = goal.toLowerCase();
     if (lower.contains('hóa đơn') ||
@@ -1083,6 +1178,40 @@ class AutoSymbioticService {
         lower.contains('tai het') ||
         lower.contains('chứng từ')) {
       return 'web_harvest_invoices';
+    }
+    if (lower.contains('cv') ||
+        lower.contains('ứng viên') ||
+        lower.contains('ung vien') ||
+        lower.contains('tuyển dụng') ||
+        lower.contains('resume') ||
+        lower.contains('hr')) {
+      return 'hr_cv_scanner';
+    }
+    if (lower.contains('giá') ||
+        lower.contains('shopee') ||
+        lower.contains('lazada') ||
+        lower.contains('tiktok') ||
+        lower.contains('đối thủ') ||
+        lower.contains('radar') ||
+        lower.contains('tồn kho')) {
+      return 'ecommerce_price_radar';
+    }
+    if (lower.contains('tin tức') ||
+        lower.contains('tóm tắt') ||
+        lower.contains('bài viết') ||
+        lower.contains('content') ||
+        lower.contains('marketing') ||
+        lower.contains('nghiên cứu') ||
+        lower.contains('digest')) {
+      return 'content_news_digest';
+    }
+    if (lower.contains('ảnh') ||
+        lower.contains('photo') ||
+        lower.contains('đổi tên') ||
+        lower.contains('rename') ||
+        lower.contains('media') ||
+        lower.contains('thiết kế')) {
+      return 'media_batch_renamer';
     }
     if (lower.contains('đối soát') ||
         lower.contains('doi soat') ||
@@ -1101,9 +1230,7 @@ class AutoSymbioticService {
     if (lower.contains('bình luận') ||
         lower.contains('khách hàng') ||
         lower.contains('số điện thoại') ||
-        lower.contains('lead') ||
-        lower.contains('ứng viên') ||
-        lower.contains('cv')) {
+        lower.contains('lead')) {
       return 'lead_harvester';
     }
     if (lower.contains('excel') ||
@@ -1112,11 +1239,11 @@ class AutoSymbioticService {
         lower.contains('trích xuất')) {
       return 'document_to_sheet';
     }
-    return 'custom_script';
+    return 'universal_data_pipeline';
   }
 
   /// Synthesizes a sandboxed `XunaScript` tool from [goal], performs a 1-item dry-run
-  /// preview with Voyager-style self-debugging, and stores it in [_forgedSkills] (`FORGE-1`).
+  /// preview with Voyager-style self-debugging, and stores it in [_forgedSkills] (`FORGE-1`, `UNIV-2`).
   ForgedSkillEntry synthesizeSkill({
     required String goal,
     String? category,
@@ -1147,8 +1274,12 @@ class AutoSymbioticService {
               'png',
               'zip',
             ],
+            'hr_cv_scanner' => <String>['pdf', 'docx', 'txt'],
+            'ecommerce_price_radar' => <String>['csv', 'json', 'html'],
+            'content_news_digest' => <String>['md', 'html', 'txt'],
+            'media_batch_renamer' => <String>['jpg', 'png', 'webp', 'heic'],
             'lead_harvester' => <String>['csv', 'json'],
-            _ => <String>['pdf', 'csv'],
+            _ => <String>['csv', 'json', 'md'],
           }
         : fileExtensions
               .map(
@@ -1163,6 +1294,10 @@ class AutoSymbioticService {
             'document_to_sheet' => 'XUNA_BangKe',
             'smart_file_janitor' => 'XUNA_DaSapXep',
             'spreadsheet_reconciler' => 'XUNA_DoiSoat',
+            'hr_cv_scanner' => 'XUNA_TuyenDung/UngVien',
+            'ecommerce_price_radar' => 'XUNA_ShopRadar/GiaDoiThu',
+            'content_news_digest' => 'XUNA_Content/BanTin',
+            'media_batch_renamer' => 'XUNA_Media/Album_ChuDe',
             'lead_harvester' => 'XUNA_KhachHang',
             _ => 'XUNA_Tools/Output',
           }
@@ -1173,13 +1308,106 @@ class AutoSymbioticService {
     late final String dryRunSample;
     late final List<Map<String, Object?>> paramFields;
     late final List<String> scriptSteps;
+    late final String surfaceKind;
 
     switch (resolvedCategory) {
+      case 'hr_cv_scanner':
+        titleVi = 'Sàng Lọc CV Ứng Viên & Xếp Hạng Kỹ Năng';
+        detectedCount = 34;
+        dryRunSample =
+            'Mẫu thử #1: CV_NguyenMinhAnh.pdf -> 3 năm KN (Python, Marketing, SQL) | Điểm khớp: 92/100';
+        surfaceKind = 'kanban_board';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục chứa hồ sơ CV',
+            'defaultValue': folder,
+          },
+          <String, Object?>{
+            'key': 'requiredSkills',
+            'labelVi': 'Từ khóa kỹ năng ưu tiên',
+            'defaultValue': 'Python, Marketing, Tiếng Anh',
+          },
+        ];
+        scriptSteps = <String>[
+          '1. [source.filesystem] Quét toàn bộ hồ sơ CV (.pdf, .docx, .txt) trong "$folder"',
+          '2. [parse.universal] Bóc tách Email, SĐT, Số năm KN và danh sách Kỹ năng ứng viên',
+          '3. [transform.pipeline] Chấm điểm độ khớp tiêu chí và phân nhóm Đạt / Cần phỏng vấn',
+          '4. [export.artifact + canvas.dynamic_a2ui] Xuất BangXepHang_UngVien.csv và mở bảng Kanban',
+        ];
+      case 'ecommerce_price_radar':
+        titleVi = 'Radar Canh Giá Đối Thủ & Cảnh Báo Tồn Kho';
+        detectedCount = 24;
+        dryRunSample =
+            'Mẫu thử #1: Tai nghe X-Pro giảm 12% (390.000 đ -> 345.000 đ) | Tồn kho: Sắp hết';
+        surfaceKind = 'metric_cards';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục lưu lịch sử giá',
+            'defaultValue': folder,
+          },
+          <String, Object?>{
+            'key': 'alertDropPercent',
+            'labelVi': 'Ngưỡng báo động giảm giá (%)',
+            'defaultValue': '5',
+          },
+        ];
+        scriptSteps = <String>[
+          '1. [source.web_http] Đọc bảng giá sản phẩm & trạng thái tồn kho trên trang đang mở',
+          '2. [sensor.hash_delta] Băm SHA-256 phát hiện biến động giá với 0 LLM token khi giá đứng yên',
+          '3. [transform.pipeline] Tính chênh lệch % giá bán so với shop của bạn',
+          '4. [canvas.dynamic_a2ui] Hiển thị thẻ Metric Cards cảnh báo mã giảm sâu',
+        ];
+      case 'content_news_digest':
+        titleVi = 'Tổng Hợp Tin Tức & Lập Dàn Ý Nội Dung Đa Kênh';
+        detectedCount = 18;
+        dryRunSample =
+            'Mẫu thử #1: 5 xu hướng AI & Thương mại số trong ngày -> BanTin_TongHop.md';
+        surfaceKind = 'data_table';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục lưu bản tin Markdown',
+            'defaultValue': folder,
+          },
+        ];
+        scriptSteps = <String>[
+          '1. [source.web_http] Thu thập tiêu đề, luận điểm chính và số liệu từ các bài viết nguồn',
+          '2. [parse.universal] Khử nhiễu quảng cáo và trích xuất trích dẫn quan trọng',
+          '3. [transform.pipeline] Gom nhóm theo chủ đề và tạo khung nội dung (Hook - Insight - CTA)',
+          '4. [export.artifact] Xuất tệp BanTin_TongHop.md và bảng tóm tắt trực quan',
+        ];
+      case 'media_batch_renamer':
+        titleVi = 'Đổi Tên & Phân Loại Bộ Sưu Tập Ảnh/Media Hàng Loạt';
+        detectedCount = 86;
+        dryRunSample =
+            'Mẫu thử #1: IMG_8841.JPG -> $folder/2026-11_BoSuuTap_001.jpg (Có Hoàn tác 1 chạm)';
+        surfaceKind = 'data_table';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục album ảnh/media',
+            'defaultValue': folder,
+          },
+          <String, Object?>{
+            'key': 'namePrefix',
+            'labelVi': 'Tiền tố tên tệp chuẩn hóa',
+            'defaultValue': '2026-11_SanPham',
+          },
+        ];
+        scriptSteps = <String>[
+          '1. [source.filesystem] Đọc danh sách tệp ảnh/video và ngày tạo trong "$folder"',
+          '2. [file.batch_ops] Ghi sổ cái hoàn tác (Undo Ledger) trước khi đổi tên hàng loạt',
+          '3. [file.batch_ops] Chuẩn hóa tên theo mẫu YYYY-MM_ChuDe_STT và gom thư mục',
+          '4. [canvas.dynamic_a2ui] Hiển thị bảng đối chiếu Tên cũ -> Tên mới kèm nút Hoàn tác',
+        ];
       case 'web_harvest_invoices':
         titleVi = 'Tải Hóa Đơn Hàng Loạt & Lập Bảng Kê';
         detectedCount = 48;
         dryRunSample =
             'Mẫu thử #1: 2026-11_VNPT_HD001248.pdf + .xml (1.650.000 đ) -> $folder/';
+        surfaceKind = 'invoice_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
             'key': 'targetFolder',
@@ -1204,32 +1432,34 @@ class AutoSymbioticService {
           '4. Trích xuất Mã số thuế, Tiền trước thuế, VAT, Tổng tiền ra BangKe_HoaDon.csv',
         ];
       case 'document_to_sheet':
-        titleVi = 'Đọc Hóa Đơn / Chứng Từ Ra Bảng Kê Excel';
+        titleVi = 'Đọc Chứng Từ / Tài Liệu Ra Bảng Tổng Hợp Excel';
         detectedCount = 35;
         dryRunSample =
             'Mẫu thử #1: HD_001248.xml -> MST 0100684378 | Tổng: 1.650.000 đ (VAT 10%)';
+        surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
             'key': 'sourceFolder',
-            'labelVi': 'Thư mục chứa PDF/XML',
+            'labelVi': 'Thư mục chứa tài liệu',
             'defaultValue': folder,
           },
           <String, Object?>{
             'key': 'detectDuplicates',
-            'labelVi': 'Cảnh báo hóa đơn trùng số',
+            'labelVi': 'Cảnh báo bản ghi trùng mã',
             'defaultValue': 'true',
           },
         ];
         scriptSteps = <String>[
-          '1. Đọc toàn bộ tệp .xml / .pdf trong thư mục "$folder"',
-          '2. Trích xuất Số HĐ, Ngày lập, Đơn vị bán, MST, Tiền hàng, Thuế GTGT, Tổng thanh toán',
-          '3. Kiểm tra trùng số hóa đơn và xuất tệp BangKe_KeToan.csv',
+          '1. Đọc toàn bộ tệp dữ liệu trong thư mục "$folder"',
+          '2. Trích xuất các trường định danh, ngày tháng, giá trị và trạng thái',
+          '3. Kiểm tra trùng lặp và xuất tệp BangTongHop.csv (chuẩn UTF-8 BOM mở bằng Excel)',
         ];
       case 'smart_file_janitor':
         titleVi = 'Phân Loại & Dọn Thư Mục Tự Động (Có Hoàn Tác)';
         detectedCount = 64;
         dryRunSample =
-            'Mẫu thử #1: HopDong_Thang11.pdf -> $folder/TaiLieu_PDF/HopDong_Thang11.pdf';
+            'Mẫu thử #1: TaiLieu_DuAn.pdf -> $folder/TaiLieu_PDF/TaiLieu_DuAn.pdf';
+        surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
             'key': 'targetFolder',
@@ -1239,14 +1469,15 @@ class AutoSymbioticService {
         ];
         scriptSteps = <String>[
           '1. Chụp ảnh trạng thái gốc vào Sổ cái Hoàn tác (Undo Snapshot)',
-          '2. Phân loại tệp theo nhóm Hợp đồng PDF, Bảng tính Excel, Hình ảnh thiết kế',
+          '2. Phân loại tệp theo nhóm Tài liệu PDF, Bảng tính Excel, Hình ảnh thiết kế',
           '3. Di chuyển gọn vào "$folder" (tuyệt đối không xóa tệp gốc)',
         ];
       case 'spreadsheet_reconciler':
-        titleVi = 'Đối Soát Sao Kê Ngân Hàng & Đơn Hàng';
+        titleVi = 'Đối Soát Đa Bảng (Đơn Hàng / Sao Kê / Vận Chuyển)';
         detectedCount = 120;
         dryRunSample =
-            'Mẫu thử #1: Đơn #DH8821 khớp 450.000 đ | Phát hiện 2 đơn lệch tiền';
+            'Mẫu thử #1: Mã #DH8821 khớp 450.000 đ | Phát hiện 2 mã lệch số tiền';
+        surfaceKind = 'diff_reconcile';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
             'key': 'targetFolder',
@@ -1255,15 +1486,16 @@ class AutoSymbioticService {
           },
         ];
         scriptSteps = <String>[
-          '1. Đọc bảng Sao kê và bảng Đơn hàng cục bộ',
-          '2. Đối chiếu theo Mã đơn & Số tiền thực nhận',
-          '3. Xuất báo cáo DoiSoat_ChenhLech.csv tại "$folder"',
+          '1. Đọc bảng dữ liệu nguồn A và bảng đối chiếu B cục bộ',
+          '2. Đối chiếu theo Mã định danh & Số tiền thực nhận',
+          '3. Xuất báo cáo DoiSoat_ChenhLech.csv tại "$folder" và mở bảng Diff Reconcile',
         ];
       case 'lead_harvester':
         titleVi = 'Lọc Hồ Sơ Ứng Viên / Khách Hàng Tiềm Năng';
         detectedCount = 28;
         dryRunSample =
-            'Mẫu thử #1: Nguyễn Văn A (2.5 năm KN Kế toán) -> DanhSach_PhuHop.csv';
+            'Mẫu thử #1: Nguyễn Văn A (Email + SĐT hợp lệ) -> DanhSach_PhuHop.csv';
+        surfaceKind = 'kanban_board';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
             'key': 'targetFolder',
@@ -1278,10 +1510,11 @@ class AutoSymbioticService {
         ];
       default:
         titleVi =
-            'Công Cụ Tự Động XUNA: ${cleanGoal.length > 36 ? "${cleanGoal.substring(0, 36)}..." : cleanGoal}';
-        detectedCount = 15;
+            'Pipeline Tự Động XUNA: ${cleanGoal.length > 36 ? "${cleanGoal.substring(0, 36)}..." : cleanGoal}';
+        detectedCount = 20;
         dryRunSample =
-            'Mẫu thử #1: Đã kiểm tra hợp lệ bước đầu tiên -> $folder/';
+            'Mẫu thử #1: Đã ghép nối chuỗi Nguyên tử Vạn năng -> $folder/';
+        surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
             'key': 'targetFolder',
@@ -1290,12 +1523,13 @@ class AutoSymbioticService {
           },
         ];
         scriptSteps = <String>[
-          '1. Phân tích ngữ cảnh trang/thư mục đang mở',
-          '2. Chạy vòng lặp XunaScript trong hộp cát an toàn',
-          '3. Lưu kết quả vào "$folder" kèm điểm khôi phục Undo',
+          '1. [source + parse.universal] Thu thập và phân tích cấu trúc dữ liệu đầu vào',
+          '2. [transform.pipeline] Lọc, khử trùng lặp và chuẩn hóa các cột dữ liệu',
+          '3. [export.artifact + canvas.dynamic_a2ui] Lưu kết quả vào "$folder" kèm điểm khôi phục Undo',
         ];
     }
 
+    final primitives = inferUniversalPrimitivesForGoal(cleanGoal);
     final skillId = 'skill-$resolvedCategory-$_forgeSeq'.replaceAll('_', '-');
     final summaryVi =
         'Đã rèn xong công cụ "$titleVi": tìm thấy $detectedCount mục phù hợp. $dryRunSample';
@@ -1316,6 +1550,8 @@ class AutoSymbioticService {
           ? summaryVi
           : summaryVi.substring(0, 240),
       createdAt: ts.toIso8601String(),
+      primitives: primitives,
+      canvasSurfaceKind: surfaceKind,
     );
     _forgedSkills.insert(0, entry);
     if (_forgedSkills.length > 25) {
@@ -1603,6 +1839,1156 @@ class AutoSymbioticService {
       rows: rows,
       summaryVi:
           'Đã trích xuất ${rows.length} hóa đơn từ "$cleanFolder" ra "$outputPath" (Tổng thanh toán: 7.150.000 đ, trùng lặp: $dupCount).',
+    );
+  }
+
+  /// Exports a forged skill as an OpenClaw-compatible `SKILL.md` document or
+  /// imports a safe `SKILL.md` into the sandboxed OmniForge library (`CLAW-1`).
+  ({
+    String action,
+    String skillId,
+    String titleVi,
+    String skillMarkdown,
+    bool securityVerified,
+    String summaryVi,
+  })
+  bridgeSkillMarkdown({
+    required String action,
+    String? skillId,
+    String? markdownContent,
+    DateTime? nowUtc,
+  }) {
+    if (action == 'import_skill_md') {
+      final rawMd = (markdownContent ?? '').trim();
+      if (rawMd.isEmpty || containsForbiddenSkillMarkdownPattern(rawMd)) {
+        throw ArgumentError.value(
+          markdownContent,
+          'markdownContent',
+          'Unsafe or empty SKILL.md content',
+        );
+      }
+      final nameMatch = RegExp(
+        r'^name:\s*(.+)$',
+        multiLine: true,
+      ).firstMatch(rawMd);
+      final descMatch = RegExp(
+        r'^description:\s*(.+)$',
+        multiLine: true,
+      ).firstMatch(rawMd);
+      final parsedTitle =
+          nameMatch?.group(1)?.trim().replaceAll('"', '') ??
+          'Kỹ năng nhập từ SKILL.md';
+      final parsedGoal =
+          descMatch?.group(1)?.trim().replaceAll('"', '') ??
+          'Chạy quy trình từ SKILL.md ($parsedTitle)';
+      final forged = synthesizeSkill(
+        goal: '$parsedTitle — $parsedGoal',
+        category: inferForgeSkillCategory('$parsedTitle $parsedGoal'),
+        nowUtc: nowUtc,
+      );
+      return (
+        action: 'import_skill_md',
+        skillId: forged.skillId,
+        titleVi: forged.titleVi,
+        skillMarkdown: rawMd.length <= 4000 ? rawMd : rawMd.substring(0, 4000),
+        securityVerified: true,
+        summaryVi:
+            'Đã kiểm duyệt an toàn hộp cát và nhập SKILL.md thành công cụ "${forged.titleVi}" (${forged.skillId}).',
+      );
+    }
+
+    final skills = listForgedSkillEntries();
+    final target = (skillId != null && skillId.trim().isNotEmpty)
+        ? skills
+                  .where(
+                    (s) =>
+                        s.skillId.toLowerCase() == skillId.trim().toLowerCase(),
+                  )
+                  .firstOrNull ??
+              skills.first
+        : skills.first;
+    final stepsMd = target.scriptSteps.map((s) => '- $s').join('\n');
+    final rulesMd = target.correctionRules.isEmpty
+        ? '- Chưa có ghi chú tự sửa lỗi.'
+        : target.correctionRules.map((r) => '- $r').join('\n');
+    final md =
+        '---\n'
+        'name: "${target.titleVi}"\n'
+        'skill_id: "${target.skillId}"\n'
+        'category: "${target.category}"\n'
+        'risk: "R2"\n'
+        'target_folder: "${target.targetFolder}"\n'
+        'self_heal_generation: ${target.selfHealGeneration}\n'
+        '---\n'
+        '# ${target.titleVi}\n\n'
+        '## Mục tiêu\n'
+        '${target.goal}\n\n'
+        '## Các bước XunaScript\n'
+        '$stepsMd\n\n'
+        '## Ghi chú tự thích nghi (Self-Improving Rules)\n'
+        '$rulesMd\n';
+    return (
+      action: 'export_skill_md',
+      skillId: target.skillId,
+      titleVi: target.titleVi,
+      skillMarkdown: md,
+      securityVerified: true,
+      summaryVi:
+          'Đã xuất kỹ năng "${target.titleVi}" sang chuẩn SKILL.md tương thích hệ sinh thái OpenClaw.',
+    );
+  }
+
+  /// Records a self-improving correction rule onto a forged skill so future runs
+  /// adapt when a web portal changes layout (`CLAW-1`).
+  ({
+    String skillId,
+    int selfHealGeneration,
+    List<String> correctionRules,
+    String summaryVi,
+  })
+  recordSkillCorrection({
+    String action = 'record',
+    required String skillId,
+    String? correctionNote,
+  }) {
+    final skills = listForgedSkillEntries();
+    var idx = _forgedSkills.indexWhere(
+      (s) => s.skillId.toLowerCase() == skillId.trim().toLowerCase(),
+    );
+    if (idx < 0 && skills.isNotEmpty) {
+      idx = 0;
+    }
+    final current = _forgedSkills[idx];
+    if (action == 'list' ||
+        correctionNote == null ||
+        correctionNote.trim().isEmpty) {
+      return (
+        skillId: current.skillId,
+        selfHealGeneration: current.selfHealGeneration,
+        correctionRules: current.correctionRules,
+        summaryVi:
+            'Kỹ năng "${current.titleVi}" đang có ${current.correctionRules.length} quy tắc tự thích nghi (thế hệ #${current.selfHealGeneration}).',
+      );
+    }
+    final cleanNote = redactSensitiveSelectionText(
+      correctionNote.trim(),
+      maxChars: 240,
+    ).text;
+    final updatedRules = <String>[...current.correctionRules, cleanNote];
+    final nextGen = current.selfHealGeneration + 1;
+    final updated = current.copyWith(
+      selfHealGeneration: nextGen,
+      correctionRules: List<String>.unmodifiable(updatedRules),
+    );
+    _forgedSkills[idx] = updated;
+    return (
+      skillId: updated.skillId,
+      selfHealGeneration: nextGen,
+      correctionRules: updated.correctionRules,
+      summaryVi:
+          'Đã ghi nhớ bài học tự sửa lỗi thế hệ #$nextGen cho "${updated.titleVi}": $cleanNote',
+    );
+  }
+
+  /// Runs or configures XUNA's Zero-Token 2-Tier Heartbeat (`CLAW-2`, `UNIV-2`).
+  ///
+  /// Supports real SHA-256 `sensor.hash_delta` detection when [watchedDirectoryPath]
+  /// or [watchedContent] is supplied: if the computed SHA-256 differs from the
+  /// previous tick for the same target, `deltaDetected` is automatically `true`.
+  HeartbeatStatusSnapshot configureAndTickHeartbeat({
+    String action = 'tick',
+    String? checkName,
+    int? intervalMinutes,
+    bool simulateDelta = false,
+    String? watchedDirectoryPath,
+    String? watchedContent,
+  }) {
+    if (checkName != null && checkName.trim().isNotEmpty) {
+      _heartbeatCheckName = redactSensitiveSelectionText(
+        checkName.trim(),
+        maxChars: 80,
+      ).text;
+    }
+    if (intervalMinutes != null) {
+      _heartbeatIntervalMinutes = intervalMinutes.clamp(5, 720);
+    }
+    if (action == 'status' && _lastHeartbeatStatus != null) {
+      return _lastHeartbeatStatus!;
+    }
+
+    var realDelta = simulateDelta;
+    if (watchedDirectoryPath != null &&
+        watchedDirectoryPath.trim().isNotEmpty) {
+      final dir = Directory(watchedDirectoryPath.trim());
+      if (dir.existsSync()) {
+        final entries = dir.listSync().whereType<File>().map((f) {
+          final stat = f.statSync();
+          final base = f.path.split(RegExp(r'[/\\]')).last;
+          return '$base:${stat.size}:${stat.modified.millisecondsSinceEpoch}';
+        }).toList()..sort();
+        final digest = sha256
+            .convert(utf8.encode(entries.join('|')))
+            .toString();
+        final key = 'dir:${dir.path}';
+        final prev = _sensorHashByTarget[key];
+        _sensorHashByTarget[key] = digest;
+        if (prev != null && prev != digest) {
+          realDelta = true;
+        }
+      }
+    } else if (watchedContent != null) {
+      final digest = sha256.convert(utf8.encode(watchedContent)).toString();
+      final key = 'content:$_heartbeatCheckName';
+      final prev = _sensorHashByTarget[key];
+      _sensorHashByTarget[key] = digest;
+      if (prev != null && prev != digest) {
+        realDelta = true;
+      }
+    }
+
+    final status = realDelta ? 'HEARTBEAT_ALERT' : 'HEARTBEAT_OK';
+    final summaryVi = realDelta
+        ? 'HEARTBEAT_ALERT: Phát hiện biến động dữ liệu mới (SHA-256 delta) trong phiên tuần tra "$_heartbeatCheckName" — XUNA sẵn sàng xử lý!'
+        : 'HEARTBEAT_OK: Tuần tra ngầm "$_heartbeatCheckName" (chu kỳ $_heartbeatIntervalMinutes phút) hoàn tất với 0 LLM token — không làm phiền bạn.';
+    final snap = HeartbeatStatusSnapshot(
+      status: status,
+      deltaDetected: realDelta,
+      llmTokensUsed: 0,
+      suppressedNotification: !realDelta,
+      intervalMinutes: _heartbeatIntervalMinutes,
+      checkName: _heartbeatCheckName,
+      summaryVi: summaryVi,
+    );
+    _lastHeartbeatStatus = snap;
+    return snap;
+  }
+
+  /// Builds and presents an interactive Agent-to-UI (`A2UI`) Live Canvas surface (`CLAW-3`, `UNIV-2`).
+  LiveCanvasSurfaceSnapshot presentLiveCanvas({
+    String action = 'present_invoice_table',
+    String? title,
+    String? sourceSkillId,
+  }) {
+    _canvasSeq++;
+    if (action == 'clear') {
+      _activeLiveCanvas = null;
+      return LiveCanvasSurfaceSnapshot(
+        canvasId: 'canvas-clear-$_canvasSeq',
+        surfaceKind: 'cleared',
+        titleVi: 'Đã đóng bảng Live Canvas',
+        columns: const <String>[],
+        rows: const <Map<String, Object?>>[],
+        actions: const <String>[],
+        summaryVi: 'Đã thu gọn bảng tương tác Live Canvas.',
+      );
+    }
+
+    if (action == 'present_kanban_board') {
+      final rows = <Map<String, Object?>>[
+        <String, Object?>{
+          'candidate': 'Nguyễn Minh Anh',
+          'skills': 'Python, Marketing, SQL',
+          'experience': '3.5 năm',
+          'score': '94/100',
+          'stage': 'Vào vòng Phỏng vấn',
+        },
+        <String, Object?>{
+          'candidate': 'Trần Hoàng Nam',
+          'skills': 'Flutter, Dart, UI/UX',
+          'experience': '4.0 năm',
+          'score': '91/100',
+          'stage': 'Vào vòng Phỏng vấn',
+        },
+        <String, Object?>{
+          'candidate': 'Lê Thu Hà',
+          'skills': 'Content, SEO, Canva',
+          'experience': '2.0 năm',
+          'score': '82/100',
+          'stage': 'Danh sách Tiềm năng',
+        },
+      ];
+      final snap = LiveCanvasSurfaceSnapshot(
+        canvasId: 'canvas-kanban-$_canvasSeq',
+        surfaceKind: 'kanban_board',
+        titleVi: (title != null && title.trim().isNotEmpty)
+            ? title.trim()
+            : 'Bảng Kanban Sàng Lọc Ứng Viên & Hồ Sơ (A2UI)',
+        columns: const <String>[
+          'Hồ sơ / Ứng viên',
+          'Kỹ năng bóc tách',
+          'Kinh nghiệm',
+          'Điểm khớp',
+          'Cột trạng thái',
+        ],
+        rows: rows,
+        actions: const <String>[
+          'export_csv',
+          'filter_top_candidates',
+          'undo_last',
+        ],
+        summaryVi:
+            'Live Canvas Kanban: Đã phân loại ${rows.length} hồ sơ theo điểm khớp kỹ năng kèm nút Xuất CSV.',
+      );
+      _activeLiveCanvas = snap;
+      return snap;
+    }
+
+    if (action == 'present_metric_cards') {
+      final rows = <Map<String, Object?>>[
+        <String, Object?>{
+          'product': 'Tai nghe Bluetooth X-Pro ANC',
+          'myPrice': '380.000 đ',
+          'competitorPrice': '345.000 đ (-9.2%)',
+          'stockStatus': 'Đối thủ sắp hết hàng',
+          'recommendation': 'Giữ giá + Tặng voucher 15k',
+        },
+        <String, Object?>{
+          'product': 'Bàn phím Cơ Wireless K68',
+          'myPrice': '650.000 đ',
+          'competitorPrice': '690.000 đ (+6.1%)',
+          'stockStatus': 'Còn hàng',
+          'recommendation': 'Đang có lợi thế giá tốt nhất',
+        },
+      ];
+      final snap = LiveCanvasSurfaceSnapshot(
+        canvasId: 'canvas-metrics-$_canvasSeq',
+        surfaceKind: 'metric_cards',
+        titleVi: (title != null && title.trim().isNotEmpty)
+            ? title.trim()
+            : 'Radar Biến Động Giá & Tồn Kho Đối Thủ (A2UI)',
+        columns: const <String>[
+          'Sản phẩm',
+          'Giá shop bạn',
+          'Giá đối thủ',
+          'Tồn kho',
+          'Đề xuất hành động',
+        ],
+        rows: rows,
+        actions: const <String>[
+          'export_csv',
+          'enable_heartbeat_watch',
+          'undo_last',
+        ],
+        summaryVi:
+            'Live Canvas Metric Cards: Phát hiện 1 mã sản phẩm đối thủ giảm giá 9.2% — đã gợi ý phương án tối ưu.',
+      );
+      _activeLiveCanvas = snap;
+      return snap;
+    }
+
+    if (action == 'present_diff_reconcile') {
+      final rows = reconcileUniversalTables(
+        const <Map<String, Object?>>[
+          <String, Object?>{
+            'id': 'DH-8821',
+            'customer': 'Phạm Quốc Bảo',
+            'amount': 450000,
+          },
+          <String, Object?>{
+            'id': 'DH-8822',
+            'customer': 'Đỗ Bích Ngọc',
+            'amount': 1250000,
+          },
+          <String, Object?>{
+            'id': 'DH-8823',
+            'customer': 'Vũ Tuấn Kiệt',
+            'amount': 780000,
+          },
+        ],
+        const <Map<String, Object?>>[
+          <String, Object?>{'id': 'DH-8821', 'amount': 450000},
+          <String, Object?>{'id': 'DH-8822', 'amount': 1215000},
+        ],
+      );
+      final snap = LiveCanvasSurfaceSnapshot(
+        canvasId: 'canvas-reconcile-$_canvasSeq',
+        surfaceKind: 'diff_reconcile',
+        titleVi: (title != null && title.trim().isNotEmpty)
+            ? title.trim()
+            : 'Bảng Đối Soát Chênh Lệch Đa Nguồn (A2UI)',
+        columns: const <String>[
+          'Mã đối chiếu',
+          'Bảng A (Gốc)',
+          'Bảng B (Thực nhận)',
+          'Chênh lệch',
+          'Trạng thái',
+        ],
+        rows: rows,
+        actions: const <String>[
+          'export_csv',
+          'filter_discrepancies',
+          'undo_last',
+        ],
+        summaryVi:
+            'Live Canvas Đối Soát: So khớp ${rows.length} dòng (1 khớp 100%, 1 lệch số tiền, 1 thiếu dữ liệu đối ứng).',
+      );
+      _activeLiveCanvas = snap;
+      return snap;
+    }
+
+    if (action == 'present_data_table') {
+      final rows = <Map<String, Object?>>[
+        <String, Object?>{
+          'item': 'Xu hướng AI Agent tự tạo công cụ 2026',
+          'source': 'Báo cáo Công nghệ',
+          'keyTakeaway':
+              'Kiến trúc 8 Nguyên tử Composable giúp mở rộng đa ngành',
+          'format': 'Markdown + CSV',
+        },
+        <String, Object?>{
+          'item': 'Tối ưu vận hành cửa hàng đa kênh',
+          'source': 'Bản tin Thương mại số',
+          'keyTakeaway': 'Tự động hóa đối soát đơn hàng và canh giá 0-token',
+          'format': 'Markdown + CSV',
+        },
+      ];
+      final snap = LiveCanvasSurfaceSnapshot(
+        canvasId: 'canvas-data-$_canvasSeq',
+        surfaceKind: 'data_table',
+        titleVi: (title != null && title.trim().isNotEmpty)
+            ? title.trim()
+            : 'Bảng Dữ Liệu Đa Năng XUNA (Live Canvas A2UI)',
+        columns: const <String>[
+          'Mục dữ liệu',
+          'Nguồn trích xuất',
+          'Điểm chính',
+          'Định dạng xuất',
+        ],
+        rows: rows,
+        actions: const <String>['export_csv', 'export_md', 'undo_last'],
+        summaryVi:
+            'Live Canvas Data Table: Đang hiển thị ${rows.length} bản ghi đa năng trên bảng tương tác.',
+      );
+      _activeLiveCanvas = snap;
+      return snap;
+    }
+
+    if (action == 'present_workflow_board') {
+      final skills = listForgedSkillEntries();
+      final rows = skills
+          .map(
+            (s) => <String, Object?>{
+              'skillId': s.skillId,
+              'titleVi': s.titleVi,
+              'category': s.category,
+              'selfHealGen': 'v${s.selfHealGeneration}',
+              'items': '${s.detectedItemsCount} mục',
+            },
+          )
+          .toList(growable: false);
+      final snap = LiveCanvasSurfaceSnapshot(
+        canvasId: 'canvas-board-$_canvasSeq',
+        surfaceKind: 'workflow_board',
+        titleVi: (title != null && title.trim().isNotEmpty)
+            ? title.trim()
+            : 'Bảng Điều Khiển Kỹ Năng XUNA Live Canvas',
+        columns: const <String>['Công cụ', 'Phân loại', 'Tự sửa', 'Quy mô'],
+        rows: rows,
+        actions: const <String>[
+          'run_selected',
+          'export_skill_md',
+          'record_correction',
+        ],
+        summaryVi:
+            'Đang hiển thị ${rows.length} công cụ tự động trên bảng tương tác Live Canvas.',
+      );
+      _activeLiveCanvas = snap;
+      return snap;
+    }
+
+    final invoiceSheet = extractInvoicesToSheet(
+      sourceFolder: 'XUNA_HoaDon/Thang_11_2026',
+    );
+    final snap = LiveCanvasSurfaceSnapshot(
+      canvasId: 'canvas-invoices-$_canvasSeq',
+      surfaceKind: 'invoice_table',
+      titleVi: (title != null && title.trim().isNotEmpty)
+          ? title.trim()
+          : 'Bảng Kê Hóa Đơn Tương Tác (Live Canvas A2UI)',
+      columns: const <String>[
+        'Số HĐ',
+        'Nhà cung cấp',
+        'Mã số thuế',
+        'Tổng thanh toán',
+        'Trạng thái',
+      ],
+      rows: invoiceSheet.rows,
+      actions: const <String>['export_csv', 'filter_duplicates', 'undo_last'],
+      summaryVi:
+          'Live Canvas A2UI: Đang hiển thị trực quan ${invoiceSheet.invoiceCount} hóa đơn (Tổng: 7.150.000 đ) kèm nút Lọc trùng & Xuất CSV.',
+    );
+    _activeLiveCanvas = snap;
+    return snap;
+  }
+
+  /// Universal Parser (`parse.universal`, `UNIV-2`):
+  /// Parses real CSV/TSV, JSON array/object, arbitrary XML tags, or unstructured
+  /// text/CV/HTML/logs (extracting email, phone, url, amount, years of experience,
+  /// and matched professional skills) into structured records.
+  List<Map<String, Object?>> parseUniversalContent(
+    String rawContent, {
+    String format = 'auto',
+    String sourceName = 'inline',
+  }) {
+    final trimmed = rawContent.trim();
+    if (trimmed.isEmpty) return const <Map<String, Object?>>[];
+
+    final resolvedFormat = format == 'auto'
+        ? (trimmed.startsWith('{') || trimmed.startsWith('[')
+              ? 'json'
+              : (trimmed.startsWith('<') && trimmed.contains('>')
+                    ? 'xml'
+                    : (trimmed.contains('\n') &&
+                              (trimmed.split('\n').first.contains(',') ||
+                                  trimmed.split('\n').first.contains('\t'))
+                          ? 'csv'
+                          : 'text')))
+        : format.toLowerCase();
+
+    if (resolvedFormat == 'json') {
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is List) {
+          return decoded
+              .whereType<Map>()
+              .map(
+                (m) => m.map(
+                  (key, value) => MapEntry(key.toString(), value as Object?),
+                ),
+              )
+              .toList(growable: false);
+        }
+        if (decoded is Map) {
+          for (final listKey in const <String>['rows', 'items', 'data']) {
+            final nested = decoded[listKey];
+            if (nested is List) {
+              return nested
+                  .whereType<Map>()
+                  .map(
+                    (m) => m.map(
+                      (key, value) =>
+                          MapEntry(key.toString(), value as Object?),
+                    ),
+                  )
+                  .toList(growable: false);
+            }
+          }
+          return <Map<String, Object?>>[
+            decoded.map(
+              (key, value) => MapEntry(key.toString(), value as Object?),
+            ),
+          ];
+        }
+      } on FormatException {
+        // Fall through to text parser if malformed JSON
+      }
+    }
+
+    if (resolvedFormat == 'csv' || resolvedFormat == 'tsv') {
+      final lines = trimmed
+          .split(RegExp(r'\r?\n'))
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      if (lines.length >= 2) {
+        final delimiter = lines.first.contains('\t') ? '\t' : ',';
+        final headers = _splitCsvLine(lines.first, delimiter);
+        final out = <Map<String, Object?>>[];
+        for (var i = 1; i < lines.length; i++) {
+          final cells = _splitCsvLine(lines[i], delimiter);
+          final row = <String, Object?>{};
+          for (var c = 0; c < headers.length; c++) {
+            final key = headers[c].isEmpty ? 'col_$c' : headers[c];
+            final rawVal = c < cells.length ? cells[c] : '';
+            final asInt = int.tryParse(rawVal);
+            row[key] = asInt ?? rawVal;
+          }
+          out.add(row);
+        }
+        return out;
+      }
+    }
+
+    if (resolvedFormat == 'xml') {
+      final blockMatches = RegExp(
+        r'<(Row|Item|Record|Candidate|Product|Invoice|HDon|HD)\b[^>]*>([\s\S]*?)</\1>',
+        caseSensitive: false,
+      ).allMatches(trimmed);
+      final leafTagRe = RegExp(r'<([a-zA-Z0-9_:-]+)>([^<>]+)</\1>');
+      if (blockMatches.isNotEmpty) {
+        final out = <Map<String, Object?>>[];
+        for (final block in blockMatches) {
+          final inner = block.group(2) ?? '';
+          final row = <String, Object?>{};
+          for (final tag in leafTagRe.allMatches(inner)) {
+            final k = tag.group(1)!;
+            final v = tag.group(2)!.trim();
+            row[k] = int.tryParse(v) ?? v;
+          }
+          if (row.isNotEmpty) out.add(row);
+        }
+        if (out.isNotEmpty) return out;
+      }
+      final singleRow = <String, Object?>{'source': sourceName};
+      for (final tag in leafTagRe.allMatches(trimmed)) {
+        final k = tag.group(1)!;
+        final v = tag.group(2)!.trim();
+        singleRow[k] = int.tryParse(v) ?? v;
+      }
+      if (singleRow.length > 1) {
+        return <Map<String, Object?>>[singleRow];
+      }
+    }
+
+    // Universal unstructured text / CV / HTML / log extractor
+    final chunks = trimmed.contains('\n---\n')
+        ? trimmed.split('\n---\n')
+        : <String>[trimmed];
+    final emailRe = RegExp(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}');
+    final phoneRe = RegExp(r'(?:\+84|0)[0-9\s.\-]{8,12}');
+    final urlRe = RegExp(
+      r'https?://[^\s"'
+      "'"
+      r'<>]+',
+    );
+    final expRe = RegExp(
+      r'(\d+(?:[.,]\d+)?)\s*(?:năm|nam|years?|yrs?)',
+      caseSensitive: false,
+    );
+    final amountRe = RegExp(
+      r'(\d{1,3}(?:[.,]\d{3})+)\s*(?:đ|vnd|usd|\$)?',
+      caseSensitive: false,
+    );
+    const knownSkillKeywords = <String>[
+      'Python',
+      'Flutter',
+      'Dart',
+      'React',
+      'TypeScript',
+      'Marketing',
+      'SEO',
+      'Sales',
+      'Excel',
+      'SQL',
+      'AI',
+      'Design',
+      'Figma',
+      'Photoshop',
+      'NodeJS',
+      'Java',
+    ];
+
+    final out = <Map<String, Object?>>[];
+    for (var i = 0; i < chunks.length; i++) {
+      final chunk = chunks[i].trim();
+      if (chunk.isEmpty) continue;
+      final firstLine = chunk
+          .split(RegExp(r'\r?\n'))
+          .first
+          .replaceAll(RegExp(r'<[^>]+>'), '')
+          .trim();
+      final email = emailRe.firstMatch(chunk)?.group(0) ?? '';
+      final phone = phoneRe.firstMatch(chunk)?.group(0)?.trim() ?? '';
+      final url = urlRe.firstMatch(chunk)?.group(0) ?? '';
+      final yearsExp = expRe.firstMatch(chunk)?.group(1) ?? '';
+      final amount = amountRe.firstMatch(chunk)?.group(1) ?? '';
+      final matchedSkills = knownSkillKeywords
+          .where((kw) => chunk.toLowerCase().contains(kw.toLowerCase()))
+          .toList(growable: false);
+
+      out.add(<String, Object?>{
+        'source': chunks.length == 1 ? sourceName : '$sourceName#${i + 1}',
+        'title': firstLine.length > 80 ? firstLine.substring(0, 80) : firstLine,
+        if (email.isNotEmpty) 'email': email,
+        if (phone.isNotEmpty) 'phone': phone,
+        if (url.isNotEmpty) 'url': url,
+        if (yearsExp.isNotEmpty) 'yearsExp': yearsExp,
+        if (amount.isNotEmpty) 'amount': amount,
+        if (matchedSkills.isNotEmpty) 'skills': matchedSkills.join(', '),
+        'score': 60 + (matchedSkills.length * 10).clamp(0, 38),
+      });
+    }
+    return out;
+  }
+
+  List<String> _splitCsvLine(String line, String delimiter) {
+    final result = <String>[];
+    final sb = StringBuffer();
+    var inQuotes = false;
+    for (var i = 0; i < line.length; i++) {
+      final ch = line[i];
+      if (ch == '"') {
+        inQuotes = !inQuotes;
+      } else if (!inQuotes && ch == delimiter) {
+        result.add(sb.toString().trim());
+        sb.clear();
+      } else {
+        sb.write(ch);
+      }
+    }
+    result.add(sb.toString().trim());
+    return result;
+  }
+
+  /// Universal 2-table reconciler (`transform.pipeline`, `UNIV-2`):
+  /// Joins [primaryRows] and [secondaryRows] by identifier (`id`, `orderId`, `ma_don`,
+  /// or first column) and compares numeric amounts (`amount`, `total`, `so_tien`).
+  List<Map<String, Object?>> reconcileUniversalTables(
+    List<Map<String, Object?>> primaryRows,
+    List<Map<String, Object?>> secondaryRows,
+  ) {
+    String extractKey(Map<String, Object?> row) {
+      for (final k in const <String>[
+        'id',
+        'orderId',
+        'ma_don',
+        'code',
+        'invoiceNo',
+      ]) {
+        if (row[k] != null) return row[k].toString().trim();
+      }
+      return row.values.isEmpty ? '' : row.values.first.toString().trim();
+    }
+
+    int extractAmount(Map<String, Object?> row) {
+      for (final k in const <String>[
+        'amount',
+        'total',
+        'totalVnd',
+        'so_tien',
+        'price',
+      ]) {
+        final v = row[k];
+        if (v is int) return v;
+        if (v is num) return v.round();
+        if (v is String) {
+          final digits = v.replaceAll(RegExp(r'[^0-9\-]'), '');
+          final parsed = int.tryParse(digits);
+          if (parsed != null) return parsed;
+        }
+      }
+      return 0;
+    }
+
+    final secondaryMap = <String, Map<String, Object?>>{};
+    for (final row in secondaryRows) {
+      final k = extractKey(row);
+      if (k.isNotEmpty) {
+        secondaryMap[k] = row;
+      }
+    }
+
+    final results = <Map<String, Object?>>[];
+    for (final left in primaryRows) {
+      final key = extractKey(left);
+      final leftAmt = extractAmount(left);
+      final right = secondaryMap[key];
+      if (right == null) {
+        results.add(<String, Object?>{
+          'id': key,
+          'leftAmount': leftAmt,
+          'rightAmount': 0,
+          'delta': -leftAmt,
+          'status': 'thieu_du_lieu',
+        });
+      } else {
+        final rightAmt = extractAmount(right);
+        final delta = rightAmt - leftAmt;
+        results.add(<String, Object?>{
+          'id': key,
+          'leftAmount': leftAmt,
+          'rightAmount': rightAmt,
+          'delta': delta,
+          'status': delta == 0 ? 'khop_100' : 'lech_gia_tri',
+        });
+      }
+    }
+    return results;
+  }
+
+  /// Universal Artifact Exporter (`export.artifact`, `UNIV-2`):
+  /// Writes real `.csv` (with UTF-8 BOM `\uFEFF` for Excel Vietnamese compatibility),
+  /// `.json`, `.md`, or `.html` files to [filePath] on disk.
+  String exportUniversalArtifactToDisk({
+    required String filePath,
+    required String format,
+    required String titleVi,
+    required List<Map<String, Object?>> rows,
+  }) {
+    final fmt = format.trim().toLowerCase();
+    final cols = <String>{};
+    for (final r in rows) {
+      cols.addAll(r.keys);
+    }
+    final orderedCols = cols.isEmpty
+        ? const <String>['status']
+        : cols.toList(growable: false);
+
+    late final String content;
+    if (fmt == 'json') {
+      content = const JsonEncoder.withIndent('  ').convert(<String, Object?>{
+        'title': titleVi,
+        'count': rows.length,
+        'rows': rows,
+      });
+    } else if (fmt == 'md') {
+      final sb = StringBuffer()
+        ..writeln('# $titleVi')
+        ..writeln()
+        ..writeln('| ${orderedCols.join(' | ')} |')
+        ..writeln('| ${orderedCols.map((_) => '---').join(' | ')} |');
+      for (final r in rows) {
+        final cells = orderedCols
+            .map((c) => (r[c] ?? '').toString().replaceAll('|', '/'))
+            .join(' | ');
+        sb.writeln('| $cells |');
+      }
+      content = sb.toString();
+    } else if (fmt == 'html') {
+      final sb = StringBuffer()
+        ..writeln('<!DOCTYPE html><html lang="vi"><head><meta charset="utf-8">')
+        ..writeln('<title>$titleVi</title></head><body>')
+        ..writeln('<h1>$titleVi</h1><table border="1" cellpadding="6">')
+        ..writeln(
+          '<thead><tr>${orderedCols.map((c) => '<th>$c</th>').join()}</tr></thead><tbody>',
+        );
+      for (final r in rows) {
+        sb.writeln(
+          '<tr>${orderedCols.map((c) => '<td>${r[c] ?? ''}</td>').join()}</tr>',
+        );
+      }
+      sb.writeln('</tbody></table></body></html>');
+      content = sb.toString();
+    } else {
+      // Default CSV with UTF-8 BOM (\uFEFF) so Microsoft Excel renders Vietnamese diacritics properly
+      String escapeCsv(Object? val) {
+        final s = (val ?? '').toString();
+        if (s.contains(',') || s.contains('"') || s.contains('\n')) {
+          return '"${s.replaceAll('"', '""')}"';
+        }
+        return s;
+      }
+
+      final sb = StringBuffer('\uFEFF')
+        ..writeln(orderedCols.map(escapeCsv).join(','));
+      for (final r in rows) {
+        sb.writeln(orderedCols.map((c) => escapeCsv(r[c])).join(','));
+      }
+      content = sb.toString();
+    }
+
+    final file = File(filePath);
+    file.parent.createSync(recursive: true);
+    file.writeAsStringSync(content, encoding: utf8);
+    return file.path;
+  }
+
+  /// Real reversible batch file rename in a directory (`file.batch_ops`, `UNIV-2`).
+  /// Stores exact `(oldPath, newPath)` pairs in [_lastBatchFileRenames] so
+  /// [undoLastBatchFileOps] restores the original filenames on disk.
+  List<({String oldPath, String newPath})> executeBatchFileOpsInDirectory({
+    required String directoryPath,
+    String prefix = 'XUNA_Item',
+  }) {
+    final dir = Directory(directoryPath);
+    if (!dir.existsSync()) return const <({String oldPath, String newPath})>[];
+    final files = dir.listSync().whereType<File>().toList()
+      ..sort((a, b) => a.path.compareTo(b.path));
+    final renamed = <({String oldPath, String newPath})>[];
+    var idx = 1;
+    for (final file in files) {
+      final baseName = file.path.split(RegExp(r'[/\\]')).last;
+      final dotIdx = baseName.lastIndexOf('.');
+      final ext = dotIdx > 0
+          ? baseName.substring(dotIdx + 1).toLowerCase()
+          : '';
+      if (!isAllowedForgeFileExtension(ext)) continue;
+      if (baseName.startsWith(prefix)) continue;
+      final padded = idx.toString().padLeft(3, '0');
+      final newName = '${prefix}_$padded.$ext';
+      final newPath = '${dir.path}${Platform.pathSeparator}$newName';
+      file.renameSync(newPath);
+      renamed.add((oldPath: file.path, newPath: newPath));
+      idx++;
+    }
+    if (renamed.isNotEmpty) {
+      _lastBatchFileRenames
+        ..clear()
+        ..addAll(renamed);
+    }
+    return renamed;
+  }
+
+  /// Restores the last batch of renamed files on disk (`file.batch_ops` undo, `UNIV-2`).
+  int undoLastBatchFileOps() {
+    var restored = 0;
+    for (final pair in _lastBatchFileRenames.reversed) {
+      final current = File(pair.newPath);
+      if (current.existsSync()) {
+        current.renameSync(pair.oldPath);
+        restored++;
+      }
+    }
+    _lastBatchFileRenames.clear();
+    return restored;
+  }
+
+  /// Executes a composable pipeline across the 8 Universal Atomic Primitives (`UNIV-2`).
+  ///
+  /// - Scans real files in [sourceFolder] if it exists on disk, or parses [rawInputText].
+  /// - Runs 2-table reconciliation if [secondaryInputText] is provided or category is `spreadsheet_reconciler`.
+  /// - Writes a real artifact (`.csv` with UTF-8 BOM, `.json`, `.md`, or `.html`) when
+  ///   [sourceFolder] exists on disk, and updates the active Live Canvas surface.
+  ({
+    String pipelineId,
+    String category,
+    List<String> executedPrimitives,
+    int processedCount,
+    String exportedFile,
+    String canvasSurfaceKind,
+    List<Map<String, Object?>> rows,
+    String undoSnapshotId,
+    String summaryVi,
+  })
+  executeUniversalPipeline({
+    required String goal,
+    List<String>? primitives,
+    String? sourceFolder,
+    String? rawInputText,
+    String? secondaryInputText,
+    String exportFormat = 'csv',
+    String? outputFileName,
+    DateTime? nowUtc,
+  }) {
+    _pipelineSeq++;
+    _undoSnapSeq++;
+    final cleanGoal = redactSensitiveSelectionText(
+      goal.trim(),
+      maxChars: 400,
+    ).text;
+    final category = inferForgeSkillCategory(cleanGoal);
+    final executedPrimitives = (primitives != null && primitives.isNotEmpty)
+        ? List<String>.unmodifiable(primitives)
+        : inferUniversalPrimitivesForGoal(cleanGoal);
+
+    final folder = (sourceFolder != null && sourceFolder.trim().isNotEmpty)
+        ? sourceFolder.trim()
+        : 'XUNA_Pipeline_Output';
+    final fmt = allowedUniversalExportFormats.contains(exportFormat)
+        ? exportFormat
+        : 'csv';
+    final outName = (outputFileName != null && outputFileName.trim().isNotEmpty)
+        ? outputFileName.trim()
+        : 'XUNA_KetQua_$_pipelineSeq.$fmt';
+
+    var parsedRows = <Map<String, Object?>>[];
+
+    // 1. Source + Parse: check if sourceFolder exists on disk or rawInputText is provided
+    final realDir = Directory(folder);
+    if (realDir.existsSync()) {
+      if (executedPrimitives.contains('file.batch_ops') &&
+          category == 'media_batch_renamer') {
+        final renamed = executeBatchFileOpsInDirectory(
+          directoryPath: realDir.path,
+          prefix: '2026-11_Media',
+        );
+        parsedRows = renamed
+            .map(
+              (p) => <String, Object?>{
+                'oldName': p.oldPath.split(RegExp(r'[/\\]')).last,
+                'newName': p.newPath.split(RegExp(r'[/\\]')).last,
+                'status': 'da_doi_ten',
+              },
+            )
+            .toList();
+      } else {
+        final files = realDir.listSync().whereType<File>().toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
+        for (final f in files) {
+          final baseName = f.path.split(RegExp(r'[/\\]')).last;
+          if (baseName == outName) continue;
+          final dotIdx = baseName.lastIndexOf('.');
+          final ext = dotIdx > 0
+              ? baseName.substring(dotIdx + 1).toLowerCase()
+              : '';
+          if (const <String>{
+            'csv',
+            'tsv',
+            'json',
+            'xml',
+            'txt',
+            'md',
+            'html',
+            'log',
+          }.contains(ext)) {
+            final text = f.readAsStringSync();
+            parsedRows.addAll(
+              parseUniversalContent(text, sourceName: baseName),
+            );
+          } else if (isAllowedForgeFileExtension(ext)) {
+            parsedRows.add(<String, Object?>{
+              'file': baseName,
+              'ext': ext,
+              'sizeBytes': f.lengthSync(),
+              'status': 'san_sang',
+            });
+          }
+        }
+      }
+    }
+
+    if (parsedRows.isEmpty &&
+        rawInputText != null &&
+        rawInputText.trim().isNotEmpty) {
+      parsedRows = parseUniversalContent(rawInputText, sourceName: 'input');
+    }
+
+    // 2. Transform / Reconcile
+    if (secondaryInputText != null && secondaryInputText.trim().isNotEmpty) {
+      final secondaryRows = parseUniversalContent(
+        secondaryInputText,
+        sourceName: 'secondary',
+      );
+      parsedRows = reconcileUniversalTables(parsedRows, secondaryRows);
+    }
+
+    // 3. Domain-aware fallback rows when running without local files or rawInputText
+    late final String surfaceKind;
+    late final List<String> columns;
+    if (parsedRows.isEmpty) {
+      switch (category) {
+        case 'hr_cv_scanner':
+          surfaceKind = 'kanban_board';
+          columns = const <String>[
+            'Ứng viên',
+            'Email',
+            'Kỹ năng',
+            'Kinh nghiệm',
+            'Điểm khớp',
+          ];
+          parsedRows = <Map<String, Object?>>[
+            <String, Object?>{
+              'candidate': 'Nguyễn Minh Anh',
+              'email': 'minhanh.hr@example.com',
+              'skills': 'Python, Marketing, SQL',
+              'yearsExp': '3.5',
+              'score': 94,
+            },
+            <String, Object?>{
+              'candidate': 'Trần Hoàng Nam',
+              'email': 'hoangnam.dev@example.com',
+              'skills': 'Flutter, Dart, Design',
+              'yearsExp': '4.0',
+              'score': 91,
+            },
+          ];
+        case 'ecommerce_price_radar':
+          surfaceKind = 'metric_cards';
+          columns = const <String>[
+            'Sản phẩm',
+            'Giá shop bạn',
+            'Giá đối thủ',
+            'Biến động',
+          ];
+          parsedRows = <Map<String, Object?>>[
+            <String, Object?>{
+              'product': 'Tai nghe Bluetooth X-Pro ANC',
+              'myPrice': 380000,
+              'competitorPrice': 345000,
+              'deltaPercent': '-9.2%',
+            },
+            <String, Object?>{
+              'product': 'Bàn phím Cơ Wireless K68',
+              'myPrice': 650000,
+              'competitorPrice': 690000,
+              'deltaPercent': '+6.1%',
+            },
+          ];
+        case 'spreadsheet_reconciler':
+          surfaceKind = 'diff_reconcile';
+          columns = const <String>[
+            'Mã đơn',
+            'Bảng gốc',
+            'Thực nhận',
+            'Chênh lệch',
+            'Trạng thái',
+          ];
+          parsedRows = reconcileUniversalTables(
+            const <Map<String, Object?>>[
+              <String, Object?>{'id': 'DH-8821', 'amount': 450000},
+              <String, Object?>{'id': 'DH-8822', 'amount': 1250000},
+            ],
+            const <Map<String, Object?>>[
+              <String, Object?>{'id': 'DH-8821', 'amount': 450000},
+              <String, Object?>{'id': 'DH-8822', 'amount': 1215000},
+            ],
+          );
+        default:
+          surfaceKind = 'data_table';
+          columns = const <String>['Mục', 'Giá trị', 'Trạng thái'];
+          parsedRows = <Map<String, Object?>>[
+            <String, Object?>{
+              'item': cleanGoal.length > 48
+                  ? cleanGoal.substring(0, 48)
+                  : cleanGoal,
+              'value': 'Đã xử lý qua ${executedPrimitives.length} nguyên tử',
+              'status': 'hoan_tat',
+            },
+          ];
+      }
+    } else {
+      surfaceKind = switch (category) {
+        'hr_cv_scanner' => 'kanban_board',
+        'ecommerce_price_radar' => 'metric_cards',
+        'spreadsheet_reconciler' => 'diff_reconcile',
+        'web_harvest_invoices' => 'invoice_table',
+        _ => 'data_table',
+      };
+      columns = parsedRows.first.keys.take(5).toList(growable: false);
+    }
+
+    // 4. Export artifact to disk if realDir exists
+    var exportedPath = '$folder/$outName';
+    if (realDir.existsSync()) {
+      exportedPath = exportUniversalArtifactToDisk(
+        filePath: '${realDir.path}${Platform.pathSeparator}$outName',
+        format: fmt,
+        titleVi: 'Kết Quả Pipeline XUNA: $cleanGoal',
+        rows: parsedRows,
+      );
+    }
+
+    // 5. Push to Live Canvas A2UI
+    _canvasSeq++;
+    _activeLiveCanvas = LiveCanvasSurfaceSnapshot(
+      canvasId: 'canvas-univ-$_canvasSeq',
+      surfaceKind: surfaceKind,
+      titleVi:
+          'Live Canvas ($category): ${cleanGoal.length > 42 ? "${cleanGoal.substring(0, 42)}..." : cleanGoal}',
+      columns: columns,
+      rows: parsedRows,
+      actions: const <String>['export_csv', 'export_md', 'undo_last'],
+      summaryVi:
+          'Đã chạy ${executedPrimitives.length} nguyên tử vạn năng, xử lý ${parsedRows.length} bản ghi và xuất "$exportedPath".',
+    );
+
+    final pipelineId = 'pipe-$category-$_pipelineSeq'.replaceAll('_', '-');
+    final undoId = 'undo-pipe-$_undoSnapSeq';
+    final summaryVi =
+        'Pipeline "$pipelineId" ($category) hoàn tất ${executedPrimitives.length} nguyên tử: xử lý ${parsedRows.length} mục -> "$exportedPath" (Undo: $undoId).';
+
+    return (
+      pipelineId: pipelineId,
+      category: category,
+      executedPrimitives: executedPrimitives,
+      processedCount: parsedRows.length,
+      exportedFile: exportedPath,
+      canvasSurfaceKind: surfaceKind,
+      rows: parsedRows,
+      undoSnapshotId: undoId,
+      summaryVi: summaryVi.length <= 240
+          ? summaryVi
+          : summaryVi.substring(0, 240),
     );
   }
 }

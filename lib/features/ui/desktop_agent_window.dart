@@ -487,6 +487,8 @@ class DesktopAgentWindow extends StatelessWidget {
       final proposals = controller.habitProposals;
       final skills = controller.forgedSkills;
       final recordingTeach = controller.isTeachRecording.value;
+      final heartbeat = controller.lastHeartbeatStatus.value;
+      final liveCanvas = controller.activeLiveCanvas.value;
 
       return ListView(
         children: [
@@ -686,18 +688,76 @@ class DesktopAgentWindow extends StatelessWidget {
                         dense: true,
                         contentPadding: EdgeInsets.zero,
                         title: Text(
-                          '[${s.category}] ${s.titleVi} (${s.runCount} lần chạy)',
+                          '[${s.category}] ${s.titleVi} (${s.runCount} lần chạy · tự sửa v${s.selfHealGeneration})',
                         ),
                         subtitle: Text(
                           'Thư mục: ${s.targetFolder} · Dry-run: ${s.dryRunSample}',
                         ),
-                        trailing: OutlinedButton(
-                          onPressed: () =>
-                              controller.runForgedSkillFromUi(s.skillId),
-                          child: const Text('Chạy'),
+                        trailing: Wrap(
+                          spacing: 6,
+                          children: [
+                            OutlinedButton(
+                              onPressed: () => controller
+                                  .recordQuickSkillCorrectionFromUi(s.skillId),
+                              child: const Text('Dạy sửa lỗi'),
+                            ),
+                            OutlinedButton(
+                              onPressed: () =>
+                                  controller.runForgedSkillFromUi(s.skillId),
+                              child: const Text('Chạy'),
+                            ),
+                          ],
                         ),
                       ),
                     ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      const Text(
+                        'XUNA ClawPulse · Zero-Token Heartbeat & Live Canvas A2UI',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      OutlinedButton(
+                        onPressed: () =>
+                            controller.runZeroTokenHeartbeatFromUi(),
+                        child: const Text('Nhịp tuần tra 0-Token'),
+                      ),
+                      OutlinedButton(
+                        onPressed: controller.presentInvoiceLiveCanvasFromUi,
+                        child: const Text('Mở Live Canvas A2UI'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    heartbeat == null
+                        ? 'Chưa chạy nhịp tuần tra Heartbeat (0 LLM token khi không có biến động).'
+                        : '[${heartbeat.status}] ${heartbeat.summaryVi} (LLM token: ${heartbeat.llmTokensUsed})',
+                  ),
+                  if (liveCanvas != null &&
+                      liveCanvas.surfaceKind != 'cleared') ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '${liveCanvas.titleVi} (${liveCanvas.rows.length} dòng · Cột: ${liveCanvas.columns.join(" | ")})',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(liveCanvas.summaryVi),
+                  ],
                 ],
               ),
             ),
