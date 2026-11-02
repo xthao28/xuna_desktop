@@ -597,7 +597,12 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
 
     let appUrl: URL?
     if kind == "bundle" {
-      appUrl = NSWorkspace.shared.urlForApplication(withBundleIdentifier: target)
+      if target.hasPrefix("/") || target.hasSuffix(".app") {
+        let candidate = URL(fileURLWithPath: target)
+        appUrl = FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
+      } else {
+        appUrl = NSWorkspace.shared.urlForApplication(withBundleIdentifier: target)
+      }
     } else if kind == "exe" {
       appUrl = URL(fileURLWithPath: target)
     } else {
