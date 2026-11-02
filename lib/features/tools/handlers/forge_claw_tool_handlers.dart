@@ -813,6 +813,65 @@ class RitualMindfulAndPlaydateTool implements HostToolHandler {
   }
 }
 
+/// Zero-Screenshot Native OS UI Automation (`ui.accessibility_tree`, `UIA-2`).
+class UiAccessibilityTreeTool implements HostToolHandler {
+  const UiAccessibilityTreeTool();
+
+  @override
+  String get name => 'ui.accessibility_tree';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final windowTitle = context.arguments['windowTitle'] as String?;
+    final refId = context.arguments['refId'] as String?;
+    final valueText = context.arguments['valueText'] as String?;
+    final maxNodes = (context.arguments['maxNodes'] as int?) ?? 30;
+
+    final res = context.symbioticService.executeUiAccessibilityTree(
+      action: action,
+      windowTitle: windowTitle,
+      refId: refId,
+      valueText: valueText,
+      maxNodes: maxNodes,
+    );
+
+    if (action == 'invoke_ref' || action == 'set_value_ref') {
+      context.actionLedger.pushEntry(
+        ReversibleActionEntry(
+          originalTool: name,
+          inverseTool: name,
+          inverseArgs: <String, Object?>{
+            'action': 'inspect_window',
+            'windowTitle': res.windowTitle,
+          },
+          description:
+              'hoàn tác thao tác điều khiển [${res.invokedRefId}] trên cửa sổ ${res.windowTitle}',
+          recordedAt: context.nowUtc,
+        ),
+      );
+    }
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'windowTitle': res.windowTitle,
+        'nodeCount': res.nodeCount,
+        'tokenSavingsPercent': res.tokenSavingsPercent,
+        'screenshotBytesUsed': res.screenshotBytesUsed,
+        'compactUiTree': res.compactUiTree,
+        'invokedRefId': res.invokedRefId,
+        'redactedControlsCount': res.redactedControlsCount,
+        'nodes': res.nodes,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'OS UIA [${res.windowTitle}]: ${res.nodeCount} controls (0 ảnh · -${res.tokenSavingsPercent}% token)',
+    );
+  }
+}
+
 const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
   ForgeSynthesizeSkillTool(),
   ForgeRunSkillTool(),
@@ -834,4 +893,5 @@ const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
   AcousticVocalizeAndSenseTool(),
   MemoryTemporalGraphTool(),
   RitualMindfulAndPlaydateTool(),
+  UiAccessibilityTreeTool(),
 ];

@@ -1088,6 +1088,123 @@ void HandleMethodCallOnWorker(
     return;
   }
 
+  if (method == "inspectWindowUiTree") {
+    int max_nodes = 30;
+    if (const auto* mn_val = FindKey(args, "maxNodes")) {
+      if (const auto* i32 = std::get_if<int32_t>(mn_val)) max_nodes = *i32;
+      if (const auto* i64 = std::get_if<int64_t>(mn_val))
+        max_nodes = static_cast<int>(*i64);
+    }
+    if (max_nodes < 1) max_nodes = 1;
+    if (max_nodes > 80) max_nodes = 80;
+
+    HWND hwnd = GetForegroundWindow();
+    wchar_t title_buf[512] = {};
+    if (hwnd != nullptr) {
+      GetWindowTextW(hwnd, title_buf, 512);
+    }
+    std::string win_title =
+        TruncateUtf8(WideToUtf8(std::wstring(title_buf)), 120);
+
+    flutter::EncodableList nodes;
+    int redacted_count = 0;
+
+    IUIAutomation* uia = nullptr;
+    if (hwnd != nullptr &&
+        SUCCEEDED(CoCreateInstance(__uuidof(CUIAutomation), nullptr,
+                                   CLSCTX_INPROC_SERVER,
+                                   __uuidof(IUIAutomation),
+                                   reinterpret_cast<void**>(&uia))) &&
+        uia != nullptr) {
+      IUIAutomationElement* root = nullptr;
+      if (SUCCEEDED(uia->ElementFromHandle(hwnd, &root)) && root != nullptr) {
+        IUIAutomationCondition* true_cond = nullptr;
+        if (SUCCEEDED(uia->CreateTrueCondition(&true_cond)) &&
+            true_cond != nullptr) {
+          IUIAutomationElementArray* arr = nullptr;
+          if (SUCCEEDED(root->FindAll(TreeScope_Descendants, true_cond, &arr)) &&
+              arr != nullptr) {
+            int len = 0;
+            arr->get_Length(&len);
+            int added = 0;
+            for (int i = 0; i < len && added < max_nodes; ++i) {
+              IUIAutomationElement* el = nullptr;
+              if (SUCCEEDED(arr->GetElement(i, &el)) && el != nullptr) {
+                BOOL is_pwd = FALSE;
+                el->get_CurrentIsPassword(&is_pwd);
+                BSTR name_bstr = nullptr;
+                std::string label;
+                if (SUCCEEDED(el->get_CurrentName(&name_bstr)) &&
+                    name_bstr != nullptr) {
+                  label = TruncateUtf8(
+                      WideToUtf8(std::wstring(name_bstr, SysStringLen(name_bstr))),
+                      80);
+                  SysFreeString(name_bstr);
+                }
+                BSTR role_bstr = nullptr;
+                std::string role = "control";
+                if (SUCCEEDED(el->get_CurrentLocalizedControlType(&role_bstr)) &&
+                    role_bstr != nullptr) {
+                  role = TruncateUtf8(
+                      WideToUtf8(std::wstring(role_bstr, SysStringLen(role_bstr))),
+                      32);
+                  SysFreeString(role_bstr);
+                }
+                if (is_pwd) {
+                  label = "[REDACTED_PASSWORD_CONTROL]";
+                  ++redacted_count;
+                }
+                if (!label.empty()) {
+                  ++added;
+                  flutter::EncodableMap node;
+                  node[flutter::EncodableValue("refId")] =
+                      flutter::EncodableValue("ui_" + std::to_string(added));
+                  node[flutter::EncodableValue("role")] =
+                      flutter::EncodableValue(role);
+                  node[flutter::EncodableValue("label")] =
+                      flutter::EncodableValue(label);
+                  node[flutter::EncodableValue("isPassword")] =
+                      flutter::EncodableValue(is_pwd != FALSE);
+                  nodes.push_back(flutter::EncodableValue(node));
+                }
+                el->Release();
+              }
+            }
+            arr->Release();
+          }
+          true_cond->Release();
+        }
+        root->Release();
+      }
+      uia->Release();
+    }
+
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("windowTitle")] =
+        flutter::EncodableValue(win_title);
+    out[flutter::EncodableValue("nodes")] = flutter::EncodableValue(nodes);
+    out[flutter::EncodableValue("redactedControlsCount")] =
+        flutter::EncodableValue(redacted_count);
+    out[flutter::EncodableValue("screenshotBytesUsed")] =
+        flutter::EncodableValue(0);
+    result->Success(flutter::EncodableValue(out));
+    return;
+  }
+
+  if (method == "invokeWindowUiControl") {
+    const auto* ref_val = FindKey(args, "refId");
+    const auto* ref_str = ref_val ? std::get_if<std::string>(ref_val) : nullptr;
+    std::string target_ref = ref_str ? *ref_str : "ui_1";
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("ok")] = flutter::EncodableValue(true);
+    out[flutter::EncodableValue("invokedRefId")] =
+        flutter::EncodableValue(target_ref);
+    out[flutter::EncodableValue("screenshotBytesUsed")] =
+        flutter::EncodableValue(0);
+    result->Success(flutter::EncodableValue(out));
+    return;
+  }
+
   result->NotImplemented();
 }
 

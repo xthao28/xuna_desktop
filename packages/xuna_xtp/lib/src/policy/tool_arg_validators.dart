@@ -1540,6 +1540,82 @@ PolicyEvaluationResult validateToolArguments({
         );
       }
       effectiveRisk = RiskTier.r1;
+    case 'ui.accessibility_tree':
+      final action = arguments['action'];
+      final windowTitle = arguments['windowTitle'];
+      final refId = arguments['refId'];
+      final valueText = arguments['valueText'];
+      final maxNodes = arguments['maxNodes'];
+      const allowedUiaKeys = <String>{
+        'action',
+        'windowTitle',
+        'refId',
+        'valueText',
+        'maxNodes',
+      };
+      final refPattern = RegExp(r'^ui_[a-z0-9_]{1,24}$');
+      if (arguments.keys.any((k) => !allowedUiaKeys.contains(k)) ||
+          action is! String ||
+          !allowedUiAccessibilityActions.contains(action) ||
+          (windowTitle != null &&
+              (windowTitle is! String ||
+                  windowTitle.trim().isEmpty ||
+                  windowTitle.length > 120 ||
+                  !isSafeAgentPrompt(windowTitle))) ||
+          (refId != null &&
+              (refId is! String || !refPattern.hasMatch(refId.trim()))) ||
+          (valueText != null &&
+              (valueText is! String ||
+                  valueText.length > 500 ||
+                  !isSafeClipboardWriteText(valueText))) ||
+          (maxNodes != null &&
+              (maxNodes is! int || maxNodes < 1 || maxNodes > 80)) ||
+          ((action == 'invoke_ref' || action == 'set_value_ref') &&
+              (refId is! String || !refPattern.hasMatch(refId.trim()))) ||
+          (action == 'set_value_ref' &&
+              (valueText is! String || valueText.trim().isEmpty))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      if (windowTitle is String) {
+        final lowerWin = windowTitle.toLowerCase();
+        if (forbiddenUiWindowPatterns.any((p) => lowerWin.contains(p))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'ui_window_forbidden_target',
+          );
+        }
+      }
+      if (refId is String) {
+        final lowerRef = refId.toLowerCase();
+        if (lowerRef.contains('pass') ||
+            lowerRef.contains('secret') ||
+            lowerRef.contains('pin') ||
+            lowerRef.contains('token')) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'ui_ref_password_or_unsafe_blocked',
+          );
+        }
+      }
+      if (valueText is String &&
+          containsForbiddenSkillMarkdownPattern(valueText)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'ui_ref_password_or_unsafe_blocked',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
     case 'workspace.coding_agent':
       final proj = arguments['project'];
       final agent = arguments['agent'];

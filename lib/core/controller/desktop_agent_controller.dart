@@ -310,6 +310,28 @@ class DesktopAgentController extends GetxController {
     return frontierStatusSummaryVi.value;
   }
 
+  /// Runs a Zero-Screenshot Native OS UI Automation inspection and button invoke (`UIA-2`).
+  String? runZeroScreenshotUiAutomationFromUi({
+    String windowTitle = 'Excel - Bảng Kê Hóa Đơn',
+    String refId = 'ui_3',
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final inspectRes = svc.executeUiAccessibilityTree(
+      action: 'inspect_window',
+      windowTitle: windowTitle,
+    );
+    final invokeRes = svc.executeUiAccessibilityTree(
+      action: 'invoke_ref',
+      windowTitle: windowTitle,
+      refId: refId,
+    );
+    frontierStatusSummaryVi.value =
+        '${inspectRes.summaryVi}\n${invokeRes.summaryVi}';
+    refreshSymbioticState();
+    return frontierStatusSummaryVi.value;
+  }
+
   /// Synthesizes a quick citizen tool (e.g., Invoice Harvester) from Desktop UI (`FORGE-3`).
   ForgedSkillEntry? forgeQuickInvoiceTool({
     String goal =

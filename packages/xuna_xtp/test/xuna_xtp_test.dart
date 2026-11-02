@@ -1948,7 +1948,7 @@ void main() {
       );
 
       final clawPulseTools = buildClawPulseTools();
-      expect(clawPulseTools, hasLength(15));
+      expect(clawPulseTools, hasLength(16));
       expect(
         clawPulseTools.map((t) => t.name).toList(),
         equals(<String>[
@@ -1967,10 +1967,11 @@ void main() {
           'acoustic.vocalize_and_sense',
           'memory.temporal_graph',
           'ritual.mindful_and_playdate',
+          'ui.accessibility_tree',
         ]),
       );
 
-      final fullCatalog70 = buildMvpToolCatalog(
+      final fullCatalog71 = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
         includeDevWorkspaceTools: true,
         includeDeskCopilotTools: true,
@@ -1982,7 +1983,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog70, hasLength(70));
+      expect(fullCatalog71, hasLength(71));
 
       expect(
         evaluator
@@ -2511,12 +2512,69 @@ void main() {
             .allowed,
         isTrue,
       );
+
+      // UIA-1: Zero-Screenshot Native OS UI Automation (ui.accessibility_tree)
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'ui.accessibility_tree',
+              arguments: const <String, Object?>{
+                'action': 'inspect_window',
+                'windowTitle': 'MISA SME 2026 - Quản lý Hóa đơn',
+                'maxNodes': 30,
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'ui.accessibility_tree',
+              arguments: const <String, Object?>{
+                'action': 'invoke_ref',
+                'windowTitle': 'MISA SME 2026 - Quản lý Hóa đơn',
+                'refId': 'ui_3',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'ui.accessibility_tree',
+              arguments: const <String, Object?>{
+                'action': 'inspect_window',
+                'windowTitle': '1Password Vault - Master Key',
+              },
+              nowUtc: now,
+            )
+            .errorCode,
+        equals('ui_window_forbidden_target'),
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'ui.accessibility_tree',
+              arguments: const <String, Object?>{
+                'action': 'set_value_ref',
+                'refId': 'ui_password_input',
+                'valueText': 'secret123',
+              },
+              nowUtc: now,
+            )
+            .errorCode,
+        equals('ui_ref_password_or_unsafe_blocked'),
+      );
     });
 
     test(
-        'every tool in the full 70-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
+        'every tool in the full 71-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
         () {
-      final fullCatalog70 = buildMvpToolCatalog(
+      final fullCatalog71 = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
         includeDevWorkspaceTools: true,
         includeDeskCopilotTools: true,
@@ -2528,8 +2586,8 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog70, hasLength(70));
-      for (final tool in fullCatalog70) {
+      expect(fullCatalog71, hasLength(71));
+      for (final tool in fullCatalog71) {
         final resolvedFamily = resolveToolFamilyForName(tool.name);
         expect(
           resolvedFamily,

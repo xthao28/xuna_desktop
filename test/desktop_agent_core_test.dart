@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(70));
+        expect(toolsList, hasLength(71));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -3687,6 +3687,72 @@ void main() {
               ritualSc['playdateSummaryVi'] as String,
               contains('XUNA9F2A'),
             );
+
+            // UIA-2: Zero-Screenshot Native OS UI Automation (inspect_window, invoke_ref, set_value_ref)
+            final uiaInspectResp = await sym1Dispatcher.dispatch(
+              requestId: 1239,
+              params: const ToolsCallParams(
+                name: 'ui.accessibility_tree',
+                arguments: <String, Object?>{
+                  'action': 'inspect_window',
+                  'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
+                  'maxNodes': 20,
+                },
+                invocationId: '12390000-0000-4000-8000-000000000039',
+                deadlineMs: 5000,
+              ),
+              nowUtc: now,
+            );
+            final uiaInspectSc =
+                uiaInspectResp.result['structuredContent']
+                    as Map<String, Object?>;
+            expect(uiaInspectSc['screenshotBytesUsed'], equals(0));
+            expect(uiaInspectSc['nodeCount'], greaterThanOrEqualTo(3));
+            expect(
+              uiaInspectSc['compactUiTree'] as String,
+              contains('[ref=ui_1]'),
+            );
+
+            final uiaInvokeResp = await sym1Dispatcher.dispatch(
+              requestId: 1240,
+              params: const ToolsCallParams(
+                name: 'ui.accessibility_tree',
+                arguments: <String, Object?>{
+                  'action': 'invoke_ref',
+                  'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
+                  'refId': 'ui_3',
+                },
+                invocationId: '12400000-0000-4000-8000-000000000040',
+                deadlineMs: 5000,
+              ),
+              nowUtc: now,
+            );
+            final uiaInvokeSc =
+                uiaInvokeResp.result['structuredContent']
+                    as Map<String, Object?>;
+            expect(uiaInvokeSc['invokedRefId'], equals('ui_3'));
+            expect(uiaInvokeSc['screenshotBytesUsed'], equals(0));
+
+            final uiaSetValResp = await sym1Dispatcher.dispatch(
+              requestId: 1241,
+              params: const ToolsCallParams(
+                name: 'ui.accessibility_tree',
+                arguments: <String, Object?>{
+                  'action': 'set_value_ref',
+                  'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
+                  'refId': 'ui_1',
+                  'valueText': 'HoaDon_Thang_11_2026',
+                },
+                invocationId: '12410000-0000-4000-8000-000000000041',
+                deadlineMs: 5000,
+              ),
+              nowUtc: now,
+            );
+            final uiaSetValSc =
+                uiaSetValResp.result['structuredContent']
+                    as Map<String, Object?>;
+            expect(uiaSetValSc['invokedRefId'], equals('ui_1'));
+            expect(uiaSetValSc['screenshotBytesUsed'], equals(0));
           } finally {
             if (univTempDir.existsSync()) {
               univTempDir.deleteSync(recursive: true);
@@ -3823,6 +3889,21 @@ void main() {
           expect(
             agentController.activeLiveCanvas.value?.surfaceKind,
             equals('constellation_graph'),
+          );
+
+          await tester.ensureVisible(
+            find.text('Điều Khiển Ứng Dụng 0-Screenshot'),
+          );
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Điều Khiển Ứng Dụng 0-Screenshot'));
+          await tester.pump();
+          expect(
+            agentController.frontierStatusSummaryVi.value,
+            contains('0 chụp màn hình'),
+          );
+          expect(
+            agentController.activeLiveCanvas.value?.surfaceKind,
+            equals('data_table'),
           );
 
           agentController.onClose();

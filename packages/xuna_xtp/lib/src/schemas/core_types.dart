@@ -392,6 +392,26 @@ const Set<String> allowedRitualModes = <String>{
   'send_neighbor_playdate',
 };
 
+/// Allowed actions for `ui.accessibility_tree` (`UIA-1` Zero-Screenshot Native OS UI Automation).
+const Set<String> allowedUiAccessibilityActions = <String>{
+  'inspect_window',
+  'invoke_ref',
+  'set_value_ref',
+};
+
+/// Security-sensitive window title substrings permanently blocked for `ui.accessibility_tree` (`UIA-1`).
+const List<String> forbiddenUiWindowPatterns = <String>[
+  '1password',
+  'bitwarden',
+  'keepass',
+  'lastpass',
+  'keychain',
+  'credential manager',
+  'windows security',
+  'regedit',
+  'registry editor',
+];
+
 /// Normative allowlist of key combinations for `input.key` (`UDC-8` §4.2).
 const Set<String> allowedInputKeyCombos = <String>{
   'Enter',
@@ -791,7 +811,8 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
       prefix == 'schedule' ||
       prefix == 'companion' ||
       prefix == 'ritual' ||
-      toolName == 'tv.launch_app') {
+      toolName == 'tv.launch_app' ||
+      toolName == 'ui.accessibility_tree') {
     return ToolFamily.app;
   }
   for (final family in ToolFamily.values) {

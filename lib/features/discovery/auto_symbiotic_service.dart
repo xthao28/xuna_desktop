@@ -8,6 +8,7 @@ import 'symbiotic/skill_workshop_service.dart';
 import 'symbiotic/subagent_cron_service.dart';
 import 'symbiotic/symbiotic_models.dart';
 import 'symbiotic/symbiotic_vitals_service.dart';
+import 'symbiotic/ui_accessibility_service.dart';
 import 'symbiotic/universal_pipeline_service.dart';
 import 'symbiotic/watchdog_coach_service.dart';
 import 'symbiotic/workspace_pocket_service.dart';
@@ -20,6 +21,7 @@ export 'symbiotic/skill_workshop_service.dart';
 export 'symbiotic/subagent_cron_service.dart';
 export 'symbiotic/symbiotic_models.dart';
 export 'symbiotic/symbiotic_vitals_service.dart';
+export 'symbiotic/ui_accessibility_service.dart';
 export 'symbiotic/universal_pipeline_service.dart';
 export 'symbiotic/watchdog_coach_service.dart';
 export 'symbiotic/workspace_pocket_service.dart';
@@ -88,6 +90,9 @@ class AutoSymbioticService {
       pocketService: workspacePocket,
       canvasService: heartbeatCanvas,
     );
+    uiAccessibility = UiAccessibilityTreeService(
+      canvasService: heartbeatCanvas,
+    );
   }
 
   late final SymbioticVitalsService vitals;
@@ -100,6 +105,7 @@ class AutoSymbioticService {
   late final MemoryAriaService memoryAria;
   late final SubagentCronService subagentCron;
   late final Frontier2026Service frontier2026;
+  late final UiAccessibilityTreeService uiAccessibility;
 
   bool get isTeachRecordingActive => forge.isTeachRecordingActive;
   HeartbeatStatusSnapshot? get lastHeartbeatStatus =>
@@ -747,5 +753,33 @@ class AutoSymbioticService {
     focusGoal: focusGoal,
     neighborShortId: neighborShortId,
     giftMessage: giftMessage,
+  );
+
+  // ── UIA-2: Zero-Screenshot Native OS UI Automation (UIA / AXUIElement) ────
+
+  ({
+    String action,
+    String windowTitle,
+    int nodeCount,
+    int tokenSavingsPercent,
+    int screenshotBytesUsed,
+    String compactUiTree,
+    String invokedRefId,
+    int redactedControlsCount,
+    List<Map<String, Object?>> nodes,
+    String summaryVi,
+  })
+  executeUiAccessibilityTree({
+    required String action,
+    String? windowTitle,
+    String? refId,
+    String? valueText,
+    int maxNodes = 30,
+  }) => uiAccessibility.executeUiAccessibilityTree(
+    action: action,
+    windowTitle: windowTitle,
+    refId: refId,
+    valueText: valueText,
+    maxNodes: maxNodes,
   );
 }

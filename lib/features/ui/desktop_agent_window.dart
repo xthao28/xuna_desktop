@@ -789,6 +789,11 @@ class DesktopAgentWindow extends StatelessWidget {
                             controller.updateChronoGraphAndRitualFromUi(),
                         child: const Text('Chòm Sao Ký Ức & Hít Thở 4-7-8'),
                       ),
+                      OutlinedButton(
+                        onPressed: () =>
+                            controller.runZeroScreenshotUiAutomationFromUi(),
+                        child: const Text('Điều Khiển Ứng Dụng 0-Screenshot'),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 6),

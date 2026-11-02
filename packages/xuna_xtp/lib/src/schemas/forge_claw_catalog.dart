@@ -322,7 +322,7 @@ List<ToolDescriptor> buildOmniForgeTools({
   ];
 }
 
-/// Builds the 15 `XUNA ClawPulse`, `XunaScript Universal Composable Engine`, `ClawWorkshop`, `ClawMind` & `Frontier 2026` (`CLAW-1`–`CLAW-3`, `UNIV-1`, `WORKSHOP-1`, `MIND-1`, `FRONTIER-1`–`FRONTIER-4`) tool descriptors:
+/// Builds the 16 `XUNA ClawPulse`, `XunaScript Universal Composable Engine`, `ClawWorkshop`, `ClawMind`, `Frontier 2026` & `UIA-1` (`CLAW-1`–`CLAW-3`, `UNIV-1`, `WORKSHOP-1`, `MIND-1`, `FRONTIER-1`–`FRONTIER-4`, `UIA-1`) tool descriptors:
 /// - `skill.markdown_bridge` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `skill.record_correction` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `heartbeat.configure_and_tick` (`R1`, `observes: true`, `reversible: true`, family `app`)
@@ -1426,6 +1426,92 @@ List<ToolDescriptor> buildClawPulseTools({
         family: ToolFamily.app,
         risk: RiskTier.r1,
         observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'ui.accessibility_tree',
+      description:
+          'Zero-Screenshot Native OS UI Automation (Windows IUIAutomation / Win32 EnumChildWindows & macOS AXUIElement): inspect desktop app controls into [ref=ui_1]..[ref=ui_N] and invoke or set values without screenshots or mouse hijacking.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'inspect_window',
+              'invoke_ref',
+              'set_value_ref',
+            ],
+          },
+          'windowTitle': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'refId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 32,
+          },
+          'valueText': <String, Object?>{
+            'type': 'string',
+            'maxLength': 500,
+          },
+          'maxNodes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 80,
+          },
+        },
+        'required': <String>['action'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'nodeCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'tokenSavingsPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 99,
+          },
+          'screenshotBytesUsed': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 0,
+          },
+          'compactUiTree': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+          'invokedRefId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'redactedControlsCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'nodes': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'action',
+          'windowTitle',
+          'nodeCount',
+          'tokenSavingsPercent',
+          'screenshotBytesUsed',
+          'compactUiTree',
+          'invokedRefId',
+          'redactedControlsCount',
+          'nodes',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
         reversible: true,
         permission: defaultPermission,
       ),

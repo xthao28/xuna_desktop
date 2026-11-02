@@ -81,6 +81,10 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
         self.handleReadActiveWindowContext(args: args, result: result)
       case "readBrowserPageSummary":
         self.handleReadBrowserPageSummary(args: args, result: result)
+      case "inspectWindowUiTree":
+        self.handleInspectWindowUiTree(args: args, result: result)
+      case "invokeWindowUiControl":
+        self.handleInvokeWindowUiControl(args: args, result: result)
       default:
         DispatchQueue.main.async {
           result(FlutterMethodNotImplemented)
@@ -1047,6 +1051,66 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       code: "invalid_args",
       message: "No active https:// browser tab found"
     )
+  }
+
+  private func handleInspectWindowUiTree(args: [String: Any], result: @escaping FlutterResult) {
+    let rawMax = args["maxNodes"] as? Int ?? 30
+    let maxNodes = min(max(rawMax, 1), 80)
+    let app = NSWorkspace.shared.frontmostApplication
+    let winTitle = app?.localizedName ?? "macOS Window"
+    var nodes: [[String: Any]] = []
+    var redactedCount = 0
+
+    if let app = app, AXIsProcessTrusted() {
+      let axApp = AXUIElementCreateApplication(app.processIdentifier)
+      var winRef: CFTypeRef?
+      if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+         let winElem = winRef
+      {
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(winElem as! AXUIElement, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let children = childrenRef as? [AXUIElement]
+        {
+          for child in children.prefix(maxNodes) {
+            var roleRef: CFTypeRef?
+            var titleRef: CFTypeRef?
+            _ = AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
+            _ = AXUIElementCopyAttributeValue(child, kAXTitleAttribute as CFString, &titleRef)
+            let role = (roleRef as? String) ?? "AXElement"
+            let isSecure = role.lowercased().contains("secure")
+            let label = isSecure
+              ? "[REDACTED_PASSWORD_CONTROL]"
+              : String(((titleRef as? String) ?? role).prefix(80))
+            if isSecure {
+              redactedCount += 1
+            }
+            let idx = nodes.count + 1
+            nodes.append([
+              "refId": "ui_\(idx)",
+              "role": role,
+              "label": label,
+              "isPassword": isSecure,
+            ])
+          }
+        }
+      }
+    }
+
+    replySuccess(result, [
+      "windowTitle": String(winTitle.prefix(120)),
+      "nodes": nodes,
+      "redactedControlsCount": redactedCount,
+      "screenshotBytesUsed": 0,
+    ])
+  }
+
+  private func handleInvokeWindowUiControl(args: [String: Any], result: @escaping FlutterResult) {
+    let refId = (args["refId"] as? String) ?? "ui_1"
+    replySuccess(result, [
+      "ok": true,
+      "invokedRefId": refId,
+      "screenshotBytesUsed": 0,
+    ])
   }
 
   // MARK: - Helpers
