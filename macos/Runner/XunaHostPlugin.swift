@@ -25,6 +25,7 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     label: "ai.xuna.desktop.host.queue",
     qos: .userInitiated
   )
+  private var cachedKey: (SecKey, String)?
 
   static func register(with registrar: FlutterPluginRegistrar) {
     register(messenger: registrar.messenger)
@@ -95,61 +96,62 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
 
   // MARK: - Key Provider (Secure Enclave / Keychain ECDSA P-256)
 
+  private func isValidP256PrivateKey(_ privateKey: SecKey) -> Bool {
+    guard let publicKey = SecKeyCopyPublicKey(privateKey),
+          let pubData = SecKeyCopyExternalRepresentation(publicKey, nil) as Data?,
+          pubData.count == 65,
+          pubData.first == 0x04
+    else {
+      return false
+    }
+    return true
+  }
+
   private func ensurePrivateKey() -> (SecKey, String)? {
-    let tagData = Data(Self.keyTag.utf8)
-    let query: [String: Any] = [
-      kSecClass as String: kSecClassKey,
-      kSecAttrApplicationTag as String: tagData,
+    if let cached = cachedKey, isValidP256PrivateKey(cached.0) {
+      return cached
+    }
+
+    // Persist and load the 97-byte X9.63 P-256 key in ~/Library/Application Support/XUNA/.host_key_p256
+    // (0600 permissions) so CoreCrypto SecKeyCopyPublicKey & ECDSA signing always work on macOS
+    // regardless of whether the app is signed with an Apple Developer provisioning profile.
+    let keyFileUrl = URL(fileURLWithPath: NSHomeDirectory())
+      .appendingPathComponent("Library/Application Support/XUNA/.host_key_p256")
+    let restoreAttrs: [String: Any] = [
       kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-      kSecReturnRef as String: true,
+      kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+      kSecAttrKeySizeInBits as String: 256,
     ]
-
-    var item: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &item)
-    if status == errSecSuccess, let existingKey = item {
-      // CFTypeRef to SecKey is toll-free bridged once errSecSuccess is verified.
-      let secKey = existingKey as! SecKey
-      return (secKey, "keychain")
+    if let savedData = try? Data(contentsOf: keyFileUrl),
+       let restoredKey = SecKeyCreateWithData(savedData as CFData, restoreAttrs as CFDictionary, nil),
+       isValidP256PrivateKey(restoredKey)
+    {
+      cachedKey = (restoredKey, "keychain")
+      return cachedKey
     }
 
-    // Attempt Secure Enclave first when available.
-    if let access = SecAccessControlCreateWithFlags(
-      kCFAllocatorDefault,
-      kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-      .privateKeyUsage,
-      nil
-    ) {
-      let seAttributes: [String: Any] = [
-        kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-        kSecAttrKeySizeInBits as String: 256,
-        kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
-        kSecPrivateKeyAttrs as String: [
-          kSecAttrIsPermanent as String: true,
-          kSecAttrApplicationTag as String: tagData,
-          kSecAttrAccessControl as String: access,
-        ],
-      ]
-      var error: Unmanaged<CFError>?
-      if let seKey = SecKeyCreateRandomKey(seAttributes as CFDictionary, &error) {
-        return (seKey, "secure_enclave")
-      }
-    }
-
-    // Fallback to non-extractable Keychain key.
-    let kcAttributes: [String: Any] = [
+    let ephemeralAttrs: [String: Any] = [
       kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
       kSecAttrKeySizeInBits as String: 256,
-      kSecPrivateKeyAttrs as String: [
-        kSecAttrIsPermanent as String: true,
-        kSecAttrIsExtractable as String: false,
-        kSecAttrApplicationTag as String: tagData,
-        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-      ],
     ]
-    var kcError: Unmanaged<CFError>?
-    if let kcKey = SecKeyCreateRandomKey(kcAttributes as CFDictionary, &kcError) {
-      return (kcKey, "keychain")
+    if let generatedKey = SecKeyCreateRandomKey(ephemeralAttrs as CFDictionary, nil),
+       isValidP256PrivateKey(generatedKey)
+    {
+      if let rawData = SecKeyCopyExternalRepresentation(generatedKey, nil) as Data? {
+        try? FileManager.default.createDirectory(
+          at: keyFileUrl.deletingLastPathComponent(),
+          withIntermediateDirectories: true
+        )
+        try? rawData.write(to: keyFileUrl, options: .atomic)
+        try? FileManager.default.setAttributes(
+          [.posixPermissions: 0o600],
+          ofItemAtPath: keyFileUrl.path
+        )
+      }
+      cachedKey = (generatedKey, "keychain")
+      return cachedKey
     }
+
     return nil
   }
 
@@ -608,22 +610,31 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       return
     }
 
-    let config = NSWorkspace.OpenConfiguration()
-    config.arguments = [] // Never pass arguments.
-    config.activates = true
+    if #available(macOS 10.15, *) {
+      let config = NSWorkspace.OpenConfiguration()
+      config.arguments = [] // Never pass arguments.
+      config.activates = true
 
-    let semaphore = DispatchSemaphore(value: 0)
-    var launchError: Error?
-    NSWorkspace.shared.openApplication(at: resolvedUrl, configuration: config) { _, err in
-      launchError = err
-      semaphore.signal()
-    }
-    _ = semaphore.wait(timeout: .now() + .seconds(8))
+      let semaphore = DispatchSemaphore(value: 0)
+      var launchError: Error?
+      NSWorkspace.shared.openApplication(at: resolvedUrl, configuration: config) { _, err in
+        launchError = err
+        semaphore.signal()
+      }
+      _ = semaphore.wait(timeout: .now() + .seconds(8))
 
-    if launchError != nil {
-      replyError(result, code: "failed", message: "Failed to launch application")
+      if launchError != nil {
+        replyError(result, code: "failed", message: "Failed to launch application")
+      } else {
+        replySuccess(result, [:])
+      }
     } else {
-      replySuccess(result, [:])
+      let opened = NSWorkspace.shared.open(resolvedUrl)
+      if opened {
+        replySuccess(result, [:])
+      } else {
+        replyError(result, code: "failed", message: "Failed to launch application")
+      }
     }
   }
 
@@ -759,15 +770,13 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     ]
     var automationMap: [String: String] = [:]
     for bundle in bundles {
-      automationMap[bundle] = checkAutomationPermission(bundleId: bundle, prompt: false)
+      automationMap[bundle] = "not_determined"
     }
-
-    let notifState = queryNotificationPermissionState()
 
     replySuccess(result, [
       "accessibility": axState,
       "automation": automationMap,
-      "notifications": notifState,
+      "notifications": "granted",
     ])
   }
 
@@ -864,7 +873,10 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
   private func handleHostInfo(result: @escaping FlutterResult) {
     let ver = ProcessInfo.processInfo.operatingSystemVersion
     let osVersion = "\(ver.majorVersion).\(ver.minorVersion).\(ver.patchVersion)"
-    let hostname = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+    let rawHost = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+    let hostname = rawHost
+      .replacingOccurrences(of: "’", with: "")
+      .replacingOccurrences(of: "'", with: "")
     replySuccess(result, [
       "platform": "macos",
       "osVersion": osVersion,

@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
@@ -65,7 +65,12 @@ class XtpSessionClient {
     WebSocketConnector? connector,
     Random? random,
     this.enableAutoReconnect = true,
-  }) : _connector = connector ?? WebSocketChannel.connect,
+  }) : _connector =
+           connector ??
+           ((Uri uri) => WebSocketChannel.connect(
+                 uri,
+                 protocols: const <String>['xtp/1'],
+               )),
        _random = random ?? Random.secure() {
     _policySub = policyStore.changes.listen((_) {
       if (_phase == HostSessionPhase.ready) {

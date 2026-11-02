@@ -9,6 +9,8 @@ import 'dart:io';
 class SingleInstanceGuard {
   SingleInstanceGuard({required this.lockFile});
 
+  static final Set<String> _activeInProcessLocks = <String>{};
+
   final File lockFile;
   RandomAccessFile? _handle;
 
@@ -19,6 +21,10 @@ class SingleInstanceGuard {
   /// another instance already holds the lock.
   Future<bool> tryAcquire() async {
     if (_handle != null) return true;
+    final canonicalPath = lockFile.absolute.path;
+    if (_activeInProcessLocks.contains(canonicalPath)) {
+      return false;
+    }
     try {
       await lockFile.parent.create(recursive: true);
       final raf = await lockFile.open(mode: FileMode.write);
@@ -32,6 +38,7 @@ class SingleInstanceGuard {
       await raf.writeString('$pid\n');
       await raf.flush();
       _handle = raf;
+      _activeInProcessLocks.add(canonicalPath);
       return true;
     } on FileSystemException {
       return false;
@@ -42,6 +49,7 @@ class SingleInstanceGuard {
   Future<void> release() async {
     final raf = _handle;
     _handle = null;
+    _activeInProcessLocks.remove(lockFile.absolute.path);
     if (raf == null) return;
     try {
       await raf.unlock();

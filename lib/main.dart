@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -22,17 +23,20 @@ const String _defaultWsUrl = String.fromEnvironment(
   defaultValue: 'ws://127.0.0.1:8000/v1/hosts/connect',
 );
 
+SingleInstanceGuard? _processGuard;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final paths = AgentPaths.resolve();
   await paths.ensureDirectories();
 
-  final guard = SingleInstanceGuard(lockFile: paths.lockFile);
+  final guard = _processGuard ?? SingleInstanceGuard(lockFile: paths.lockFile);
   final acquired = await guard.tryAcquire();
   if (!acquired) {
     exit(0);
   }
+  _processGuard = guard;
 
   final logger = ContentFreeLogger();
   final channel = MethodChannelXunaHostChannel();
@@ -72,6 +76,9 @@ Future<void> main() async {
     logger: logger,
   );
 
+  if (Get.isRegistered<DesktopAgentController>()) {
+    await Get.delete<DesktopAgentController>(force: true);
+  }
   final controller = Get.put<DesktopAgentController>(
     DesktopAgentController(
       channel: channel,
@@ -86,11 +93,11 @@ Future<void> main() async {
     ),
   );
 
-  final trayService = DesktopTrayService(controller: controller);
-  await trayService.initialize();
-  await controller.initializeAgent();
-
   runApp(XunaDesktopApp(controller: controller));
+
+  final trayService = DesktopTrayService(controller: controller);
+  unawaited(trayService.initialize());
+  unawaited(controller.initializeAgent());
 }
 
 class XunaDesktopApp extends StatelessWidget {
