@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:get/get.dart';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
+import 'package:xuna_desktop/core/presentation/controllers/base_getx_controller.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
@@ -17,7 +18,7 @@ import 'package:xuna_xtp/xuna_xtp.dart';
 enum AgentWindowTab { enrollment, policy, permissions, audit, symbiotic }
 
 /// GetX controller driving the Desktop Agent tray status and settings window.
-class DesktopAgentController extends GetxController {
+class DesktopAgentController extends BaseGetxController {
   DesktopAgentController({
     required this.channel,
     required this.enrollmentStore,

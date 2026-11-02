@@ -68,9 +68,9 @@ class XtpSessionClient {
   }) : _connector =
            connector ??
            ((Uri uri) => WebSocketChannel.connect(
-                 uri,
-                 protocols: const <String>['xtp/1'],
-               )),
+             uri,
+             protocols: const <String>['xtp/1'],
+           )),
        _random = random ?? Random.secure() {
     _policySub = policyStore.changes.listen((_) {
       if (_phase == HostSessionPhase.ready) {
@@ -106,8 +106,11 @@ class XtpSessionClient {
   }) {
     if (_phase != HostSessionPhase.ready) return;
     final pubKey = _publicKey;
-    final fp = certFingerprint ??
-        (pubKey != null ? base64UrlNoPadEncode(publicKeyFingerprint(pubKey)) : null);
+    final fp =
+        certFingerprint ??
+        (pubKey != null
+            ? base64UrlNoPadEncode(publicKeyFingerprint(pubKey))
+            : null);
     _sendNotification(
       XtpNotification(
         method: 'xuna/lanPeer',

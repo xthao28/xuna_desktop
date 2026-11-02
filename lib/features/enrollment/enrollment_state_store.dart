@@ -172,12 +172,12 @@ class EnrollmentStateStore {
   }
 
   Future<void> _writeState(EnrolledHostState state) async {
+    _current = state;
     await stateFile.parent.create(recursive: true);
     await stateFile.writeAsString(
       '${const JsonEncoder.withIndent('  ').convert(state.toJson())}\n',
       flush: true,
     );
-    _current = state;
   }
 
   Future<void> clear() async {

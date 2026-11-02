@@ -17,6 +17,8 @@ import 'package:xuna_desktop/features/stop/desktop_tray_service.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_desktop/features/ui/desktop_agent_window.dart';
+import 'package:xuna_desktop/shared/constants/const_src.dart';
+import 'package:xuna_desktop/shared/themes/app_colors.dart';
 
 const String _defaultWsUrl = String.fromEnvironment(
   'XUNA_WS_URL',
@@ -110,6 +112,14 @@ class XunaDesktopApp extends StatelessWidget {
     return GetMaterialApp(
       title: 'XUNA Desktop Agent',
       debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        fontFamily: AppTextStyle.bodyFamily,
+        scaffoldBackgroundColor: AppColors.xunaPaper,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: AppColors.xunaLime,
+          surface: AppColors.xunaPaper,
+        ),
+      ),
       home: DesktopAgentWindow(controller: controller),
     );
   }

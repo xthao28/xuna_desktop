@@ -6,6 +6,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:xuna_desktop/core/controller/desktop_agent_controller.dart';
+import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 
 /// Integrates system tray (`tray_manager`), settings window visibility
 /// (`window_manager`), and global emergency-stop hotkey (`hotkey_manager`)
@@ -14,7 +15,10 @@ class DesktopTrayService with TrayListener, WindowListener {
   DesktopTrayService({required this.controller});
 
   final DesktopAgentController controller;
+  final List<StreamSubscription<Object?>> _subs =
+      <StreamSubscription<Object?>>[];
   bool _initialized = false;
+  String? _currentIconAsset;
 
   Future<void> initialize() async {
     if (_initialized) return;
@@ -31,6 +35,19 @@ class DesktopTrayService with TrayListener, WindowListener {
     try {
       trayManager.addListener(this);
       await refreshTrayMenu();
+
+      _subs.add(
+        controller.sessionPhase.listen((_) => unawaited(refreshTrayMenu())),
+      );
+      _subs.add(
+        controller.isStopped.listen((_) => unawaited(refreshTrayMenu())),
+      );
+      _subs.add(
+        controller.isPolicyHealthy.listen((_) => unawaited(refreshTrayMenu())),
+      );
+      _subs.add(
+        controller.activeCuSession.listen((_) => unawaited(refreshTrayMenu())),
+      );
     } catch (_) {
       // Safe fallback in headless/test environments.
     }
@@ -58,33 +75,70 @@ class DesktopTrayService with TrayListener, WindowListener {
     }
   }
 
+  String _resolveIconAsset() {
+    if (controller.isStopped.value || !controller.isPolicyHealthy.value) {
+      return 'assets/images/xuna_tray_sleep.png';
+    }
+    if (controller.sessionPhase.value == HostSessionPhase.ready) {
+      return 'assets/images/xuna_tray_happy.png';
+    }
+    return 'assets/images/xuna_tray_idle.png';
+  }
+
   Future<void> refreshTrayMenu() async {
     final stopped = controller.isStopped.value;
+    final statusLabel = controller.trayStatusLabel;
+    final iconAsset = _resolveIconAsset();
+
     final menu = Menu(
       items: <MenuItem>[
         MenuItem(
           key: 'status',
-          label: 'XUNA: ${controller.trayStatusLabel}',
+          label: '🐾 XUNA: $statusLabel',
           disabled: true,
+        ),
+        MenuItem.separator(),
+        MenuItem(
+          key: 'open_settings',
+          label: 'Mở Trạm điều khiển XUNA',
+        ),
+        MenuItem(
+          key: 'quick_capsule',
+          label: 'Đóng băng nhanh không gian làm việc',
+        ),
+        MenuItem(
+          key: 'quick_ritual',
+          label: 'Hít thở 4-7-8 cùng XUNA',
         ),
         MenuItem.separator(),
         MenuItem(
           key: stopped ? 'resume' : 'stop',
           label: stopped ? 'Bật lại XUNA' : 'Dừng XUNA (Khẩn cấp)',
         ),
-        MenuItem(key: 'open_settings', label: 'Mở cửa sổ cấu hình'),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Thoát XUNA'),
       ],
     );
     try {
+      if (_currentIconAsset != iconAsset) {
+        await trayManager.setIcon(iconAsset, isTemplate: false);
+        _currentIconAsset = iconAsset;
+      }
+      if (Platform.isMacOS) {
+        await trayManager.setTitle('');
+      }
       await trayManager.setContextMenu(menu);
-      await trayManager.setToolTip('XUNA (${controller.trayStatusLabel})');
+      await trayManager.setToolTip('XUNA ($statusLabel)');
     } catch (_) {}
   }
 
   @override
   void onTrayIconMouseDown() {
+    unawaited(trayManager.popUpContextMenu());
+  }
+
+  @override
+  void onTrayIconRightMouseDown() {
     unawaited(trayManager.popUpContextMenu());
   }
 
@@ -98,6 +152,16 @@ class DesktopTrayService with TrayListener, WindowListener {
         controller.resumeEmergencyStop();
         unawaited(refreshTrayMenu());
       case 'open_settings':
+        unawaited(_showSettingsWindow());
+      case 'quick_capsule':
+        controller.captureQuickWorkspaceCapsule(
+          nextStepHint: 'Đóng băng từ thanh Menu Bar XUNA',
+        );
+        controller.activeTab.value = AgentWindowTab.symbiotic;
+        unawaited(_showSettingsWindow());
+      case 'quick_ritual':
+        controller.updateChronoGraphAndRitualFromUi();
+        controller.activeTab.value = AgentWindowTab.symbiotic;
         unawaited(_showSettingsWindow());
       case 'quit':
         exit(0);
@@ -123,6 +187,10 @@ class DesktopTrayService with TrayListener, WindowListener {
 
   Future<void> dispose() async {
     if (!_initialized) return;
+    for (final sub in _subs) {
+      unawaited(sub.cancel());
+    }
+    _subs.clear();
     trayManager.removeListener(this);
     windowManager.removeListener(this);
     try {
