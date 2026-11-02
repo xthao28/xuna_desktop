@@ -58,6 +58,8 @@ class DesktopAgentController extends GetxController {
   final pocketItems = <UniversalPocketItem>[].obs;
   final activeWatchdogs = <Map<String, Object?>>[].obs;
   final habitProposals = <Map<String, Object?>>[].obs;
+  final forgedSkills = <ForgedSkillEntry>[].obs;
+  final isTeachRecording = false.obs;
 
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
@@ -187,7 +189,7 @@ class DesktopAgentController extends GetxController {
     recentAuditRecords.assignAll(await auditStore.readRecent(limit: 50));
   }
 
-  /// Refreshes the SYM-1 / SYM-2 symbiotic state from [symbioticService] (`SYM-UI` S-UI.2).
+  /// Refreshes the SYM-1 / SYM-2 / OMNIFORGE symbiotic state from [symbioticService] (`SYM-UI` S-UI.2 & `FORGE-3`).
   void refreshSymbioticState() {
     final svc = symbioticService;
     if (svc == null) return;
@@ -197,6 +199,72 @@ class DesktopAgentController extends GetxController {
       svc.listAndClearWatchdogs(action: 'list').watchdogs,
     );
     habitProposals.assignAll(svc.proposeHabitWorkflows());
+    forgedSkills.assignAll(svc.listForgedSkillEntries());
+    isTeachRecording.value = svc.isTeachRecordingActive;
+  }
+
+  /// Synthesizes a quick citizen tool (e.g., Invoice Harvester) from Desktop UI (`FORGE-3`).
+  ForgedSkillEntry? forgeQuickInvoiceTool({
+    String goal =
+        'Tự động tải hết hóa đơn PDF/XML và gom bảng kê Excel vào HoaDon_Thang',
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final entry = svc.synthesizeSkill(
+      goal: goal,
+      targetFolder: 'HoaDon_Thang',
+      fileExtensions: const <String>['pdf', 'xml'],
+    );
+    refreshSymbioticState();
+    return entry;
+  }
+
+  /// Runs a forged personal skill from Desktop UI (`FORGE-3`).
+  Map<String, Object?>? runForgedSkillFromUi(String skillId) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final res = svc.runForgedSkill(skillId: skillId);
+    refreshSymbioticState();
+    return <String, Object?>{
+      'skillId': res.skillId,
+      'processedCount': res.processedCount,
+      'outputDirectory': res.outputDirectory,
+      'exportedCsvFile': res.exportedCsvFile,
+      'selfHealedSelectors': res.selfHealedSelectors,
+      'undoSnapshotId': res.undoSnapshotId,
+      'summaryVi': res.summaryVi,
+    };
+  }
+
+  /// Toggles `Show-Me-Once` demonstration recording and compiles a skill when stopped (`FORGE-3`).
+  Map<String, Object?>? toggleTeachModeFromUi() {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    if (!svc.isTeachRecordingActive) {
+      svc.handleTeachSession(
+        mode: 'start',
+        skillTitle: 'Tải hóa đơn mẫu và lưu vào thư mục HoaDon_Thang',
+      );
+      svc.handleTeachSession(
+        mode: 'record_action',
+        demonstratedAction: 'Click tải hóa đơn PDF mẫu #1',
+        selectorOrPattern: 'a.btn-download-invoice',
+      );
+      refreshSymbioticState();
+      return null;
+    } else {
+      final res = svc.handleTeachSession(
+        mode: 'stop_and_compile',
+        skillTitle: 'Tải hóa đơn mẫu và lặp lại cho toàn bộ danh sách',
+      );
+      refreshSymbioticState();
+      return <String, Object?>{
+        'recordingActive': res.recordingActive,
+        'capturedStepsCount': res.capturedStepsCount,
+        'compiledSkillId': res.compiledSkillId,
+        'generalizedLoopSummaryVi': res.generalizedLoopSummaryVi,
+      };
+    }
   }
 
   /// Clears all active watchdogs in [symbioticService] and refreshes (`SYM-UI` S-UI.2).

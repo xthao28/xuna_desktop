@@ -440,6 +440,8 @@ class HostPolicyEvaluator {
                             prefix == 'pocket' ||
                             prefix == 'watchdog' ||
                             prefix == 'coach' ||
+                            prefix == 'forge' ||
+                            prefix == 'teach' ||
                             toolName == 'tv.launch_app')
                         ? ToolFamily.app
                         : ToolFamily.fromWire(prefix);
@@ -879,8 +881,7 @@ class HostPolicyEvaluator {
         final ide = arguments['ide'];
         if (proj is! String ||
             !isValidWorkspaceQuery(proj) ||
-            arguments.keys
-                .any((k) => k != 'project' && k != 'ide') ||
+            arguments.keys.any((k) => k != 'project' && k != 'ide') ||
             (ide != null &&
                 (ide is! String || !supportedWorkspaceIdes.contains(ide)))) {
           return const PolicyEvaluationResult(
@@ -1131,6 +1132,167 @@ class HostPolicyEvaluator {
                 (minOccurrences is! int ||
                     minOccurrences < 2 ||
                     minOccurrences > 10))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'forge.synthesize_skill':
+        final goal = arguments['goal'];
+        final category = arguments['category'];
+        final targetFolder = arguments['targetFolder'];
+        final fileExtensions = arguments['fileExtensions'];
+        const allowedSynthKeys = <String>{
+          'goal',
+          'category',
+          'targetFolder',
+          'fileExtensions',
+        };
+        if (arguments.keys.any((k) => !allowedSynthKeys.contains(k)) ||
+            goal is! String ||
+            goal.trim().isEmpty ||
+            goal.length > 400 ||
+            !isSafeAgentPrompt(goal) ||
+            (category != null &&
+                (category is! String ||
+                    !allowedForgeSkillCategories.contains(category))) ||
+            (targetFolder != null &&
+                (targetFolder is! String ||
+                    !isValidSandboxFolderName(targetFolder)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (fileExtensions != null) {
+          if (fileExtensions is! List ||
+              fileExtensions.isEmpty ||
+              fileExtensions.length > 10) {
+            return const PolicyEvaluationResult(
+              allowed: false,
+              status: XtpStatus.invalidArgs,
+              effectiveRisk: RiskTier.r1,
+              errorCode: 'schema_mismatch',
+            );
+          }
+          for (final ext in fileExtensions) {
+            if (ext is! String || !isAllowedForgeFileExtension(ext)) {
+              return const PolicyEvaluationResult(
+                allowed: false,
+                status: XtpStatus.denied,
+                effectiveRisk: RiskTier.r1,
+                errorCode: 'forge_extension_forbidden',
+              );
+            }
+          }
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'forge.run_skill':
+        final skillId = arguments['skillId'];
+        final maxItems = arguments['maxItems'];
+        final outputFolder = arguments['outputFolder'];
+        final exportCsv = arguments['exportCsv'];
+        const allowedRunKeys = <String>{
+          'skillId',
+          'maxItems',
+          'outputFolder',
+          'exportCsv',
+        };
+        if (arguments.keys.any((k) => !allowedRunKeys.contains(k)) ||
+            skillId is! String ||
+            !isValidShortId(skillId) ||
+            (maxItems != null &&
+                (maxItems is! int || maxItems < 1 || maxItems > 500)) ||
+            (outputFolder != null &&
+                (outputFolder is! String ||
+                    !isValidSandboxFolderName(outputFolder))) ||
+            (exportCsv != null && exportCsv is! bool)) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+      case 'forge.list_and_manage':
+        final action = arguments['action'];
+        final skillId = arguments['skillId'];
+        const allowedManageKeys = <String>{'action', 'skillId'};
+        if (arguments.keys.any((k) => !allowedManageKeys.contains(k)) ||
+            (action != null &&
+                (action is! String ||
+                    !allowedForgeManageActions.contains(action))) ||
+            (skillId != null &&
+                (skillId is! String || !isValidShortId(skillId))) ||
+            ((action == 'delete_one' || action == 'export_recipe') &&
+                (skillId is! String || !isValidShortId(skillId)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'teach.record_session':
+        final mode = arguments['mode'];
+        final skillTitle = arguments['skillTitle'];
+        final demonstratedAction = arguments['demonstratedAction'];
+        final selectorOrPattern = arguments['selectorOrPattern'];
+        const allowedTeachKeys = <String>{
+          'mode',
+          'skillTitle',
+          'demonstratedAction',
+          'selectorOrPattern',
+        };
+        if (arguments.keys.any((k) => !allowedTeachKeys.contains(k)) ||
+            mode is! String ||
+            !allowedTeachRecordModes.contains(mode) ||
+            (skillTitle != null &&
+                (skillTitle is! String ||
+                    skillTitle.trim().isEmpty ||
+                    skillTitle.length > 80 ||
+                    !isSafeAgentPrompt(skillTitle))) ||
+            (demonstratedAction != null &&
+                (demonstratedAction is! String ||
+                    demonstratedAction.trim().isEmpty ||
+                    demonstratedAction.length > 240 ||
+                    !isSafeAgentPrompt(demonstratedAction))) ||
+            (selectorOrPattern != null &&
+                (selectorOrPattern is! String ||
+                    selectorOrPattern.trim().isEmpty ||
+                    selectorOrPattern.length > 160 ||
+                    !isSafeAgentPrompt(selectorOrPattern)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r1;
+      case 'forge.extract_invoices_to_sheet':
+        final sourceFolder = arguments['sourceFolder'];
+        final outputFileName = arguments['outputFileName'];
+        final detectDuplicates = arguments['detectDuplicates'];
+        const allowedExtractKeys = <String>{
+          'sourceFolder',
+          'outputFileName',
+          'detectDuplicates',
+        };
+        if (arguments.keys.any((k) => !allowedExtractKeys.contains(k)) ||
+            sourceFolder is! String ||
+            !isValidSandboxFolderName(sourceFolder) ||
+            (outputFileName != null &&
+                (outputFileName is! String ||
+                    !isValidBeamFileName(outputFileName))) ||
+            (detectDuplicates != null && detectDuplicates is! bool)) {
           return const PolicyEvaluationResult(
             allowed: false,
             status: XtpStatus.invalidArgs,
@@ -1604,9 +1766,8 @@ class HostPolicyEvaluator {
             errorCode: 'schema_mismatch',
           );
         }
-        effectiveRisk = (combo == 'Enter' && inForm == true)
-            ? RiskTier.r3
-            : RiskTier.r2;
+        effectiveRisk =
+            (combo == 'Enter' && inForm == true) ? RiskTier.r3 : RiskTier.r2;
       case 'input.scroll':
         if (!isInApprovedCuSession) {
           return const PolicyEvaluationResult(
@@ -2155,10 +2316,8 @@ final RegExp _wordSplitRe = RegExp(
 bool isConsequentialElementName(String? elementName) {
   if (elementName == null || elementName.trim().isEmpty) return false;
   final normalized = elementName.trim().toLowerCase();
-  final words = normalized
-      .split(_wordSplitRe)
-      .where((w) => w.isNotEmpty)
-      .toSet();
+  final words =
+      normalized.split(_wordSplitRe).where((w) => w.isNotEmpty).toSet();
   for (final keyword in consequentialElementKeywords) {
     if (keyword.contains(' ')) {
       if (normalized.contains(keyword)) return true;
@@ -2362,7 +2521,8 @@ final List<RegExp> _sensitiveTokenPatterns = <RegExp>[
     r'(?:password|passwd|secret|api_key|apikey|token|access_token)\s*[:=]\s*["\x27]?[^\s"\x27,;]{4,}["\x27]?',
     caseSensitive: false,
   ),
-  RegExp(r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----'),
+  RegExp(
+      r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----'),
 ];
 
 /// Result of redacting secrets/tokens in selected or clipboard text (`UDC-12` S12.2).
@@ -2388,8 +2548,7 @@ RedactedSelectionResult redactSensitiveSelectionText(
     });
   }
   final truncated = working.length > clampedMax;
-  final finalString =
-      truncated ? working.substring(0, clampedMax) : working;
+  final finalString = truncated ? working.substring(0, clampedMax) : working;
   return (
     text: finalString,
     truncated: truncated,
@@ -2492,8 +2651,7 @@ bool isValidBeamFileName(String? fileName) {
   return true;
 }
 
-final RegExp _smartHomeEntityRe =
-    RegExp(r'^[a-z0-9_]{2,32}\.[a-z0-9_]{1,64}$');
+final RegExp _smartHomeEntityRe = RegExp(r'^[a-z0-9_]{2,32}\.[a-z0-9_]{1,64}$');
 
 /// Returns `true` if [entityId] belongs to a hard-denied physical security
 /// smart-home domain (`lock.*`, `alarm_control_panel.*`, `camera.*`,
@@ -2565,4 +2723,62 @@ bool isSafeClipboardWriteText(String? text) {
     }
   }
   return true;
+}
+
+/// Allowed safe document/media/archive file extensions for `OMNIFORGE` batch
+/// harvesting and file janitor tools (`FORGE-1`).
+const Set<String> allowedForgeDocumentExtensions = <String>{
+  'pdf',
+  'xml',
+  'csv',
+  'xlsx',
+  'xls',
+  'docx',
+  'doc',
+  'txt',
+  'json',
+  'zip',
+  'png',
+  'jpg',
+  'jpeg',
+  'webp',
+};
+
+/// Returns `true` if [ext] (with or without leading `.`) is an allowed safe
+/// document/archive extension and is not in [forbiddenBeamExtensions].
+bool isAllowedForgeFileExtension(String? ext) {
+  if (ext == null) return false;
+  final clean = ext.trim().toLowerCase().replaceFirst(RegExp(r'^\.+'), '');
+  if (clean.isEmpty || clean.length > 10) return false;
+  if (forbiddenBeamExtensions.contains(clean)) return false;
+  return allowedForgeDocumentExtensions.contains(clean);
+}
+
+final RegExp _sandboxFolderRe = RegExp(
+    r'^[a-zA-Z0-9_.\- /àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ]{1,120}$');
+
+/// Validates a relative sandbox folder name (`FORGE-1`, e.g., `'XUNA_HoaDon/Thang_11'`):
+/// rejects parent traversal (`..`), absolute paths (`/`, `\`, `C:`), and hidden
+/// segments starting with `.`.
+bool isValidSandboxFolderName(String? folder) {
+  if (folder == null) return false;
+  final trimmed = folder.trim();
+  if (trimmed.isEmpty ||
+      trimmed.length > 120 ||
+      trimmed.startsWith('/') ||
+      trimmed.startsWith(r'\') ||
+      trimmed.contains('..') ||
+      trimmed.contains(':') ||
+      trimmed.contains(r'\') ||
+      trimmed.contains('~')) {
+    return false;
+  }
+  final segments = trimmed.split('/');
+  for (final seg in segments) {
+    final s = seg.trim();
+    if (s.isEmpty || s.startsWith('.') || s.endsWith('.')) {
+      return false;
+    }
+  }
+  return _sandboxFolderRe.hasMatch(trimmed);
 }

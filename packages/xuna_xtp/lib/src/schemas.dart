@@ -377,6 +377,8 @@ class ToolDescriptor {
                             prefix == 'pocket' ||
                             prefix == 'watchdog' ||
                             prefix == 'coach' ||
+                            prefix == 'forge' ||
+                            prefix == 'teach' ||
                             name == 'tv.launch_app')
                         ? ToolFamily.app
                         : ToolFamily.fromWire(prefix);
@@ -505,6 +507,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeSymbioticCopilotTools = false,
   bool includeSymbioticEvolutionTools = false,
   bool includeSymbioticSentinelTools = false,
+  bool includeOmniForgeTools = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -835,6 +838,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildSymbioticEvolutionTools(defaultPermission: defaultPermission),
     if (includeSymbioticSentinelTools)
       ...buildSymbioticSentinelTools(defaultPermission: defaultPermission),
+    if (includeOmniForgeTools)
+      ...buildOmniForgeTools(defaultPermission: defaultPermission),
   ];
   return tools;
 }
@@ -2753,6 +2758,345 @@ List<ToolDescriptor> buildSymbioticSentinelTools({
         family: ToolFamily.workflow,
         risk: RiskTier.r1,
         observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+  ];
+}
+
+/// Allowed skill categories for `forge.synthesize_skill` (`FORGE-1`).
+const Set<String> allowedForgeSkillCategories = <String>{
+  'auto',
+  'web_harvest_invoices',
+  'document_to_sheet',
+  'smart_file_janitor',
+  'spreadsheet_reconciler',
+  'lead_harvester',
+  'custom_script',
+};
+
+/// Allowed actions for `forge.list_and_manage` (`FORGE-1`).
+const Set<String> allowedForgeManageActions = <String>{
+  'list',
+  'delete_one',
+  'export_recipe',
+};
+
+/// Allowed demonstration modes for `teach.record_session` (`FORGE-2`).
+const Set<String> allowedTeachRecordModes = <String>{
+  'start',
+  'record_action',
+  'stop_and_compile',
+};
+
+/// Builds the 5 `OMNIFORGE` (`FORGE-1` & `FORGE-2`) citizen tool synthesis & demonstration descriptors:
+/// - `forge.synthesize_skill` (`R1`, `observes: true`, family `app`)
+/// - `forge.run_skill` (`R2`, `reversible: true`, family `app`)
+/// - `forge.list_and_manage` (`R1`, `reversible: true`, family `app`)
+/// - `teach.record_session` (`R1`, `observes: true`, family `app`)
+/// - `forge.extract_invoices_to_sheet` (`R1`, `reversible: true`, family `app`)
+List<ToolDescriptor> buildOmniForgeTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'forge.synthesize_skill',
+      description:
+          'Synthesize a sandboxed XunaScript tool from natural language or active browser/folder context and run a 1-item dry-run preview with self-debugging.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'goal': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 400,
+          },
+          'category': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'auto',
+              'web_harvest_invoices',
+              'document_to_sheet',
+              'smart_file_janitor',
+              'spreadsheet_reconciler',
+              'lead_harvester',
+              'custom_script',
+            ],
+          },
+          'targetFolder': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'fileExtensions': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 12},
+          },
+        },
+        'required': <String>['goal'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'skillId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'titleVi': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'category': <String, Object?>{'type': 'string', 'maxLength': 40},
+          'detectedItemsCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'dryRunSample': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+          'selfDebugIterations': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'parameterFields': <String, Object?>{'type': 'array'},
+          'scriptSteps': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'skillId',
+          'titleVi',
+          'category',
+          'detectedItemsCount',
+          'dryRunSample',
+          'selfDebugIterations',
+          'parameterFields',
+          'scriptSteps',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'forge.run_skill',
+      description:
+          'Execute a synthesized XunaScript tool in the local sandbox (batch download invoices, organize files, reconcile sheets) with automatic undo snapshot.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'skillId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'maxItems': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 500,
+          },
+          'outputFolder': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'exportCsv': <String, Object?>{
+            'type': 'boolean',
+          },
+        },
+        'required': <String>['skillId'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'skillId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'processedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'outputDirectory': <String, Object?>{
+            'type': 'string',
+            'maxLength': 160,
+          },
+          'exportedCsvFile': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'selfHealedSelectors': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'undoSnapshotId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'skillId',
+          'processedCount',
+          'outputDirectory',
+          'exportedCsvFile',
+          'selfHealedSelectors',
+          'undoSnapshotId',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'forge.list_and_manage',
+      description:
+          'List owner-forged personal tools in the XUNA Skill Library, delete a tool, or export its portable recipe.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'action': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['list', 'delete_one', 'export_recipe'],
+          },
+          'skillId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'skills': <String, Object?>{'type': 'array'},
+          'exportedRecipeJson': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+          },
+        },
+        'required': <String>['skills', 'exportedRecipeJson'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'teach.record_session',
+      description:
+          'Start or finish a Show-Me-Once demonstration session where the owner performs 1 example action and XUNA generalizes it into a reusable loop tool.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'mode': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['start', 'record_action', 'stop_and_compile'],
+          },
+          'skillTitle': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+          'demonstratedAction': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+          'selectorOrPattern': <String, Object?>{
+            'type': 'string',
+            'maxLength': 160,
+          },
+        },
+        'required': <String>['mode'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'recordingActive': <String, Object?>{'type': 'boolean'},
+          'capturedStepsCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'compiledSkillId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'generalizedLoopSummaryVi': <String, Object?>{
+            'type': 'string',
+            'maxLength': 240,
+          },
+        },
+        'required': <String>[
+          'recordingActive',
+          'capturedStepsCount',
+          'compiledSkillId',
+          'generalizedLoopSummaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'forge.extract_invoices_to_sheet',
+      description:
+          'Parse local electronic invoices (XML/PDF text) or business documents into a structured accounting CSV/Excel summary table.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'sourceFolder': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 120,
+          },
+          'outputFileName': <String, Object?>{
+            'type': 'string',
+            'maxLength': 80,
+          },
+          'detectDuplicates': <String, Object?>{
+            'type': 'boolean',
+          },
+        },
+        'required': <String>['sourceFolder'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'invoiceCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'totalAmountVnd': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'duplicateCount': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'outputCsvFile': <String, Object?>{
+            'type': 'string',
+            'maxLength': 120,
+          },
+          'rows': <String, Object?>{'type': 'array'},
+          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
+        },
+        'required': <String>[
+          'invoiceCount',
+          'totalAmountVnd',
+          'duplicateCount',
+          'outputCsvFile',
+          'rows',
+          'summaryVi',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
         reversible: true,
         permission: defaultPermission,
       ),

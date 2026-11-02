@@ -160,10 +160,11 @@ class ReversibleActionLedger {
   }
 }
 
-typedef SubStepExecutor = Future<ToolHandlerOutput> Function(
-  String toolName,
-  Map<String, Object?> arguments,
-);
+typedef SubStepExecutor =
+    Future<ToolHandlerOutput> Function(
+      String toolName,
+      Map<String, Object?> arguments,
+    );
 
 /// Context passed to a [HostToolHandler] during execution.
 class ToolExecutionContext {
@@ -541,9 +542,10 @@ class WorkspaceOpenTool extends HostToolHandler {
         errorCode: 'workspace_not_found',
       );
     }
-    final resolvedIde = context.appScanner.resolveCodingAgent(
-      ide == 'auto' ? 'antigravity' : ide,
-    ) ??
+    final resolvedIde =
+        context.appScanner.resolveCodingAgent(
+          ide == 'auto' ? 'antigravity' : ide,
+        ) ??
         context.appScanner.resolveCodingAgent('auto');
     if (resolvedIde == null) {
       throw const XunaHostChannelException(
@@ -846,8 +848,8 @@ class BrowserReadPageTool extends HostToolHandler {
     }
     final resolvedBrowser =
         const <String>{'edge', 'chrome', 'safari'}.contains(snap.browser)
-            ? snap.browser
-            : 'edge';
+        ? snap.browser
+        : 'edge';
     final host = urlCheck.asciiHost!;
     final titleRedacted = redactSensitiveSelectionText(
       snap.title,
@@ -932,9 +934,7 @@ class BeamTransferTool extends HostToolHandler {
         if (!dir.existsSync()) {
           dir.createSync(recursive: true);
         }
-        final outFile = File(
-          '$baseDir${Platform.pathSeparator}$fileName',
-        );
+        final outFile = File('$baseDir${Platform.pathSeparator}$fileName');
         outFile.writeAsBytesSync(bytes, flush: true);
       }
     }
@@ -1231,8 +1231,7 @@ class SmartHomeControlTool extends HostToolHandler {
             'action': res.inverseAction,
             if (res.previousValue != null) 'value': res.previousValue,
           },
-          description:
-              'hoàn tác ${res.entity.name} về ${res.previousState}',
+          description: 'hoàn tác ${res.entity.name} về ${res.previousState}',
           recordedAt: context.nowUtc,
         ),
       );
@@ -1292,10 +1291,7 @@ class MeetingStatusTool extends HostToolHandler {
     final text = snap.inMeeting
         ? 'Đang họp trên ${snap.app} ($micDesc).'
         : 'Không có cuộc họp nào ($micDesc).';
-    return ToolHandlerOutput(
-      text: text,
-      structuredContent: snap.toWireJson(),
-    );
+    return ToolHandlerOutput(text: text, structuredContent: snap.toWireJson());
   }
 }
 
@@ -1351,8 +1347,9 @@ class DevPortsTool extends HostToolHandler {
           : 'Phát hiện ${res.activePorts.length} cổng dev trên ${res.lanIp}.',
       structuredContent: <String, Object?>{
         'lanIp': res.lanIp,
-        'activePorts':
-            res.activePorts.map((e) => e.toWireJson()).toList(growable: false),
+        'activePorts': res.activePorts
+            .map((e) => e.toWireJson())
+            .toList(growable: false),
       },
     );
   }
@@ -1439,7 +1436,8 @@ class WorkspaceRestoreCapsuleTool extends HostToolHandler {
     }
     final ws = context.workspaceIndexer.resolveWorkspace(capsule.project);
     if (ws != null) {
-      final resolvedIde = context.appScanner.resolveCodingAgent(
+      final resolvedIde =
+          context.appScanner.resolveCodingAgent(
             ide == 'auto' ? 'antigravity' : ide,
           ) ??
           context.appScanner.resolveCodingAgent('auto');
@@ -1568,7 +1566,8 @@ class PocketTransformItemTool extends HostToolHandler {
       mode: mode,
     );
     return ToolHandlerOutput(
-      text: 'Đã biến đổi nội dung theo chế độ ${res.mode} (${res.itemCount} mục).',
+      text:
+          'Đã biến đổi nội dung theo chế độ ${res.mode} (${res.itemCount} mục).',
       structuredContent: <String, Object?>{
         'mode': res.mode,
         'transformedText': res.transformedText,
@@ -1721,16 +1720,189 @@ class HabitProposeWorkflowTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final minOccurrences =
-        (context.arguments['minOccurrences'] as int?) ?? 2;
+    final minOccurrences = (context.arguments['minOccurrences'] as int?) ?? 2;
     final proposals = context.symbioticService.proposeHabitWorkflows(
       minOccurrences: minOccurrences,
     );
     return ToolHandlerOutput(
       text: 'Đã phát hiện ${proposals.length} quy trình thói quen gợi ý.',
+      structuredContent: <String, Object?>{'proposals': proposals},
+    );
+  }
+}
+
+class ForgeSynthesizeSkillTool extends HostToolHandler {
+  const ForgeSynthesizeSkillTool();
+
+  @override
+  String get name => 'forge.synthesize_skill';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final goal = context.arguments['goal'] as String;
+    final category = context.arguments['category'] as String?;
+    final targetFolder = context.arguments['targetFolder'] as String?;
+    final rawExts = context.arguments['fileExtensions'];
+    final exts = rawExts is List
+        ? rawExts.whereType<String>().toList(growable: false)
+        : null;
+    final res = context.symbioticService.synthesizeSkill(
+      goal: goal,
+      category: category,
+      targetFolder: targetFolder,
+      fileExtensions: exts,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
       structuredContent: <String, Object?>{
-        'proposals': proposals,
+        'skillId': res.skillId,
+        'titleVi': res.titleVi,
+        'category': res.category,
+        'detectedItemsCount': res.detectedItemsCount,
+        'dryRunSample': res.dryRunSample,
+        'selfDebugIterations': res.selfDebugIterations,
+        'parameterFields': res.parameterFields,
+        'scriptSteps': res.scriptSteps,
+        'summaryVi': res.summaryVi,
       },
+      toastBody: 'đã rèn công cụ ${res.titleVi}',
+    );
+  }
+}
+
+class ForgeRunSkillTool extends HostToolHandler {
+  const ForgeRunSkillTool();
+
+  @override
+  String get name => 'forge.run_skill';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final skillId = context.arguments['skillId'] as String;
+    final maxItems = context.arguments['maxItems'] as int?;
+    final outputFolder = context.arguments['outputFolder'] as String?;
+    final exportCsv = (context.arguments['exportCsv'] as bool?) ?? true;
+    final res = context.symbioticService.runForgedSkill(
+      skillId: skillId,
+      maxItems: maxItems,
+      outputFolder: outputFolder,
+      exportCsv: exportCsv,
+      nowUtc: context.nowUtc,
+    );
+    context.actionLedger.pushEntry(
+      ReversibleActionEntry(
+        originalTool: 'forge.run_skill',
+        inverseTool: 'forge.list_and_manage',
+        inverseArgs: const <String, Object?>{'action': 'list'},
+        description:
+            'hoàn tác phiên chạy công cụ $skillId (${res.undoSnapshotId})',
+        recordedAt: context.nowUtc,
+      ),
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'skillId': res.skillId,
+        'processedCount': res.processedCount,
+        'outputDirectory': res.outputDirectory,
+        'exportedCsvFile': res.exportedCsvFile,
+        'selfHealedSelectors': res.selfHealedSelectors,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: 'đã chạy xong công cụ (${res.processedCount} mục)',
+    );
+  }
+}
+
+class ForgeListAndManageTool extends HostToolHandler {
+  const ForgeListAndManageTool();
+
+  @override
+  String get name => 'forge.list_and_manage';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = (context.arguments['action'] as String?) ?? 'list';
+    final skillId = context.arguments['skillId'] as String?;
+    final res = context.symbioticService.listAndManageForgedSkills(
+      action: action,
+      skillId: skillId,
+    );
+    return ToolHandlerOutput(
+      text: 'Kho công cụ XUNA hiện có ${res.skills.length} kỹ năng.',
+      structuredContent: <String, Object?>{
+        'skills': res.skills,
+        'exportedRecipeJson': res.exportedRecipeJson,
+      },
+    );
+  }
+}
+
+class TeachRecordSessionTool extends HostToolHandler {
+  const TeachRecordSessionTool();
+
+  @override
+  String get name => 'teach.record_session';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final mode = context.arguments['mode'] as String;
+    final skillTitle = context.arguments['skillTitle'] as String?;
+    final demonstratedAction =
+        context.arguments['demonstratedAction'] as String?;
+    final selectorOrPattern = context.arguments['selectorOrPattern'] as String?;
+    final res = context.symbioticService.handleTeachSession(
+      mode: mode,
+      skillTitle: skillTitle,
+      demonstratedAction: demonstratedAction,
+      selectorOrPattern: selectorOrPattern,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.generalizedLoopSummaryVi,
+      structuredContent: <String, Object?>{
+        'recordingActive': res.recordingActive,
+        'capturedStepsCount': res.capturedStepsCount,
+        'compiledSkillId': res.compiledSkillId,
+        'generalizedLoopSummaryVi': res.generalizedLoopSummaryVi,
+      },
+      toastBody: mode == 'stop_and_compile'
+          ? 'đã học xong kỹ năng mới từ thao tác mẫu'
+          : null,
+    );
+  }
+}
+
+class ForgeExtractInvoicesToSheetTool extends HostToolHandler {
+  const ForgeExtractInvoicesToSheetTool();
+
+  @override
+  String get name => 'forge.extract_invoices_to_sheet';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final sourceFolder = context.arguments['sourceFolder'] as String;
+    final outputFileName = context.arguments['outputFileName'] as String?;
+    final detectDuplicates =
+        (context.arguments['detectDuplicates'] as bool?) ?? true;
+    final res = context.symbioticService.extractInvoicesToSheet(
+      sourceFolder: sourceFolder,
+      outputFileName: outputFileName,
+      detectDuplicates: detectDuplicates,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'invoiceCount': res.invoiceCount,
+        'totalAmountVnd': res.totalAmountVnd,
+        'duplicateCount': res.duplicateCount,
+        'outputCsvFile': res.outputCsvFile,
+        'rows': res.rows,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: 'đã xuất bảng kê ${res.invoiceCount} hóa đơn',
     );
   }
 }
@@ -1816,6 +1988,11 @@ class HostToolDispatcher {
           const CoachDecomposeOverwhelmTool(),
           const MeetingDeskWhisperDigestTool(),
           const HabitProposeWorkflowTool(),
+          const ForgeSynthesizeSkillTool(),
+          const ForgeRunSkillTool(),
+          const ForgeListAndManageTool(),
+          const TeachRecordSessionTool(),
+          const ForgeExtractInvoicesToSheetTool(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -1868,6 +2045,7 @@ class HostToolDispatcher {
       includeSymbioticCopilotTools: true,
       includeSymbioticEvolutionTools: true,
       includeSymbioticSentinelTools: true,
+      includeOmniForgeTools: true,
     );
     if (computerUseManager == null) {
       return mvp;

@@ -485,6 +485,8 @@ class DesktopAgentWindow extends StatelessWidget {
       final items = controller.pocketItems;
       final watchdogs = controller.activeWatchdogs;
       final proposals = controller.habitProposals;
+      final skills = controller.forgedSkills;
+      final recordingTeach = controller.isTeachRecording.value;
 
       return ListView(
         children: [
@@ -638,6 +640,64 @@ class DesktopAgentWindow extends StatelessWidget {
                       subtitle: Text('Câu lệnh gọi: "${p['triggerPhrase']}"'),
                     ),
                   ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: [
+                      Text(
+                        'Xưởng Kỹ Năng XUNA · OmniForge (${skills.length})',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      OutlinedButton(
+                        onPressed: () => controller.forgeQuickInvoiceTool(),
+                        child: const Text('Rèn Tool Hóa Đơn'),
+                      ),
+                      OutlinedButton(
+                        onPressed: controller.toggleTeachModeFromUi,
+                        child: Text(
+                          recordingTeach
+                              ? 'Dừng & Đúc kết Tool'
+                              : 'Làm mẫu 1 lần (Show-Me-Once)',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (skills.isEmpty)
+                    const Text(
+                      'Chưa có kỹ năng tự rèn nào. Hãy nhờ XUNA viết tool hoặc bấm "Làm mẫu 1 lần".',
+                    )
+                  else
+                    ...skills.map(
+                      (s) => ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          '[${s.category}] ${s.titleVi} (${s.runCount} lần chạy)',
+                        ),
+                        subtitle: Text(
+                          'Thư mục: ${s.targetFolder} · Dry-run: ${s.dryRunSample}',
+                        ),
+                        trailing: OutlinedButton(
+                          onPressed: () =>
+                              controller.runForgedSkillFromUi(s.skillId),
+                          child: const Text('Chạy'),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),

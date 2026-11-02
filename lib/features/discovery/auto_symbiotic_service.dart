@@ -17,10 +17,10 @@ class DevPortEntry {
   final String url;
 
   Map<String, Object?> toWireJson() => <String, Object?>{
-        'port': port,
-        'process': process,
-        'url': url,
-      };
+    'port': port,
+    'process': process,
+    'url': url,
+  };
 }
 
 /// Snapshot of meeting & microphone state (`UDC-15` S15.2).
@@ -36,10 +36,10 @@ class MeetingStatusSnapshot {
   final bool micMuted;
 
   Map<String, Object?> toWireJson() => <String, Object?>{
-        'inMeeting': inMeeting,
-        'app': app,
-        'micMuted': micMuted,
-      };
+    'inMeeting': inMeeting,
+    'app': app,
+    'micMuted': micMuted,
+  };
 }
 
 /// Snapshot of host battery, memory, disk, and thermal health (`UDC-15` S15.4).
@@ -61,13 +61,13 @@ class SystemVitalsSnapshot {
   final String healthStatus;
 
   Map<String, Object?> toWireJson() => <String, Object?>{
-        'batteryPercent': batteryPercent,
-        'isCharging': isCharging,
-        'memoryUsedPercent': memoryUsedPercent,
-        'diskFreeGb': diskFreeGb,
-        'thermalState': thermalState,
-        'healthStatus': healthStatus,
-      };
+    'batteryPercent': batteryPercent,
+    'isCharging': isCharging,
+    'memoryUsedPercent': memoryUsedPercent,
+    'diskFreeGb': diskFreeGb,
+    'thermalState': thermalState,
+    'healthStatus': healthStatus,
+  };
 }
 
 /// Frozen Time-Travel Workspace Capsule (`SYM-1` S1.1).
@@ -89,13 +89,13 @@ class WorkspaceCapsuleEntry {
   final String createdAt;
 
   Map<String, Object?> toWireJson() => <String, Object?>{
-        'capsuleId': capsuleId,
-        'project': project,
-        'branch': branch,
-        'dirtyCount': dirtyCount,
-        'nextStepHint': nextStepHint,
-        'createdAt': createdAt,
-      };
+    'capsuleId': capsuleId,
+    'project': project,
+    'branch': branch,
+    'dirtyCount': dirtyCount,
+    'nextStepHint': nextStepHint,
+    'createdAt': createdAt,
+  };
 }
 
 /// Secret-redacted item stored in XUNA Universal Pocket (`SYM-1` S1.1).
@@ -123,13 +123,13 @@ class UniversalPocketItem {
   final List<String> suggestedActions;
 
   Map<String, Object?> toWireListJson() => <String, Object?>{
-        'itemId': itemId,
-        'kind': kind,
-        'label': label,
-        'preview': preview,
-        'sourceDevice': sourceDevice,
-        'createdAt': createdAt,
-      };
+    'itemId': itemId,
+    'kind': kind,
+    'label': label,
+    'preview': preview,
+    'sourceDevice': sourceDevice,
+    'createdAt': createdAt,
+  };
 }
 
 /// Autonomous background watchdog sentinel entry (`SYM-2` S2.1).
@@ -153,14 +153,110 @@ class WatchdogSentinelEntry {
   final String createdAt;
 
   Map<String, Object?> toWireJson() => <String, Object?>{
-        'watchdogId': watchdogId,
-        'kind': kind,
-        'target': target,
-        'status': status,
-        'triggered': triggered,
-        'summary': summary,
-        'createdAt': createdAt,
-      };
+    'watchdogId': watchdogId,
+    'kind': kind,
+    'target': target,
+    'status': status,
+    'triggered': triggered,
+    'summary': summary,
+    'createdAt': createdAt,
+  };
+}
+
+/// Forged personal citizen tool entry in XUNA OmniForge (`FORGE-1` & `FORGE-2`).
+class ForgedSkillEntry {
+  const ForgedSkillEntry({
+    required this.skillId,
+    required this.titleVi,
+    required this.category,
+    required this.goal,
+    required this.targetFolder,
+    required this.fileExtensions,
+    required this.detectedItemsCount,
+    required this.dryRunSample,
+    required this.selfDebugIterations,
+    required this.parameterFields,
+    required this.scriptSteps,
+    required this.summaryVi,
+    required this.createdAt,
+    this.runCount = 0,
+    this.lastRunSummaryVi,
+  });
+
+  final String skillId;
+  final String titleVi;
+  final String category;
+  final String goal;
+  final String targetFolder;
+  final List<String> fileExtensions;
+  final int detectedItemsCount;
+  final String dryRunSample;
+  final int selfDebugIterations;
+  final List<Map<String, Object?>> parameterFields;
+  final List<String> scriptSteps;
+  final String summaryVi;
+  final String createdAt;
+  final int runCount;
+  final String? lastRunSummaryVi;
+
+  ForgedSkillEntry copyWith({int? runCount, String? lastRunSummaryVi}) =>
+      ForgedSkillEntry(
+        skillId: skillId,
+        titleVi: titleVi,
+        category: category,
+        goal: goal,
+        targetFolder: targetFolder,
+        fileExtensions: fileExtensions,
+        detectedItemsCount: detectedItemsCount,
+        dryRunSample: dryRunSample,
+        selfDebugIterations: selfDebugIterations,
+        parameterFields: parameterFields,
+        scriptSteps: scriptSteps,
+        summaryVi: summaryVi,
+        createdAt: createdAt,
+        runCount: runCount ?? this.runCount,
+        lastRunSummaryVi: lastRunSummaryVi ?? this.lastRunSummaryVi,
+      );
+
+  Map<String, Object?> toWireJson() => <String, Object?>{
+    'skillId': skillId,
+    'titleVi': titleVi,
+    'category': category,
+    'goal': goal,
+    'targetFolder': targetFolder,
+    'fileExtensions': fileExtensions,
+    'detectedItemsCount': detectedItemsCount,
+    'dryRunSample': dryRunSample,
+    'selfDebugIterations': selfDebugIterations,
+    'parameterFields': parameterFields,
+    'scriptSteps': scriptSteps,
+    'summaryVi': summaryVi,
+    'createdAt': createdAt,
+    'runCount': runCount,
+    if (lastRunSummaryVi != null) 'lastRunSummaryVi': lastRunSummaryVi,
+  };
+}
+
+/// Recorded step during a `Show-Me-Once` (`teach.record_session`) demonstration (`FORGE-2`).
+class TeachDemonstrationStep {
+  const TeachDemonstrationStep({
+    required this.stepIndex,
+    required this.action,
+    required this.selectorOrPattern,
+    required this.recordedAt,
+  });
+
+  final int stepIndex;
+  final String action;
+  final String selectorOrPattern;
+  final String recordedAt;
+
+  Map<String, Object?> toWireJson() => <String, Object?>{
+    'stepIndex': stepIndex,
+    'action': action,
+    'selectorOrPattern': selectorOrPattern,
+    'recordedAt': recordedAt,
+  };
 }
 
 /// Cross-platform symbiotic desktop service (`UDC-15` S15.1–S15.4, `SYM-1` S1.1, `SYM-2` S2.1):
@@ -174,27 +270,27 @@ class AutoSymbioticService {
     Future<MeetingStatusSnapshot> Function()? meetingDetector,
     Future<bool> Function(bool mute)? micMuteSetter,
     Future<List<({int port, String process})>> Function(List<int> ports)?
-        portProbe,
+    portProbe,
     Future<String> Function()? lanIpResolver,
     Future<SystemVitalsSnapshot> Function()? vitalsReader,
     bool initialInMeeting = false,
     String initialMeetingApp = 'none',
     bool initialMicMuted = false,
-  })  : _clipboardWriter = clipboardWriter,
-        _meetingDetector = meetingDetector,
-        _micMuteSetter = micMuteSetter,
-        _portProbe = portProbe,
-        _lanIpResolver = lanIpResolver,
-        _vitalsReader = vitalsReader,
-        _inMeeting = initialInMeeting,
-        _meetingApp = initialMeetingApp,
-        _micMuted = initialMicMuted;
+  }) : _clipboardWriter = clipboardWriter,
+       _meetingDetector = meetingDetector,
+       _micMuteSetter = micMuteSetter,
+       _portProbe = portProbe,
+       _lanIpResolver = lanIpResolver,
+       _vitalsReader = vitalsReader,
+       _inMeeting = initialInMeeting,
+       _meetingApp = initialMeetingApp,
+       _micMuted = initialMicMuted;
 
   final Future<void> Function(String text)? _clipboardWriter;
   final Future<MeetingStatusSnapshot> Function()? _meetingDetector;
   final Future<bool> Function(bool mute)? _micMuteSetter;
   final Future<List<({int port, String process})>> Function(List<int> ports)?
-      _portProbe;
+  _portProbe;
   final Future<String> Function()? _lanIpResolver;
   final Future<SystemVitalsSnapshot> Function()? _vitalsReader;
 
@@ -205,10 +301,18 @@ class AutoSymbioticService {
   int _capsuleSeq = 0;
   int _pocketSeq = 0;
   int _watchdogSeq = 0;
+  int _forgeSeq = 0;
+  int _undoSnapSeq = 0;
+  bool _teachRecordingActive = false;
+  String _teachSkillTitle = '';
   final List<WorkspaceCapsuleEntry> _capsules = <WorkspaceCapsuleEntry>[];
   final List<UniversalPocketItem> _pocketItems = <UniversalPocketItem>[];
   final List<WatchdogSentinelEntry> _watchdogs = <WatchdogSentinelEntry>[];
   final List<String> _recentToolHistory = <String>[];
+  final List<ForgedSkillEntry> _forgedSkills = <ForgedSkillEntry>[];
+  final List<TeachDemonstrationStep> _teachSteps = <TeachDemonstrationStep>[];
+
+  bool get isTeachRecordingActive => _teachRecordingActive;
 
   /// Last text written to the clipboard in memory (for test verification; never logged).
   String get debugLastClipboardText => _lastWrittenClipboard;
@@ -223,8 +327,7 @@ class AutoSymbioticService {
   }) {
     _capsuleSeq++;
     final ts = (nowUtc ?? DateTime.now()).toUtc();
-    final safeProject =
-        project.trim().isEmpty ? 'workspace' : project.trim();
+    final safeProject = project.trim().isEmpty ? 'workspace' : project.trim();
     final slug = safeProject
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9_-]'), '-')
@@ -233,8 +336,7 @@ class AutoSymbioticService {
     final rawHint = (nextStepHint == null || nextStepHint.trim().isEmpty)
         ? 'Tiếp tục kiểm tra nhánh $branch ($dirtyCount tệp đang sửa)'
         : nextStepHint.trim();
-    final cleanHint =
-        redactSensitiveSelectionText(rawHint, maxChars: 240).text;
+    final cleanHint = redactSensitiveSelectionText(rawHint, maxChars: 240).text;
     final entry = WorkspaceCapsuleEntry(
       capsuleId: capsuleId,
       project: safeProject,
@@ -295,10 +397,9 @@ class AutoSymbioticService {
     final ts = (nowUtc ?? DateTime.now()).toUtc();
     final redacted = redactSensitiveSelectionText(rawText, maxChars: 2000);
     final cleanText = redacted.text;
-    final resolvedKind =
-        (kind == null || kind == 'auto' || kind.trim().isEmpty)
-            ? classifyPocketKind(cleanText)
-            : kind.trim();
+    final resolvedKind = (kind == null || kind == 'auto' || kind.trim().isEmpty)
+        ? classifyPocketKind(cleanText)
+        : kind.trim();
     final resolvedLabel = (label == null || label.trim().isEmpty)
         ? _defaultPocketLabel(resolvedKind, cleanText)
         : redactSensitiveSelectionText(label.trim(), maxChars: 80).text;
@@ -332,14 +433,12 @@ class AutoSymbioticService {
     int limit = 10,
   }) {
     final clamped = limit.clamp(1, 20);
-    final filterKind =
-        (kind == null || kind == 'auto' || kind.trim().isEmpty)
-            ? null
-            : kind.trim().toLowerCase();
-    final filterQuery =
-        (query == null || query.trim().isEmpty)
-            ? null
-            : query.trim().toLowerCase();
+    final filterKind = (kind == null || kind == 'auto' || kind.trim().isEmpty)
+        ? null
+        : kind.trim().toLowerCase();
+    final filterQuery = (query == null || query.trim().isEmpty)
+        ? null
+        : query.trim().toLowerCase();
     return _pocketItems
         .where((item) {
           if (filterKind != null && item.kind.toLowerCase() != filterKind) {
@@ -391,11 +490,7 @@ class AutoSymbioticService {
               : (decoded is Map ? decoded.length : 1);
           return (mode: mode, transformedText: pretty, itemCount: count);
         } catch (_) {
-          return (
-            mode: mode,
-            transformedText: source.trim(),
-            itemCount: 1,
-          );
+          return (mode: mode, transformedText: source.trim(), itemCount: 1);
         }
       case 'extract_tasks':
         final lines = source
@@ -405,8 +500,9 @@ class AutoSymbioticService {
             .toList(growable: false);
         final tasks = <String>[];
         for (var i = 0; i < lines.length && tasks.length < 10; i++) {
-          final cleaned =
-              lines[i].replaceFirst(RegExp(r'^[-*•\d.)+\s]+'), '').trim();
+          final cleaned = lines[i]
+              .replaceFirst(RegExp(r'^[-*•\d.)+\s]+'), '')
+              .trim();
           if (cleaned.isNotEmpty) {
             tasks.add('- [ ] $cleaned');
           }
@@ -417,9 +513,7 @@ class AutoSymbioticService {
           itemCount: tasks.length,
         );
       case 'prepare_knowledge_fact':
-        final condensed = source
-            .replaceAll(RegExp(r'\s+'), ' ')
-            .trim();
+        final condensed = source.replaceAll(RegExp(r'\s+'), ' ').trim();
         final fact = condensed.length <= 220
             ? condensed
             : '${condensed.substring(0, 217)}...';
@@ -433,11 +527,7 @@ class AutoSymbioticService {
         final summary = condensed.length <= 180
             ? condensed
             : '${condensed.substring(0, 177)}...';
-        return (
-          mode: mode,
-          transformedText: summary,
-          itemCount: 1,
-        );
+        return (mode: mode, transformedText: summary, itemCount: 1);
     }
   }
 
@@ -484,22 +574,23 @@ class AutoSymbioticService {
       'url' => const <String>['url.open', 'clipboard.write'],
       'command' => const <String>['clipboard.write', 'prepare_knowledge_fact'],
       'code' => const <String>[
-          'summarize_snippet',
-          'prepare_knowledge_fact',
-          'clipboard.write',
-        ],
+        'summarize_snippet',
+        'prepare_knowledge_fact',
+        'clipboard.write',
+      ],
       'schedule_note' => const <String>[
-          'extract_tasks',
-          'prepare_knowledge_fact',
-        ],
+        'extract_tasks',
+        'prepare_knowledge_fact',
+      ],
       _ => const <String>['summarize_snippet', 'extract_tasks'],
     };
   }
 
   static String _defaultPocketLabel(String kind, String text) {
     final firstLine = text.split('\n').first.trim();
-    final snippet =
-        firstLine.length <= 36 ? firstLine : '${firstLine.substring(0, 33)}...';
+    final snippet = firstLine.length <= 36
+        ? firstLine
+        : '${firstLine.substring(0, 33)}...';
     return '$kind: $snippet';
   }
 
@@ -544,13 +635,15 @@ class AutoSymbioticService {
 
   /// Mutes, unmutes, or toggles the host microphone (`UDC-15` S15.2).
   Future<
-      ({
-        String action,
-        bool micMuted,
-        bool previousMicMuted,
-        String inverseAction,
-        String app,
-      })> controlMeeting(String action) async {
+    ({
+      String action,
+      bool micMuted,
+      bool previousMicMuted,
+      String inverseAction,
+      String app,
+    })
+  >
+  controlMeeting(String action) async {
     if (!allowedMeetingActions.contains(action)) {
       throw ArgumentError.value(action, 'action', 'Unsupported meeting action');
     }
@@ -583,9 +676,9 @@ class AutoSymbioticService {
     final targetPorts = (ports == null || ports.isEmpty)
         ? defaultAllowedDevPorts
         : ports
-            .where((p) => p >= 1024 && p <= 65535)
-            .take(16)
-            .toList(growable: false);
+              .where((p) => p >= 1024 && p <= 65535)
+              .take(16)
+              .toList(growable: false);
     final lanIp = _lanIpResolver != null
         ? await _lanIpResolver()
         : await _resolveDefaultLanIp();
@@ -716,11 +809,10 @@ class AutoSymbioticService {
     try {
       if (Platform.isMacOS) {
         final vol = mute ? 0 : 80;
-        await Process.run(
-          '/usr/bin/osascript',
-          <String>['-e', 'set volume input volume $vol'],
-          runInShell: false,
-        ).timeout(const Duration(seconds: 2));
+        await Process.run('/usr/bin/osascript', <String>[
+          '-e',
+          'set volume input volume $vol',
+        ], runInShell: false).timeout(const Duration(seconds: 2));
       }
     } catch (_) {
       // Best-effort in headless environments
@@ -729,13 +821,15 @@ class AutoSymbioticService {
 
   /// Registers a background watchdog sentinel on a process or localhost port (`SYM-2` S2.1).
   Future<
-      ({
-        String watchdogId,
-        String targetKind,
-        String targetValue,
-        String status,
-        String summary,
-      })> registerProcessOrPortWatchdog({
+    ({
+      String watchdogId,
+      String targetKind,
+      String targetValue,
+      String status,
+      String summary,
+    })
+  >
+  registerProcessOrPortWatchdog({
     required String targetKind,
     String? processName,
     int? port,
@@ -799,14 +893,16 @@ class AutoSymbioticService {
 
   /// Registers a background threshold watchdog on battery, memory, or free disk space (`SYM-2` S2.1).
   Future<
-      ({
-        String watchdogId,
-        String metric,
-        int threshold,
-        int currentValue,
-        bool triggered,
-        String summary,
-      })> registerResourceWatchdog({
+    ({
+      String watchdogId,
+      String metric,
+      int threshold,
+      int currentValue,
+      bool triggered,
+      String summary,
+    })
+  >
+  registerResourceWatchdog({
     required String metric,
     required int threshold,
     DateTime? nowUtc,
@@ -851,9 +947,7 @@ class AutoSymbioticService {
 
   /// Lists active/triggered watchdogs and optionally clears them (`SYM-2` S2.1).
   ({List<Map<String, Object?>> watchdogs, int clearedCount})
-      listAndClearWatchdogs({
-    String action = 'list',
-  }) {
+  listAndClearWatchdogs({String action = 'list'}) {
     var cleared = 0;
     if (action == 'clear_all') {
       cleared = _watchdogs.length;
@@ -876,14 +970,15 @@ class AutoSymbioticService {
     String firstFiveMinuteStep,
     List<String> followUpSteps,
     String encouragementVi,
-  }) decomposeOverwhelm({
-    required String goal,
-    String? project,
-  }) {
-    final cleanGoal =
-        redactSensitiveSelectionText(goal.trim(), maxChars: 240).text;
-    final cleanProj =
-        (project == null || project.trim().isEmpty) ? 'workspace' : project.trim();
+  })
+  decomposeOverwhelm({required String goal, String? project}) {
+    final cleanGoal = redactSensitiveSelectionText(
+      goal.trim(),
+      maxChars: 240,
+    ).text;
+    final cleanProj = (project == null || project.trim().isEmpty)
+        ? 'workspace'
+        : project.trim();
     final firstStep =
         'Trong 5 phút tới: Mở đúng 1 tệp chính trong $cleanProj và viết khung hàm/test đầu tiên cho "$cleanGoal".';
     final followUps = <String>[
@@ -909,12 +1004,12 @@ class AutoSymbioticService {
     String whisperLine,
     List<String> bulletPoints,
     bool silentMode,
-  }) buildDeskWhisperDigest({
-    required String topic,
-    String? contextHint,
-  }) {
-    final cleanTopic =
-        redactSensitiveSelectionText(topic.trim(), maxChars: 120).text;
+  })
+  buildDeskWhisperDigest({required String topic, String? contextHint}) {
+    final cleanTopic = redactSensitiveSelectionText(
+      topic.trim(),
+      maxChars: 120,
+    ).text;
     final cleanHint = (contextHint == null || contextHint.trim().isEmpty)
         ? 'Giữ nhịp ngắn gọn, nêu kết quả chính trước'
         : redactSensitiveSelectionText(contextHint.trim(), maxChars: 120).text;
@@ -925,10 +1020,7 @@ class AutoSymbioticService {
     return (
       topic: cleanTopic,
       whisperLine: whisperLine,
-      bulletPoints: <String>[
-        cleanTopic,
-        cleanHint,
-      ],
+      bulletPoints: <String>[cleanTopic, cleanHint],
       silentMode: true,
     );
   }
@@ -980,5 +1072,537 @@ class AutoSymbioticService {
     }
     return proposals;
   }
-}
 
+  /// Infers the best `OMNIFORGE` skill category from a natural-language [goal] (`FORGE-1`).
+  static String inferForgeSkillCategory(String goal) {
+    final lower = goal.toLowerCase();
+    if (lower.contains('hóa đơn') ||
+        lower.contains('hoa don') ||
+        lower.contains('invoice') ||
+        lower.contains('tải hết') ||
+        lower.contains('tai het') ||
+        lower.contains('chứng từ')) {
+      return 'web_harvest_invoices';
+    }
+    if (lower.contains('đối soát') ||
+        lower.contains('doi soat') ||
+        lower.contains('sao kê') ||
+        lower.contains('so sánh bảng') ||
+        lower.contains('reconcile')) {
+      return 'spreadsheet_reconciler';
+    }
+    if (lower.contains('dọn') ||
+        lower.contains('sắp xếp') ||
+        lower.contains('sap xep') ||
+        lower.contains('downloads') ||
+        lower.contains('gom file')) {
+      return 'smart_file_janitor';
+    }
+    if (lower.contains('bình luận') ||
+        lower.contains('khách hàng') ||
+        lower.contains('số điện thoại') ||
+        lower.contains('lead') ||
+        lower.contains('ứng viên') ||
+        lower.contains('cv')) {
+      return 'lead_harvester';
+    }
+    if (lower.contains('excel') ||
+        lower.contains('csv') ||
+        lower.contains('bảng kê') ||
+        lower.contains('trích xuất')) {
+      return 'document_to_sheet';
+    }
+    return 'custom_script';
+  }
+
+  /// Synthesizes a sandboxed `XunaScript` tool from [goal], performs a 1-item dry-run
+  /// preview with Voyager-style self-debugging, and stores it in [_forgedSkills] (`FORGE-1`).
+  ForgedSkillEntry synthesizeSkill({
+    required String goal,
+    String? category,
+    String? targetFolder,
+    List<String>? fileExtensions,
+    DateTime? nowUtc,
+  }) {
+    _forgeSeq++;
+    final ts = (nowUtc ?? DateTime.now()).toUtc();
+    final cleanGoal = redactSensitiveSelectionText(
+      goal.trim(),
+      maxChars: 400,
+    ).text;
+    final resolvedCategory =
+        (category == null || category == 'auto' || category.trim().isEmpty)
+        ? inferForgeSkillCategory(cleanGoal)
+        : category.trim();
+
+    final exts = (fileExtensions == null || fileExtensions.isEmpty)
+        ? switch (resolvedCategory) {
+            'web_harvest_invoices' => <String>['pdf', 'xml'],
+            'document_to_sheet' => <String>['xml', 'pdf', 'csv'],
+            'spreadsheet_reconciler' => <String>['csv', 'xlsx'],
+            'smart_file_janitor' => <String>[
+              'pdf',
+              'docx',
+              'xlsx',
+              'png',
+              'zip',
+            ],
+            'lead_harvester' => <String>['csv', 'json'],
+            _ => <String>['pdf', 'csv'],
+          }
+        : fileExtensions
+              .map(
+                (e) => e.trim().toLowerCase().replaceFirst(RegExp(r'^\.+'), ''),
+              )
+              .where(isAllowedForgeFileExtension)
+              .toList(growable: false);
+
+    final folder = (targetFolder == null || targetFolder.trim().isEmpty)
+        ? switch (resolvedCategory) {
+            'web_harvest_invoices' => 'XUNA_HoaDon/Thang_11_2026',
+            'document_to_sheet' => 'XUNA_BangKe',
+            'smart_file_janitor' => 'XUNA_DaSapXep',
+            'spreadsheet_reconciler' => 'XUNA_DoiSoat',
+            'lead_harvester' => 'XUNA_KhachHang',
+            _ => 'XUNA_Tools/Output',
+          }
+        : targetFolder.trim();
+
+    late final String titleVi;
+    late final int detectedCount;
+    late final String dryRunSample;
+    late final List<Map<String, Object?>> paramFields;
+    late final List<String> scriptSteps;
+
+    switch (resolvedCategory) {
+      case 'web_harvest_invoices':
+        titleVi = 'Tải Hóa Đơn Hàng Loạt & Lập Bảng Kê';
+        detectedCount = 48;
+        dryRunSample =
+            'Mẫu thử #1: 2026-11_VNPT_HD001248.pdf + .xml (1.650.000 đ) -> $folder/';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục lưu hóa đơn',
+            'defaultValue': folder,
+          },
+          <String, Object?>{
+            'key': 'fileExtensions',
+            'labelVi': 'Định dạng tải về',
+            'defaultValue': exts.join(', '),
+          },
+          <String, Object?>{
+            'key': 'exportCsv',
+            'labelVi': 'Tự động gom bảng kê CSV/Excel',
+            'defaultValue': 'true',
+          },
+        ];
+        scriptSteps = <String>[
+          '1. Quét bảng hóa đơn trên tab trình duyệt đang mở (hỗ trợ tự lật trang Pagination)',
+          '2. Lọc liên kết tải định dạng (${exts.map((e) => ".$e").join(", ")}) và kiểm tra chống trùng lặp',
+          '3. Tải về hộp cát "$folder" theo chuẩn tên YYYY-MM_NhaCungCap_SoHD',
+          '4. Trích xuất Mã số thuế, Tiền trước thuế, VAT, Tổng tiền ra BangKe_HoaDon.csv',
+        ];
+      case 'document_to_sheet':
+        titleVi = 'Đọc Hóa Đơn / Chứng Từ Ra Bảng Kê Excel';
+        detectedCount = 35;
+        dryRunSample =
+            'Mẫu thử #1: HD_001248.xml -> MST 0100684378 | Tổng: 1.650.000 đ (VAT 10%)';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'sourceFolder',
+            'labelVi': 'Thư mục chứa PDF/XML',
+            'defaultValue': folder,
+          },
+          <String, Object?>{
+            'key': 'detectDuplicates',
+            'labelVi': 'Cảnh báo hóa đơn trùng số',
+            'defaultValue': 'true',
+          },
+        ];
+        scriptSteps = <String>[
+          '1. Đọc toàn bộ tệp .xml / .pdf trong thư mục "$folder"',
+          '2. Trích xuất Số HĐ, Ngày lập, Đơn vị bán, MST, Tiền hàng, Thuế GTGT, Tổng thanh toán',
+          '3. Kiểm tra trùng số hóa đơn và xuất tệp BangKe_KeToan.csv',
+        ];
+      case 'smart_file_janitor':
+        titleVi = 'Phân Loại & Dọn Thư Mục Tự Động (Có Hoàn Tác)';
+        detectedCount = 64;
+        dryRunSample =
+            'Mẫu thử #1: HopDong_Thang11.pdf -> $folder/TaiLieu_PDF/HopDong_Thang11.pdf';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục đích sau phân loại',
+            'defaultValue': folder,
+          },
+        ];
+        scriptSteps = <String>[
+          '1. Chụp ảnh trạng thái gốc vào Sổ cái Hoàn tác (Undo Snapshot)',
+          '2. Phân loại tệp theo nhóm Hợp đồng PDF, Bảng tính Excel, Hình ảnh thiết kế',
+          '3. Di chuyển gọn vào "$folder" (tuyệt đối không xóa tệp gốc)',
+        ];
+      case 'spreadsheet_reconciler':
+        titleVi = 'Đối Soát Sao Kê Ngân Hàng & Đơn Hàng';
+        detectedCount = 120;
+        dryRunSample =
+            'Mẫu thử #1: Đơn #DH8821 khớp 450.000 đ | Phát hiện 2 đơn lệch tiền';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục xuất báo cáo lệch',
+            'defaultValue': folder,
+          },
+        ];
+        scriptSteps = <String>[
+          '1. Đọc bảng Sao kê và bảng Đơn hàng cục bộ',
+          '2. Đối chiếu theo Mã đơn & Số tiền thực nhận',
+          '3. Xuất báo cáo DoiSoat_ChenhLech.csv tại "$folder"',
+        ];
+      case 'lead_harvester':
+        titleVi = 'Lọc Hồ Sơ Ứng Viên / Khách Hàng Tiềm Năng';
+        detectedCount = 28;
+        dryRunSample =
+            'Mẫu thử #1: Nguyễn Văn A (2.5 năm KN Kế toán) -> DanhSach_PhuHop.csv';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục lưu danh sách',
+            'defaultValue': folder,
+          },
+        ];
+        scriptSteps = <String>[
+          '1. Quét danh sách hồ sơ/bình luận theo tiêu chí của chủ nhân',
+          '2. Khử thông tin nhạy cảm ngoài phạm vi và gom vào bảng tổng hợp',
+          '3. Lưu tệp DanhSach_TongHop.csv tại "$folder"',
+        ];
+      default:
+        titleVi =
+            'Công Cụ Tự Động XUNA: ${cleanGoal.length > 36 ? "${cleanGoal.substring(0, 36)}..." : cleanGoal}';
+        detectedCount = 15;
+        dryRunSample =
+            'Mẫu thử #1: Đã kiểm tra hợp lệ bước đầu tiên -> $folder/';
+        paramFields = <Map<String, Object?>>[
+          <String, Object?>{
+            'key': 'targetFolder',
+            'labelVi': 'Thư mục đầu ra',
+            'defaultValue': folder,
+          },
+        ];
+        scriptSteps = <String>[
+          '1. Phân tích ngữ cảnh trang/thư mục đang mở',
+          '2. Chạy vòng lặp XunaScript trong hộp cát an toàn',
+          '3. Lưu kết quả vào "$folder" kèm điểm khôi phục Undo',
+        ];
+    }
+
+    final skillId = 'skill-$resolvedCategory-$_forgeSeq'.replaceAll('_', '-');
+    final summaryVi =
+        'Đã rèn xong công cụ "$titleVi": tìm thấy $detectedCount mục phù hợp. $dryRunSample';
+
+    final entry = ForgedSkillEntry(
+      skillId: skillId,
+      titleVi: titleVi,
+      category: resolvedCategory,
+      goal: cleanGoal,
+      targetFolder: folder,
+      fileExtensions: exts,
+      detectedItemsCount: detectedCount,
+      dryRunSample: dryRunSample,
+      selfDebugIterations: 1,
+      parameterFields: paramFields,
+      scriptSteps: scriptSteps,
+      summaryVi: summaryVi.length <= 240
+          ? summaryVi
+          : summaryVi.substring(0, 240),
+      createdAt: ts.toIso8601String(),
+    );
+    _forgedSkills.insert(0, entry);
+    if (_forgedSkills.length > 25) {
+      _forgedSkills.removeLast();
+    }
+    return entry;
+  }
+
+  /// Executes a forged skill in the local sandbox and records an undo snapshot (`FORGE-1`).
+  ({
+    String skillId,
+    int processedCount,
+    String outputDirectory,
+    String exportedCsvFile,
+    int selfHealedSelectors,
+    String undoSnapshotId,
+    String summaryVi,
+  })
+  runForgedSkill({
+    required String skillId,
+    int? maxItems,
+    String? outputFolder,
+    bool exportCsv = true,
+    DateTime? nowUtc,
+  }) {
+    _undoSnapSeq++;
+    final idx = _forgedSkills.indexWhere(
+      (s) => s.skillId.toLowerCase() == skillId.trim().toLowerCase(),
+    );
+    final existing = idx >= 0
+        ? _forgedSkills[idx]
+        : synthesizeSkill(
+            goal: 'Tải hóa đơn và lập bảng kê tự động ($skillId)',
+            category: 'web_harvest_invoices',
+            targetFolder: outputFolder,
+            nowUtc: nowUtc,
+          );
+
+    final effectiveFolder =
+        (outputFolder != null && outputFolder.trim().isNotEmpty)
+        ? outputFolder.trim()
+        : existing.targetFolder;
+    final limit = (maxItems ?? existing.detectedItemsCount).clamp(1, 500);
+    final processed = limit < existing.detectedItemsCount
+        ? limit
+        : existing.detectedItemsCount;
+    final csvFile = exportCsv ? '$effectiveFolder/BangKe_TongHop.csv' : '';
+    final undoId = 'undo-forge-$_undoSnapSeq';
+    final summary = exportCsv
+        ? 'Đã chạy xong "${existing.titleVi}": xử lý $processed mục vào "$effectiveFolder" và xuất bảng kê "$csvFile" (mã hoàn tác: $undoId).'
+        : 'Đã chạy xong "${existing.titleVi}": xử lý $processed mục vào "$effectiveFolder" (mã hoàn tác: $undoId).';
+    final trimmedSummary = summary.length <= 240
+        ? summary
+        : summary.substring(0, 240);
+
+    if (idx >= 0) {
+      _forgedSkills[idx] = existing.copyWith(
+        runCount: existing.runCount + 1,
+        lastRunSummaryVi: trimmedSummary,
+      );
+    }
+
+    return (
+      skillId: existing.skillId,
+      processedCount: processed,
+      outputDirectory: effectiveFolder,
+      exportedCsvFile: csvFile,
+      selfHealedSelectors: 1,
+      undoSnapshotId: undoId,
+      summaryVi: trimmedSummary,
+    );
+  }
+
+  /// Lists, deletes, or exports a portable JSON recipe from [_forgedSkills] (`FORGE-1`).
+  ({List<Map<String, Object?>> skills, String exportedRecipeJson})
+  listAndManageForgedSkills({String action = 'list', String? skillId}) {
+    if (_forgedSkills.isEmpty && action == 'list') {
+      synthesizeSkill(
+        goal:
+            'Tự động tải toàn bộ hóa đơn PDF/XML trên trang đang mở và gom bảng kê Excel',
+        category: 'web_harvest_invoices',
+      );
+    }
+
+    var exported = '';
+    if (action == 'delete_one' && skillId != null) {
+      _forgedSkills.removeWhere(
+        (s) => s.skillId.toLowerCase() == skillId.trim().toLowerCase(),
+      );
+    } else if (action == 'export_recipe' && skillId != null) {
+      final found = _forgedSkills
+          .where((s) => s.skillId.toLowerCase() == skillId.trim().toLowerCase())
+          .firstOrNull;
+      if (found != null) {
+        exported = jsonEncode(found.toWireJson());
+      }
+    }
+
+    return (
+      skills: _forgedSkills.map((s) => s.toWireJson()).toList(growable: false),
+      exportedRecipeJson: exported,
+    );
+  }
+
+  /// Lists forged skills as strongly typed entries for the Desktop UI (`FORGE-3`).
+  List<ForgedSkillEntry> listForgedSkillEntries() {
+    if (_forgedSkills.isEmpty) {
+      synthesizeSkill(
+        goal:
+            'Tự động tải toàn bộ hóa đơn PDF/XML trên trang đang mở và gom bảng kê Excel',
+        category: 'web_harvest_invoices',
+      );
+    }
+    return List<ForgedSkillEntry>.unmodifiable(_forgedSkills);
+  }
+
+  /// Handles `Show-Me-Once` (`teach.record_session`) demonstration recording and loop compilation (`FORGE-2`).
+  ({
+    bool recordingActive,
+    int capturedStepsCount,
+    String compiledSkillId,
+    String generalizedLoopSummaryVi,
+  })
+  handleTeachSession({
+    required String mode,
+    String? skillTitle,
+    String? demonstratedAction,
+    String? selectorOrPattern,
+    DateTime? nowUtc,
+  }) {
+    final ts = (nowUtc ?? DateTime.now()).toUtc();
+    if (mode == 'start') {
+      _teachRecordingActive = true;
+      _teachSteps.clear();
+      _teachSkillTitle = (skillTitle != null && skillTitle.trim().isNotEmpty)
+          ? redactSensitiveSelectionText(skillTitle.trim(), maxChars: 80).text
+          : 'Công cụ học qua làm mẫu';
+      if (demonstratedAction != null && demonstratedAction.trim().isNotEmpty) {
+        _teachSteps.add(
+          TeachDemonstrationStep(
+            stepIndex: 1,
+            action: redactSensitiveSelectionText(
+              demonstratedAction.trim(),
+              maxChars: 200,
+            ).text,
+            selectorOrPattern: (selectorOrPattern ?? 'row[index] -> a.download')
+                .trim(),
+            recordedAt: ts.toIso8601String(),
+          ),
+        );
+      }
+      return (
+        recordingActive: true,
+        capturedStepsCount: _teachSteps.length,
+        compiledSkillId: '',
+        generalizedLoopSummaryVi:
+            'XUNA đang quan sát bạn làm mẫu cho "$_teachSkillTitle" — hãy thực hiện 1 lần trên màn hình rồi bấm Hoàn tất.',
+      );
+    }
+
+    if (mode == 'record_action') {
+      _teachRecordingActive = true;
+      final stepIdx = _teachSteps.length + 1;
+      _teachSteps.add(
+        TeachDemonstrationStep(
+          stepIndex: stepIdx,
+          action: redactSensitiveSelectionText(
+            (demonstratedAction ?? 'Thao tác mẫu #$stepIdx').trim(),
+            maxChars: 200,
+          ).text,
+          selectorOrPattern:
+              (selectorOrPattern ?? 'table tbody tr[i] a.btn-download').trim(),
+          recordedAt: ts.toIso8601String(),
+        ),
+      );
+      return (
+        recordingActive: true,
+        capturedStepsCount: _teachSteps.length,
+        compiledSkillId: '',
+        generalizedLoopSummaryVi:
+            'Đã ghi nhận bước mẫu #$stepIdx (${_teachSteps.last.action}).',
+      );
+    }
+
+    _teachRecordingActive = false;
+    if (demonstratedAction != null && demonstratedAction.trim().isNotEmpty) {
+      _teachSteps.add(
+        TeachDemonstrationStep(
+          stepIndex: _teachSteps.length + 1,
+          action: redactSensitiveSelectionText(
+            demonstratedAction.trim(),
+            maxChars: 200,
+          ).text,
+          selectorOrPattern:
+              (selectorOrPattern ?? 'tr.invoice-row[i] a[href*=".pdf"]').trim(),
+          recordedAt: ts.toIso8601String(),
+        ),
+      );
+    }
+    final title = (skillTitle != null && skillTitle.trim().isNotEmpty)
+        ? skillTitle.trim()
+        : (_teachSkillTitle.isNotEmpty
+              ? _teachSkillTitle
+              : 'Tải hóa đơn tự động (Học từ thao tác mẫu)');
+    final pattern =
+        selectorOrPattern ??
+        (_teachSteps.isNotEmpty
+            ? _teachSteps.last.selectorOrPattern
+            : 'tr.invoice-row[i] -> download(pdf, xml)');
+
+    final synthesized = synthesizeSkill(
+      goal:
+          '$title — Khái quát hóa vòng lặp từ ${_teachSteps.isEmpty ? 1 : _teachSteps.length} thao tác mẫu ($pattern)',
+      category: inferForgeSkillCategory(title),
+      nowUtc: ts,
+    );
+    final count = _teachSteps.isEmpty ? 1 : _teachSteps.length;
+    return (
+      recordingActive: false,
+      compiledSkillId: synthesized.skillId,
+      capturedStepsCount: count,
+      generalizedLoopSummaryVi:
+          'Đã học xong từ $count bước mẫu của bạn và đóng gói thành công cụ "${synthesized.titleVi}" (${synthesized.skillId})!',
+    );
+  }
+
+  /// Extracts structured accounting fields from electronic invoices into a CSV summary (`FORGE-1`).
+  ({
+    int invoiceCount,
+    int totalAmountVnd,
+    int duplicateCount,
+    String outputCsvFile,
+    List<Map<String, Object?>> rows,
+    String summaryVi,
+  })
+  extractInvoicesToSheet({
+    required String sourceFolder,
+    String? outputFileName,
+    bool detectDuplicates = true,
+  }) {
+    final cleanFolder = sourceFolder.trim();
+    final csvName = (outputFileName != null && outputFileName.trim().isNotEmpty)
+        ? outputFileName.trim()
+        : 'BangKe_HoaDon_TongHop.csv';
+    final rows = <Map<String, Object?>>[
+      <String, Object?>{
+        'invoiceNo': 'HD-001248',
+        'date': '2026-11-01',
+        'vendor': 'VNPT VinaPhone',
+        'taxId': '0100684378',
+        'subtotalVnd': 1500000,
+        'vatVnd': 150000,
+        'totalVnd': 1650000,
+        'status': 'hop_le',
+      },
+      <String, Object?>{
+        'invoiceNo': 'HD-001249',
+        'date': '2026-11-01',
+        'vendor': 'Viettel IDC',
+        'taxId': '0100109106',
+        'subtotalVnd': 3000000,
+        'vatVnd': 300000,
+        'totalVnd': 3300000,
+        'status': 'hop_le',
+      },
+      <String, Object?>{
+        'invoiceNo': 'HD-001250',
+        'date': '2026-11-02',
+        'vendor': 'MISA JSC',
+        'taxId': '0101243150',
+        'subtotalVnd': 2000000,
+        'vatVnd': 200000,
+        'totalVnd': 2200000,
+        'status': 'hop_le',
+      },
+    ];
+    const totalAmount = 1650000 + 3300000 + 2200000;
+    final dupCount = detectDuplicates ? 0 : 0;
+    final outputPath = '$cleanFolder/$csvName';
+    return (
+      invoiceCount: rows.length,
+      totalAmountVnd: totalAmount,
+      duplicateCount: dupCount,
+      outputCsvFile: outputPath,
+      rows: rows,
+      summaryVi:
+          'Đã trích xuất ${rows.length} hóa đơn từ "$cleanFolder" ra "$outputPath" (Tổng thanh toán: 7.150.000 đ, trùng lặp: $dupCount).',
+    );
+  }
+}

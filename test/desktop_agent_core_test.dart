@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(50));
+        expect(toolsList, hasLength(55));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -2943,6 +2943,124 @@ void main() {
           final habitSc =
               habitResp.result['structuredContent'] as Map<String, Object?>;
           expect(habitSc['proposals'] as List<Object?>, isNotEmpty);
+
+          // 7. OMNIFORGE (FORGE-1 & FORGE-2): Self-Building Citizen Tools & Show-Me-Once
+          final synthResp = await sym1Dispatcher.dispatch(
+            requestId: 1213,
+            params: const ToolsCallParams(
+              name: 'forge.synthesize_skill',
+              arguments: <String, Object?>{
+                'goal':
+                    'Tôi muốn kéo hết hóa đơn PDF/XML tự động tải về máy (token=sk-proj-secret1234567890abcdef)',
+                'targetFolder': 'HoaDon_T11',
+                'fileExtensions': <String>['pdf', 'xml'],
+              },
+              invocationId: '12130000-0000-4000-8000-000000000013',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final synthSc =
+              synthResp.result['structuredContent'] as Map<String, Object?>;
+          final forgedId = synthSc['skillId'] as String;
+          expect(forgedId, startsWith('skill-web-harvest-invoices-'));
+          expect(synthSc['category'], equals('web_harvest_invoices'));
+          expect(
+            synthSc['summaryVi'] as String,
+            isNot(contains('sk-proj-secret')),
+          );
+
+          final runSkillArgs = <String, Object?>{
+            'skillId': forgedId,
+            'maxItems': 15,
+            'outputFolder': 'HoaDon_T11',
+            'exportCsv': true,
+          };
+          final runSkillResp = await sym1Dispatcher.dispatch(
+            requestId: 1214,
+            params: ToolsCallParams(
+              name: 'forge.run_skill',
+              arguments: runSkillArgs,
+              invocationId: '12140000-0000-4000-8000-000000000014',
+              deadlineMs: 5000,
+              approval: ApprovalToken(
+                approvalId: '12140000-0000-4000-8000-000000000099',
+                argsSha256: argsSha256(runSkillArgs),
+                expiresAt: now.add(const Duration(minutes: 5)),
+              ),
+            ),
+            nowUtc: now,
+          );
+          final runSkillSc =
+              runSkillResp.result['structuredContent'] as Map<String, Object?>;
+          expect(runSkillSc['processedCount'], equals(15));
+          expect(runSkillSc['undoSnapshotId'], isNotEmpty);
+
+          final invoiceResp = await sym1Dispatcher.dispatch(
+            requestId: 1215,
+            params: const ToolsCallParams(
+              name: 'forge.extract_invoices_to_sheet',
+              arguments: <String, Object?>{
+                'sourceFolder': 'HoaDon_T11',
+                'outputFileName': 'BangKe_Thang11.csv',
+              },
+              invocationId: '12150000-0000-4000-8000-000000000015',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final invoiceSc =
+              invoiceResp.result['structuredContent'] as Map<String, Object?>;
+          expect(invoiceSc['invoiceCount'], equals(3));
+          expect(
+            invoiceSc['outputCsvFile'],
+            equals('HoaDon_T11/BangKe_Thang11.csv'),
+          );
+
+          await sym1Dispatcher.dispatch(
+            requestId: 1216,
+            params: const ToolsCallParams(
+              name: 'teach.record_session',
+              arguments: <String, Object?>{
+                'mode': 'start',
+                'skillTitle': 'Tải 1 hóa đơn mẫu rồi lặp lại',
+              },
+              invocationId: '12160000-0000-4000-8000-000000000016',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          await sym1Dispatcher.dispatch(
+            requestId: 1217,
+            params: const ToolsCallParams(
+              name: 'teach.record_session',
+              arguments: <String, Object?>{
+                'mode': 'record_action',
+                'demonstratedAction': 'Click nút tải PDF dòng 1',
+                'selectorOrPattern': 'a.invoice-pdf',
+              },
+              invocationId: '12170000-0000-4000-8000-000000000017',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final teachCompileResp = await sym1Dispatcher.dispatch(
+            requestId: 1218,
+            params: const ToolsCallParams(
+              name: 'teach.record_session',
+              arguments: <String, Object?>{
+                'mode': 'stop_and_compile',
+                'skillTitle': 'Tải 1 hóa đơn mẫu rồi lặp lại',
+              },
+              invocationId: '12180000-0000-4000-8000-000000000018',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final teachCompileSc =
+              teachCompileResp.result['structuredContent']
+                  as Map<String, Object?>;
+          expect(teachCompileSc['compiledSkillId'], isNotEmpty);
         },
       );
 
@@ -3029,6 +3147,12 @@ void main() {
           await tester.tap(find.text('Xóa tất cả'));
           await tester.pump();
           expect(agentController.activeWatchdogs, isEmpty);
+
+          await tester.ensureVisible(find.text('Rèn Tool Hóa Đơn'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Rèn Tool Hóa Đơn'));
+          await tester.pump();
+          expect(agentController.forgedSkills, isNotEmpty);
 
           agentController.onClose();
           await tester.runAsync(() => sessionClient.dispose());

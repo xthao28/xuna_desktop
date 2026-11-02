@@ -582,8 +582,7 @@ void main() {
       expect(stoppedRes.errorCode, equals('stopped'));
     });
 
-    test(
-        'enforces phone-signed R3 approval and once scope (UDC-7 S7.1 & S7.5)',
+    test('enforces phone-signed R3 approval and once scope (UDC-7 S7.1 & S7.5)',
         () {
       const r3PolicyJson = '''
 {
@@ -1823,6 +1822,125 @@ void main() {
             .evaluateInvocation(
               toolName: 'habit.propose_workflow',
               arguments: const <String, Object?>{'minOccurrences': 2},
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+
+      final omniForgeTools = buildOmniForgeTools();
+      expect(omniForgeTools, hasLength(5));
+      expect(
+        omniForgeTools.map((t) => t.name).toList(),
+        equals(<String>[
+          'forge.synthesize_skill',
+          'forge.run_skill',
+          'forge.list_and_manage',
+          'teach.record_session',
+          'forge.extract_invoices_to_sheet',
+        ]),
+      );
+
+      final fullCatalog55 = buildMvpToolCatalog(
+        includeBrowserCurrentUrl: true,
+        includeDevWorkspaceTools: true,
+        includeDeskCopilotTools: true,
+        includeAmbientCopilotTools: true,
+        includeSmartTvHomeTools: true,
+        includeSymbioticCopilotTools: true,
+        includeSymbioticEvolutionTools: true,
+        includeSymbioticSentinelTools: true,
+        includeOmniForgeTools: true,
+      );
+      expect(fullCatalog55, hasLength(55));
+
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'forge.synthesize_skill',
+              arguments: const <String, Object?>{
+                'goal':
+                    'Tải hết hóa đơn PDF/XML tháng này về máy và lập bảng kê',
+                'category': 'web_harvest_invoices',
+                'targetFolder': 'XUNA_HoaDon/Thang_11',
+                'fileExtensions': <String>['pdf', 'xml'],
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+
+      // Forbidden executable extension in forge.synthesize_skill is hard-denied
+      final badExtEval = evaluator.evaluateInvocation(
+        toolName: 'forge.synthesize_skill',
+        arguments: const <String, Object?>{
+          'goal': 'Tải file',
+          'fileExtensions': <String>['exe'],
+        },
+        nowUtc: now,
+      );
+      expect(badExtEval.allowed, isFalse);
+      expect(badExtEval.errorCode, equals('forge_extension_forbidden'));
+
+      // R2 forge.run_skill requires approval bound to argsSha256
+      const runSkillArgs = <String, Object?>{
+        'skillId': 'skill-invoice-harvester-1',
+        'maxItems': 50,
+        'outputFolder': 'XUNA_HoaDon/Thang_11',
+        'exportCsv': true,
+      };
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'forge.run_skill',
+              arguments: runSkillArgs,
+              nowUtc: now,
+            )
+            .errorCode,
+        equals('approval_required'),
+      );
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'forge.run_skill',
+              arguments: runSkillArgs,
+              approval: ApprovalToken(
+                approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c91',
+                argsSha256: argsSha256(runSkillArgs),
+                expiresAt: now.add(const Duration(seconds: 60)),
+              ),
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'teach.record_session',
+              arguments: const <String, Object?>{
+                'mode': 'stop_and_compile',
+                'skillTitle': 'Tải hóa đơn MISA hàng tháng',
+                'demonstratedAction': 'Click nút Tải PDF ở dòng 1',
+                'selectorOrPattern': 'tr.invoice-row a.download-pdf',
+              },
+              nowUtc: now,
+            )
+            .allowed,
+        isTrue,
+      );
+
+      expect(
+        evaluator
+            .evaluateInvocation(
+              toolName: 'forge.extract_invoices_to_sheet',
+              arguments: const <String, Object?>{
+                'sourceFolder': 'XUNA_HoaDon/Thang_11',
+                'outputFileName': 'BangKe_Thang11.csv',
+                'detectDuplicates': true,
+              },
               nowUtc: now,
             )
             .allowed,
