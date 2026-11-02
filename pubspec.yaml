@@ -20,6 +20,8 @@ dependencies:
   window_manager: ^0.4.3
   xuna_xtp:
     path: packages/xuna_xtp
+  xuna_shared:
+    path: ../packages/xuna_shared
 
 dev_dependencies:
   flutter_test:

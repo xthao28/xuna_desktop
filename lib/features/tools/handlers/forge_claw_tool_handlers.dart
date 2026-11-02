@@ -1,0 +1,667 @@
+import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
+
+class ForgeSynthesizeSkillTool extends HostToolHandler {
+  const ForgeSynthesizeSkillTool();
+
+  @override
+  String get name => 'forge.synthesize_skill';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final goal = context.arguments['goal'] as String;
+    final category = context.arguments['category'] as String?;
+    final targetFolder = context.arguments['targetFolder'] as String?;
+    final rawExts = context.arguments['fileExtensions'];
+    final exts = rawExts is List
+        ? rawExts.whereType<String>().toList(growable: false)
+        : null;
+    final res = context.symbioticService.synthesizeSkill(
+      goal: goal,
+      category: category,
+      targetFolder: targetFolder,
+      fileExtensions: exts,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'skillId': res.skillId,
+        'titleVi': res.titleVi,
+        'category': res.category,
+        'detectedItemsCount': res.detectedItemsCount,
+        'dryRunSample': res.dryRunSample,
+        'selfDebugIterations': res.selfDebugIterations,
+        'parameterFields': res.parameterFields,
+        'scriptSteps': res.scriptSteps,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: 'đã rèn công cụ ${res.titleVi}',
+    );
+  }
+}
+
+class ForgeRunSkillTool extends HostToolHandler {
+  const ForgeRunSkillTool();
+
+  @override
+  String get name => 'forge.run_skill';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final skillId = context.arguments['skillId'] as String;
+    final maxItems = context.arguments['maxItems'] as int?;
+    final outputFolder = context.arguments['outputFolder'] as String?;
+    final exportCsv = (context.arguments['exportCsv'] as bool?) ?? true;
+    final res = context.symbioticService.runForgedSkill(
+      skillId: skillId,
+      maxItems: maxItems,
+      outputFolder: outputFolder,
+      exportCsv: exportCsv,
+      nowUtc: context.nowUtc,
+    );
+    context.actionLedger.pushEntry(
+      ReversibleActionEntry(
+        originalTool: 'forge.run_skill',
+        inverseTool: 'forge.list_and_manage',
+        inverseArgs: const <String, Object?>{'action': 'list'},
+        description:
+            'hoàn tác phiên chạy công cụ $skillId (${res.undoSnapshotId})',
+        recordedAt: context.nowUtc,
+      ),
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'skillId': res.skillId,
+        'processedCount': res.processedCount,
+        'outputDirectory': res.outputDirectory,
+        'exportedCsvFile': res.exportedCsvFile,
+        'selfHealedSelectors': res.selfHealedSelectors,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: 'đã chạy xong công cụ (${res.processedCount} mục)',
+    );
+  }
+}
+
+class ForgeListAndManageTool extends HostToolHandler {
+  const ForgeListAndManageTool();
+
+  @override
+  String get name => 'forge.list_and_manage';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = (context.arguments['action'] as String?) ?? 'list';
+    final skillId = context.arguments['skillId'] as String?;
+    final res = context.symbioticService.listAndManageForgedSkills(
+      action: action,
+      skillId: skillId,
+    );
+    return ToolHandlerOutput(
+      text: 'Kho công cụ XUNA hiện có ${res.skills.length} kỹ năng.',
+      structuredContent: <String, Object?>{
+        'skills': res.skills,
+        'exportedRecipeJson': res.exportedRecipeJson,
+      },
+    );
+  }
+}
+
+class TeachRecordSessionTool extends HostToolHandler {
+  const TeachRecordSessionTool();
+
+  @override
+  String get name => 'teach.record_session';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final mode = context.arguments['mode'] as String;
+    final skillTitle = context.arguments['skillTitle'] as String?;
+    final demonstratedAction =
+        context.arguments['demonstratedAction'] as String?;
+    final selectorOrPattern = context.arguments['selectorOrPattern'] as String?;
+    final res = context.symbioticService.handleTeachSession(
+      mode: mode,
+      skillTitle: skillTitle,
+      demonstratedAction: demonstratedAction,
+      selectorOrPattern: selectorOrPattern,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.generalizedLoopSummaryVi,
+      structuredContent: <String, Object?>{
+        'recordingActive': res.recordingActive,
+        'capturedStepsCount': res.capturedStepsCount,
+        'compiledSkillId': res.compiledSkillId,
+        'generalizedLoopSummaryVi': res.generalizedLoopSummaryVi,
+      },
+      toastBody: mode == 'stop_and_compile'
+          ? 'đã học xong kỹ năng mới từ thao tác mẫu'
+          : null,
+    );
+  }
+}
+
+class ForgeExtractInvoicesToSheetTool extends HostToolHandler {
+  const ForgeExtractInvoicesToSheetTool();
+
+  @override
+  String get name => 'forge.extract_invoices_to_sheet';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final sourceFolder = context.arguments['sourceFolder'] as String;
+    final outputFileName = context.arguments['outputFileName'] as String?;
+    final detectDuplicates =
+        (context.arguments['detectDuplicates'] as bool?) ?? true;
+    final res = context.symbioticService.extractInvoicesToSheet(
+      sourceFolder: sourceFolder,
+      outputFileName: outputFileName,
+      detectDuplicates: detectDuplicates,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'invoiceCount': res.invoiceCount,
+        'totalAmountVnd': res.totalAmountVnd,
+        'duplicateCount': res.duplicateCount,
+        'outputCsvFile': res.outputCsvFile,
+        'rows': res.rows,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: 'đã xuất bảng kê ${res.invoiceCount} hóa đơn',
+    );
+  }
+}
+
+class SkillMarkdownBridgeTool extends HostToolHandler {
+  const SkillMarkdownBridgeTool();
+
+  @override
+  String get name => 'skill.markdown_bridge';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final skillId = context.arguments['skillId'] as String?;
+    final markdownContent = context.arguments['markdownContent'] as String?;
+    final res = context.symbioticService.bridgeSkillMarkdown(
+      action: action,
+      skillId: skillId,
+      markdownContent: markdownContent,
+      nowUtc: context.nowUtc,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'skillId': res.skillId,
+        'titleVi': res.titleVi,
+        'skillMarkdown': res.skillMarkdown,
+        'securityVerified': res.securityVerified,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: action == 'import_skill_md'
+          ? 'đã nhập kỹ năng SKILL.md (${res.titleVi})'
+          : 'đã xuất SKILL.md (${res.titleVi})',
+    );
+  }
+}
+
+class SkillRecordCorrectionTool extends HostToolHandler {
+  const SkillRecordCorrectionTool();
+
+  @override
+  String get name => 'skill.record_correction';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = (context.arguments['action'] as String?) ?? 'record';
+    final skillId = context.arguments['skillId'] as String;
+    final correctionNote = context.arguments['correctionNote'] as String?;
+    final res = context.symbioticService.recordSkillCorrection(
+      action: action,
+      skillId: skillId,
+      correctionNote: correctionNote,
+    );
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'skillId': res.skillId,
+        'selfHealGeneration': res.selfHealGeneration,
+        'correctionRules': res.correctionRules,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody: action == 'record'
+          ? 'đã ghi nhớ quy tắc tự sửa lỗi #${res.selfHealGeneration}'
+          : null,
+    );
+  }
+}
+
+class HeartbeatConfigureAndTickTool extends HostToolHandler {
+  const HeartbeatConfigureAndTickTool();
+
+  @override
+  String get name => 'heartbeat.configure_and_tick';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = (context.arguments['action'] as String?) ?? 'tick';
+    final checkName = context.arguments['checkName'] as String?;
+    final intervalMinutes = context.arguments['intervalMinutes'] as int?;
+    final simulateDelta =
+        (context.arguments['simulateDelta'] as bool?) ?? false;
+    final snap = context.symbioticService.configureAndTickHeartbeat(
+      action: action,
+      checkName: checkName,
+      intervalMinutes: intervalMinutes,
+      simulateDelta: simulateDelta,
+    );
+    return ToolHandlerOutput(
+      text: snap.summaryVi,
+      structuredContent: snap.toWireJson(),
+      toastBody: snap.deltaDetected
+          ? 'phát hiện mục mới trong nhịp tuần tra Heartbeat'
+          : null,
+    );
+  }
+}
+
+class CanvasPresentTool extends HostToolHandler {
+  const CanvasPresentTool();
+
+  @override
+  String get name => 'canvas.present';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action =
+        (context.arguments['action'] as String?) ?? 'present_invoice_table';
+    final title = context.arguments['title'] as String?;
+    final sourceSkillId = context.arguments['sourceSkillId'] as String?;
+    final snap = context.symbioticService.presentLiveCanvas(
+      action: action,
+      title: title,
+      sourceSkillId: sourceSkillId,
+    );
+    return ToolHandlerOutput(
+      text: snap.summaryVi,
+      structuredContent: snap.toWireJson(),
+      toastBody: action == 'clear'
+          ? null
+          : 'đã mở bảng tương tác Live Canvas (${snap.titleVi})',
+    );
+  }
+}
+
+class PipelineExecuteUniversalTool extends HostToolHandler {
+  const PipelineExecuteUniversalTool();
+
+  @override
+  String get name => 'pipeline.execute_universal';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final goal = context.arguments['goal'] as String;
+    final rawPrimitives = context.arguments['primitives'];
+    final primitives = rawPrimitives is List
+        ? rawPrimitives.whereType<String>().toList(growable: false)
+        : null;
+    final sourceFolder = context.arguments['sourceFolder'] as String?;
+    final rawInputText = context.arguments['rawInputText'] as String?;
+    final secondaryInputText =
+        context.arguments['secondaryInputText'] as String?;
+    final exportFormat =
+        (context.arguments['exportFormat'] as String?) ?? 'csv';
+    final outputFileName = context.arguments['outputFileName'] as String?;
+
+    final res = context.symbioticService.executeUniversalPipeline(
+      goal: goal,
+      primitives: primitives,
+      sourceFolder: sourceFolder,
+      rawInputText: rawInputText,
+      secondaryInputText: secondaryInputText,
+      exportFormat: exportFormat,
+      outputFileName: outputFileName,
+      nowUtc: context.nowUtc,
+    );
+
+    context.actionLedger.pushEntry(
+      ReversibleActionEntry(
+        originalTool: name,
+        inverseTool: 'canvas.present',
+        inverseArgs: const <String, Object?>{'action': 'clear'},
+        description:
+            'hoàn tác pipeline ${res.pipelineId} (${res.undoSnapshotId})',
+        recordedAt: context.nowUtc,
+      ),
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'pipelineId': res.pipelineId,
+        'category': res.category,
+        'executedPrimitives': res.executedPrimitives,
+        'processedCount': res.processedCount,
+        'exportedFile': res.exportedFile,
+        'canvasSurfaceKind': res.canvasSurfaceKind,
+        'rows': res.rows,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'đã chạy pipeline đa năng (${res.processedCount} mục -> ${res.exportedFile})',
+    );
+  }
+}
+
+/// Disk-Backed Skill Workshop, Hot-Reload, Version Rollback & Progressive Disclosure
+/// Compact Index (`skill.workshop_sync`, `WORKSHOP-2`).
+class SkillWorkshopSyncTool implements HostToolHandler {
+  const SkillWorkshopSyncTool();
+
+  @override
+  String get name => 'skill.workshop_sync';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final skillId = context.arguments['skillId'] as String?;
+    final workshopFolder = context.arguments['workshopFolder'] as String?;
+
+    final res = context.symbioticService.syncSkillWorkshop(
+      action: action,
+      skillId: skillId,
+      workshopFolder: workshopFolder,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'workshopFolder': res.workshopFolder,
+        'syncedCount': res.syncedCount,
+        'version': res.version,
+        'compactIndex': res.compactIndex,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Workshop (${res.action}): ${res.syncedCount} kỹ năng (v${res.version})',
+    );
+  }
+}
+
+/// Multi-Skill DAG Pipe Chaining, Parameterized Template Interpolation (`{{var}}`),
+/// Automated Self-Test Bench & Heartbeat Auto-Trigger (`skill.chain_and_test`, `WORKSHOP-2`).
+class SkillChainAndTestTool implements HostToolHandler {
+  const SkillChainAndTestTool();
+
+  @override
+  String get name => 'skill.chain_and_test';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawIds = context.arguments['chainSkillIds'] as List;
+    final chainSkillIds = rawIds.whereType<String>().toList(growable: false);
+    final rawParams = context.arguments['runtimeParams'];
+    final runtimeParams = rawParams is Map
+        ? rawParams.map(
+            (key, value) => MapEntry(key.toString(), value.toString()),
+          )
+        : null;
+    final autoTriggerOnDelta =
+        (context.arguments['autoTriggerOnDelta'] as bool?) ?? false;
+
+    final res = context.symbioticService.executeSkillChainAndTest(
+      chainSkillIds: chainSkillIds,
+      runtimeParams: runtimeParams,
+      autoTriggerOnDelta: autoTriggerOnDelta,
+      nowUtc: context.nowUtc,
+    );
+
+    context.actionLedger.pushEntry(
+      ReversibleActionEntry(
+        originalTool: name,
+        inverseTool: 'canvas.present',
+        inverseArgs: const <String, Object?>{'action': 'clear'},
+        description:
+            'hoàn tác chuỗi kỹ năng ${res.chainId} (${res.undoSnapshotId})',
+        recordedAt: context.nowUtc,
+      ),
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'chainId': res.chainId,
+        'executedSkills': res.executedSkills,
+        'passedAssertions': res.passedAssertions,
+        'totalAssertions': res.totalAssertions,
+        'selfTestPassed': res.selfTestPassed,
+        'autoTriggerOnDelta': res.autoTriggerOnDelta,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'đã chạy chuỗi ${res.executedSkills.length} kỹ năng (Self-Test ${res.passedAssertions}/${res.totalAssertions} PASS)',
+    );
+  }
+}
+
+/// Transparent Markdown Memory Vault & Pre-Compaction Flush (`memory.markdown_vault`, `MIND-2`).
+class MemoryMarkdownVaultTool implements HostToolHandler {
+  const MemoryMarkdownVaultTool();
+
+  @override
+  String get name => 'memory.markdown_vault';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final targetFile = context.arguments['targetFile'] as String?;
+    final noteContent = context.arguments['noteContent'] as String?;
+    final sessionTranscript = context.arguments['sessionTranscript'] as String?;
+    final vaultFolder = context.arguments['vaultFolder'] as String?;
+
+    final res = context.symbioticService.manageMarkdownMemoryVault(
+      action: action,
+      targetFile: targetFile,
+      noteContent: noteContent,
+      sessionTranscript: sessionTranscript,
+      vaultFolder: vaultFolder,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'vaultFolder': res.vaultFolder,
+        'soulMarkdown': res.soulMarkdown,
+        'ownerProfileMarkdown': res.ownerProfileMarkdown,
+        'memoryJournalMarkdown': res.memoryJournalMarkdown,
+        'flushedFactsCount': res.flushedFactsCount,
+        'redactedSecretsCount': res.redactedSecretsCount,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Memory Vault (${res.action}): lưu ${res.flushedFactsCount} mục vào ${res.vaultFolder}',
+    );
+  }
+}
+
+/// Semantic Browser ARIA Snapshotter (`browser.semantic_snapshot`, `MIND-2`).
+class BrowserSemanticSnapshotTool implements HostToolHandler {
+  const BrowserSemanticSnapshotTool();
+
+  @override
+  String get name => 'browser.semantic_snapshot';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawHtml = context.arguments['rawHtml'] as String?;
+    final pageTitle = context.arguments['pageTitle'] as String?;
+    final maxElements = (context.arguments['maxElements'] as int?) ?? 25;
+
+    final res = context.symbioticService.captureSemanticBrowserSnapshot(
+      rawHtml: rawHtml,
+      pageTitle: pageTitle,
+      maxElements: maxElements,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'snapshotId': res.snapshotId,
+        'pageTitle': res.pageTitle,
+        'elementCount': res.elementCount,
+        'tokenReductionPercent': res.tokenReductionPercent,
+        'compactAriaTree': res.compactAriaTree,
+        'elements': res.elements,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'ARIA Snapshot: ${res.elementCount} phần tử (giảm ${res.tokenReductionPercent}% token)',
+    );
+  }
+}
+
+/// Delegated Background Sub-Agent & Zero-Token Specialist Swarm Spawner (`subagent.spawn_and_poll`, `MIND-2`, `SWARM-2`).
+class SubagentSpawnAndPollTool implements HostToolHandler {
+  const SubagentSpawnAndPollTool();
+
+  @override
+  String get name => 'subagent.spawn_and_poll';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final taskGoal = context.arguments['taskGoal'] as String?;
+    final workerId = context.arguments['workerId'] as String?;
+    final tokenBudget = (context.arguments['tokenBudget'] as int?) ?? 2048;
+    final sourceFolder = context.arguments['sourceFolder'] as String?;
+    final rawRoles = context.arguments['specialistRoles'] as List<Object?>?;
+    final specialistRoles = rawRoles
+        ?.whereType<String>()
+        .map((r) => r.trim())
+        .toList(growable: false);
+    final enableCriticVerification =
+        (context.arguments['enableCriticVerification'] as bool?) ?? true;
+
+    final res = context.symbioticService.spawnOrPollSubagent(
+      action: action,
+      taskGoal: taskGoal,
+      workerId: workerId,
+      tokenBudget: tokenBudget,
+      sourceFolder: sourceFolder,
+      specialistRoles: specialistRoles,
+      enableCriticVerification: enableCriticVerification,
+      nowUtc: context.nowUtc,
+    );
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'workerId': res.workerId,
+        'status': res.status,
+        'progressPercent': res.progressPercent,
+        'tokenBudget': res.tokenBudget,
+        'tokensUsed': res.tokensUsed,
+        'llmTokensUsed': res.llmTokensUsed,
+        'contextSavedPercent': res.contextSavedPercent,
+        'distilledResultVi': res.distilledResultVi,
+        'activeWorkers': res.activeWorkers,
+        'blackboardEntries': res.blackboardEntries,
+        'criticPassed': res.criticPassed,
+        'criticConfidenceScore': res.criticConfidenceScore,
+        'specialistBreakdown': res.specialistBreakdown,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Sub-Agent [${res.workerId}]: ${res.status} (0 LLM Token, Critic ${res.criticConfidenceScore}%)',
+    );
+  }
+}
+
+/// Autonomous Cron & Event-Driven Lifecycle Hooks (`schedule.cron_and_hooks`, `MIND-2`).
+class ScheduleCronAndHooksTool implements HostToolHandler {
+  const ScheduleCronAndHooksTool();
+
+  @override
+  String get name => 'schedule.cron_and_hooks';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final action = context.arguments['action'] as String;
+    final hookId = context.arguments['hookId'] as String?;
+    final eventOrCron = context.arguments['eventOrCron'] as String?;
+    final targetSkillId = context.arguments['targetSkillId'] as String?;
+    final labelVi = context.arguments['labelVi'] as String?;
+
+    final res = context.symbioticService.manageCronAndHooks(
+      action: action,
+      hookId: hookId,
+      eventOrCron: eventOrCron,
+      targetSkillId: targetSkillId,
+      labelVi: labelVi,
+      nowUtc: context.nowUtc,
+    );
+
+    if (action == 'register' || action == 'trigger_event') {
+      context.actionLedger.pushEntry(
+        ReversibleActionEntry(
+          originalTool: name,
+          inverseTool: name,
+          inverseArgs: <String, Object?>{
+            'action': 'remove',
+            'hookId': res.hookId,
+          },
+          description:
+              'hoàn tác Hook tự trị ${res.hookId} (${res.undoSnapshotId})',
+          recordedAt: context.nowUtc,
+        ),
+      );
+    }
+
+    return ToolHandlerOutput(
+      text: res.summaryVi,
+      structuredContent: <String, Object?>{
+        'action': res.action,
+        'hookId': res.hookId,
+        'eventOrCron': res.eventOrCron,
+        'targetSkillId': res.targetSkillId,
+        'triggeredCount': res.triggeredCount,
+        'activeHooks': res.activeHooks,
+        'undoSnapshotId': res.undoSnapshotId,
+        'summaryVi': res.summaryVi,
+      },
+      toastBody:
+          'Lifecycle Hook (${res.action}): ${res.hookId} -> ${res.targetSkillId}',
+    );
+  }
+}
+
+const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
+  ForgeSynthesizeSkillTool(),
+  ForgeRunSkillTool(),
+  ForgeListAndManageTool(),
+  TeachRecordSessionTool(),
+  ForgeExtractInvoicesToSheetTool(),
+  SkillMarkdownBridgeTool(),
+  SkillRecordCorrectionTool(),
+  HeartbeatConfigureAndTickTool(),
+  CanvasPresentTool(),
+  PipelineExecuteUniversalTool(),
+  SkillWorkshopSyncTool(),
+  SkillChainAndTestTool(),
+  MemoryMarkdownVaultTool(),
+  BrowserSemanticSnapshotTool(),
+  SubagentSpawnAndPollTool(),
+  ScheduleCronAndHooksTool(),
+];

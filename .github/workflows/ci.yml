@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  xuna_xtp:
+    name: xuna_xtp (pure Dart)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: packages/xuna_xtp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.32.8"
+          channel: "stable"
+          cache: true
+      - run: dart pub get
+      - run: dart analyze --fatal-infos
+      - run: dart test --reporter expanded
+
+  desktop:
+    name: xuna_desktop (Flutter analyze & test)
+    runs-on: ubuntu-24.04
+    needs: xuna_xtp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.32.8"
+          channel: "stable"
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test --reporter expanded

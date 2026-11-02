@@ -2409,5 +2409,39 @@ void main() {
       expect(swarmPlan.last['role'], equals('critic_verifier'));
       expect(swarmPlan.last['llmTokensUsed'], equals(0));
     });
+
+    test(
+        'every tool in the full 66-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
+        () {
+      final fullCatalog66 = buildMvpToolCatalog(
+        includeBrowserCurrentUrl: true,
+        includeDevWorkspaceTools: true,
+        includeDeskCopilotTools: true,
+        includeAmbientCopilotTools: true,
+        includeSmartTvHomeTools: true,
+        includeSymbioticCopilotTools: true,
+        includeSymbioticEvolutionTools: true,
+        includeSymbioticSentinelTools: true,
+        includeOmniForgeTools: true,
+        includeClawPulseTools: true,
+      );
+      expect(fullCatalog66, hasLength(66));
+      for (final tool in fullCatalog66) {
+        final resolvedFamily = resolveToolFamilyForName(tool.name);
+        expect(
+          resolvedFamily,
+          isNotNull,
+          reason: 'Tool ${tool.name} must resolve to a non-null ToolFamily',
+        );
+        expect(
+          resolvedFamily,
+          equals(tool.policy.family),
+          reason:
+              'Tool ${tool.name} resolved family ($resolvedFamily) must match descriptor policy family (${tool.policy.family})',
+        );
+      }
+      expect(resolveToolFamilyForName('shell.exec'), isNull);
+      expect(resolveToolFamilyForName('unknown.tool'), isNull);
+    });
   });
 }

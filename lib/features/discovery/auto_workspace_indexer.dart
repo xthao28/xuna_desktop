@@ -140,27 +140,6 @@ class AutoWorkspaceIndexer {
   }
 
   static Future<void> _defaultAgentLauncher(CodingAgentLaunchPlan plan) async {
-    if (plan.agent == 'claude_code' || plan.agent == 'codex') {
-      // Spawn in a visible terminal window on macOS/Windows with runInShell: false
-      if (Platform.isWindows) {
-        await Process.start(
-          plan.executable,
-          plan.arguments,
-          workingDirectory: plan.workingDirectory,
-          runInShell: false,
-          mode: ProcessStartMode.detached,
-        );
-      } else {
-        await Process.start(
-          plan.executable,
-          plan.arguments,
-          workingDirectory: plan.workingDirectory,
-          runInShell: false,
-          mode: ProcessStartMode.detached,
-        );
-      }
-      return;
-    }
     await Process.start(
       plan.executable,
       plan.arguments,
@@ -384,12 +363,12 @@ class AutoWorkspaceIndexer {
     final changed = git.modifiedCount + git.untrackedCount;
     final summary = switch (status) {
       'completed' =>
-        'Dự án ${ws.alias} (nhánh ${git.branch}): đã hoàn tất, $changed tệp đang mở.',
+        'Dá»± Ã¡n ${ws.alias} (nhÃ¡nh ${git.branch}): Ä‘Ã£ hoÃ n táº¥t, $changed tá»‡p Ä‘ang má»Ÿ.',
       'running' =>
-        'Dự án ${ws.alias} (nhánh ${git.branch}): đang chạy tác vụ ($changed tệp đang sửa).',
+        'Dá»± Ã¡n ${ws.alias} (nhÃ¡nh ${git.branch}): Ä‘ang cháº¡y tÃ¡c vá»¥ ($changed tá»‡p Ä‘ang sá»­a).',
       'failed' =>
-        'Dự án ${ws.alias} (nhánh ${git.branch}): phát hiện lỗi cần kiểm tra.',
-      _ => 'Dự án ${ws.alias} (nhánh ${git.branch}): đang nghỉ.',
+        'Dá»± Ã¡n ${ws.alias} (nhÃ¡nh ${git.branch}): phÃ¡t hiá»‡n lá»—i cáº§n kiá»ƒm tra.',
+      _ => 'Dá»± Ã¡n ${ws.alias} (nhÃ¡nh ${git.branch}): Ä‘ang nghá»‰.',
     };
     return WorkspaceTaskSnapshot(
       workspace: ws.alias,

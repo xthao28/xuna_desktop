@@ -869,10 +869,13 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
   }
 
   private func handleShowToast(args: [String: Any], result: @escaping FlutterResult) {
-    let message = truncate(args["message"] as? String ?? "")
+    let rawTitle = (args["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let title = rawTitle.isEmpty ? "XUNA" : truncate(rawTitle)
+    let rawBody = (args["body"] as? String) ?? (args["message"] as? String) ?? ""
+    let message = truncate(rawBody)
     if !message.isEmpty {
       let content = UNMutableNotificationContent()
-      content.title = "XUNA"
+      content.title = title
       content.body = message
       let request = UNNotificationRequest(
         identifier: UUID().uuidString,
@@ -881,7 +884,7 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       )
       UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
-    replySuccess(result, [:])
+    replySuccess(result, ["shown": true])
   }
 
   private func handleDisplayWake(result: @escaping FlutterResult) {

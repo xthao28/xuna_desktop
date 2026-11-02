@@ -21,6 +21,15 @@
 #define XUNA_HAS_CPPWINRT_GSMTC 0
 #endif
 
+#if __has_include(<winrt/Windows.Data.Xml.Dom.h>) && \
+    __has_include(<winrt/Windows.UI.Notifications.h>)
+#define XUNA_HAS_CPPWINRT_TOAST 1
+#include <winrt/Windows.Data.Xml.Dom.h>
+#include <winrt/Windows.UI.Notifications.h>
+#else
+#define XUNA_HAS_CPPWINRT_TOAST 0
+#endif
+
 #include <flutter/method_channel.h>
 #include <flutter/method_result_functions.h>
 #include <flutter/standard_method_codec.h>
@@ -28,7 +37,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -611,10 +623,74 @@ const flutter::EncodableValue* FindKey(const flutter::EncodableMap& map,
   return &it->second;
 }
 
+struct ScopedComInitializer {
+  HRESULT hr;
+  ScopedComInitializer()
+      : hr(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+  ~ScopedComInitializer() {
+    if (SUCCEEDED(hr)) {
+      CoUninitialize();
+    }
+  }
+  ScopedComInitializer(const ScopedComInitializer&) = delete;
+  ScopedComInitializer& operator=(const ScopedComInitializer&) = delete;
+};
+
+void ShowWindowsToast(const std::string& title, const std::string& body) {
+  std::wstring wtitle = Utf8ToWide(TruncateUtf8(title, 63));
+  std::wstring wbody = Utf8ToWide(TruncateUtf8(body, 240));
+  if (wtitle.empty()) wtitle = L"XUNA";
+  if (wbody.empty()) return;
+
+#if XUNA_HAS_CPPWINRT_TOAST
+  try {
+    using winrt::Windows::Data::Xml::Dom::XmlDocument;
+    using winrt::Windows::UI::Notifications::ToastNotification;
+    using winrt::Windows::UI::Notifications::ToastNotificationManager;
+    using winrt::Windows::UI::Notifications::ToastTemplateType;
+
+    XmlDocument xml = ToastNotificationManager::GetTemplateContent(
+        ToastTemplateType::ToastText02);
+    auto text_nodes = xml.GetElementsByTagName(L"text");
+    if (text_nodes.Length() >= 2) {
+      text_nodes.Item(0).AppendChild(xml.CreateTextNode(wtitle));
+      text_nodes.Item(1).AppendChild(xml.CreateTextNode(wbody));
+      ToastNotification toast(xml);
+      ToastNotificationManager::CreateToastNotifier(L"Xuna.Desktop")
+          .Show(toast);
+      return;
+    }
+  } catch (...) {
+    // Unpackaged desktop runners without a registered Start Menu AUMID throw
+    // in CreateToastNotifier; fall back to Win32 Shell_NotifyIconW balloon.
+  }
+#endif
+
+  HWND hwnd = FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", nullptr);
+  if (hwnd == nullptr) {
+    return;
+  }
+
+  NOTIFYICONDATAW nid = {};
+  nid.cbSize = sizeof(nid);
+  nid.hWnd = hwnd;
+  nid.uID = 0x58554E41;  // 'XUNA'
+  nid.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
+  nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+  nid.hIcon = LoadIconW(nullptr, IDI_INFORMATION);
+  wcsncpy_s(nid.szTip, L"XUNA Desktop Companion", _TRUNCATE);
+  wcsncpy_s(nid.szInfoTitle, wtitle.c_str(), _TRUNCATE);
+  wcsncpy_s(nid.szInfo, wbody.c_str(), _TRUNCATE);
+
+  if (!Shell_NotifyIconW(NIM_MODIFY, &nid)) {
+    Shell_NotifyIconW(NIM_ADD, &nid);
+  }
+}
+
 void HandleMethodCallOnWorker(
     std::string method, flutter::EncodableMap args,
     std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-  CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  ScopedComInitializer com_scope;
 
   if (method == "keyEnsure") {
     NCRYPT_PROV_HANDLE prov = 0;
@@ -626,14 +702,12 @@ void HandleMethodCallOnWorker(
     if (prov) NCryptFreeObject(prov);
     if (!ok) {
       result->Error("failed", "CNG P-256 keyEnsure failed");
-      CoUninitialize();
       return;
     }
     flutter::EncodableMap out;
     out[flutter::EncodableValue("publicKey")] =
         flutter::EncodableValue(Base64Encode(pub65));
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -646,14 +720,12 @@ void HandleMethodCallOnWorker(
     if (!msg_b64 || !Base64Decode(*msg_b64, &message) ||
         !SignMessageCngP256(message, &sig64)) {
       result->Error("failed", "CNG P-256 keySign failed");
-      CoUninitialize();
       return;
     }
     flutter::EncodableMap out;
     out[flutter::EncodableValue("signature")] =
         flutter::EncodableValue(Base64Encode(sig64));
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -664,13 +736,11 @@ void HandleMethodCallOnWorker(
     std::string state;
     if (!cmd_str || !HandleMediaCommand(*cmd_str, &state)) {
       result->Error("failed", "Media transport command failed");
-      CoUninitialize();
       return;
     }
     flutter::EncodableMap out;
     out[flutter::EncodableValue("state")] = flutter::EncodableValue(state);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -684,13 +754,11 @@ void HandleMethodCallOnWorker(
     }
     if (level < 0 || level > 100 || !SetMasterVolumeScalar(level)) {
       result->Error("failed", "CoreAudio SetMasterVolumeLevelScalar failed");
-      CoUninitialize();
       return;
     }
     flutter::EncodableMap out;
     out[flutter::EncodableValue("level")] = flutter::EncodableValue(level);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -709,7 +777,6 @@ void HandleMethodCallOnWorker(
     flutter::EncodableMap out;
     HandleNowPlaying(players, &out);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -723,11 +790,9 @@ void HandleMethodCallOnWorker(
     if (!kind_str || !target_str ||
         !LaunchAppOrWorkflow(*kind_str, *target_str)) {
       result->Error("failed", "ShellExecuteExW / ActivateApplication failed");
-      CoUninitialize();
       return;
     }
     result->Success(flutter::EncodableValue(flutter::EncodableMap()));
-    CoUninitialize();
     return;
   }
 
@@ -737,11 +802,9 @@ void HandleMethodCallOnWorker(
         url_val ? std::get_if<std::string>(url_val) : nullptr;
     if (!url_str || !OpenHttpsUrl(*url_str)) {
       result->Error("failed", "ShellExecuteExW urlOpen failed");
-      CoUninitialize();
       return;
     }
     result->Success(flutter::EncodableValue(flutter::EncodableMap()));
-    CoUninitialize();
     return;
   }
 
@@ -755,7 +818,6 @@ void HandleMethodCallOnWorker(
                                    &resolved_browser)) {
       result->Error("invalid_args",
                     "No active https:// browser tab found via UIA");
-      CoUninitialize();
       return;
     }
     flutter::EncodableMap out;
@@ -763,7 +825,6 @@ void HandleMethodCallOnWorker(
     out[flutter::EncodableValue("browser")] =
         flutter::EncodableValue(resolved_browser);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -776,7 +837,6 @@ void HandleMethodCallOnWorker(
     out[flutter::EncodableValue("automation")] =
         flutter::EncodableValue(flutter::EncodableMap());
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -784,7 +844,6 @@ void HandleMethodCallOnWorker(
     flutter::EncodableMap out;
     out[flutter::EncodableValue("state")] = flutter::EncodableValue("granted");
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -797,13 +856,26 @@ void HandleMethodCallOnWorker(
     out[flutter::EncodableValue("hostname")] =
         flutter::EncodableValue(QueryHostname());
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
   if (method == "showToast") {
-    result->Success(flutter::EncodableValue(flutter::EncodableMap()));
-    CoUninitialize();
+    const auto* title_val = FindKey(args, "title");
+    const auto* body_val = FindKey(args, "body");
+    if (!body_val) body_val = FindKey(args, "message");
+    const auto* title_str =
+        title_val ? std::get_if<std::string>(title_val) : nullptr;
+    const auto* body_str =
+        body_val ? std::get_if<std::string>(body_val) : nullptr;
+    std::string title =
+        (title_str && !title_str->empty()) ? *title_str : "XUNA";
+    std::string body = body_str ? *body_str : "";
+    if (!body.empty()) {
+      ShowWindowsToast(title, body);
+    }
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("shown")] = flutter::EncodableValue(true);
+    result->Success(flutter::EncodableValue(out));
     return;
   }
 
@@ -816,7 +888,6 @@ void HandleMethodCallOnWorker(
     flutter::EncodableMap out;
     out[flutter::EncodableValue("awake")] = flutter::EncodableValue(true);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -836,7 +907,6 @@ void HandleMethodCallOnWorker(
     flutter::EncodableMap out;
     out[flutter::EncodableValue("text")] = flutter::EncodableValue(text);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -846,7 +916,6 @@ void HandleMethodCallOnWorker(
     out[flutter::EncodableValue("locked")] =
         flutter::EncodableValue(locked != FALSE);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -967,7 +1036,6 @@ void HandleMethodCallOnWorker(
     out[flutter::EncodableValue("isElevated")] =
         flutter::EncodableValue(is_elevated);
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
@@ -990,7 +1058,6 @@ void HandleMethodCallOnWorker(
                                    &resolved_browser)) {
       result->Error("invalid_args",
                     "No active https:// browser tab found via UIA");
-      CoUninitialize();
       return;
     }
 
@@ -1018,12 +1085,71 @@ void HandleMethodCallOnWorker(
     out[flutter::EncodableValue("excerpt")] =
         flutter::EncodableValue(TruncateUtf8(page_title, max_chars));
     result->Success(flutter::EncodableValue(out));
-    CoUninitialize();
     return;
   }
 
   result->NotImplemented();
-  CoUninitialize();
+}
+
+struct PendingHostCall {
+  std::string method;
+  flutter::EncodableMap args;
+  std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> result;
+};
+
+constexpr size_t kMaxWorkerThreads = 4;
+constexpr size_t kMaxPendingCalls = 64;
+
+struct HostWorkerQueueState {
+  std::mutex mutex;
+  std::deque<PendingHostCall> queue;
+  size_t active_workers = 0;
+};
+
+HostWorkerQueueState& GetWorkerQueueState() {
+  static auto* state = new HostWorkerQueueState();
+  return *state;
+}
+
+void DrainHostWorkerQueue() {
+  auto& state = GetWorkerQueueState();
+  while (true) {
+    PendingHostCall call;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      if (state.queue.empty()) {
+        --state.active_workers;
+        return;
+      }
+      call = std::move(state.queue.front());
+      state.queue.pop_front();
+    }
+    HandleMethodCallOnWorker(std::move(call.method), std::move(call.args),
+                             std::move(call.result));
+  }
+}
+
+void EnqueueHostMethodCall(
+    std::string method, flutter::EncodableMap args,
+    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  auto& state = GetWorkerQueueState();
+  bool spawn_worker = false;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.queue.size() >= kMaxPendingCalls) {
+      result->Error("timeout", "Host worker queue is saturated");
+      return;
+    }
+    state.queue.push_back(
+        PendingHostCall{std::move(method), std::move(args), std::move(result)});
+    if (state.active_workers < kMaxWorkerThreads) {
+      ++state.active_workers;
+      spawn_worker = true;
+    }
+  }
+  if (spawn_worker) {
+    std::thread(DrainHostWorkerQueue).detach();
+  }
 }
 
 }  // namespace
@@ -1048,10 +1174,8 @@ void RegisterXunaHostPlugin(flutter::BinaryMessenger* messenger) {
         auto shared_result =
             std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(
                 std::move(result));
-        std::string method = call.method_name();
-        std::thread(HandleMethodCallOnWorker, std::move(method),
-                    std::move(args), std::move(shared_result))
-            .detach();
+        EnqueueHostMethodCall(call.method_name(), std::move(args),
+                              std::move(shared_result));
       });
 
   // Keep the channel alive for the lifetime of the runner process.

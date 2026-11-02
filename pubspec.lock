@@ -512,6 +512,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.0"
+  xuna_shared:
+    dependency: "direct main"
+    description:
+      path: "../packages/xuna_shared"
+      relative: true
+    source: path
+    version: "0.1.0"
   xuna_xtp:
     dependency: "direct main"
     description:
