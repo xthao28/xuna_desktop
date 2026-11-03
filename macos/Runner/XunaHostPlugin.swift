@@ -32,12 +32,42 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
   }
 
   static func register(messenger: FlutterBinaryMessenger) {
+    sanitizeProcessEnvironment()
     let channel = FlutterMethodChannel(
       name: channelName,
       binaryMessenger: messenger
     )
     let instance = XunaHostPlugin()
     channel.setMethodCallHandler(instance.handle(_:result:))
+  }
+
+  /// Strips IDE/Electron parent environment variables (`ELECTRON_RUN_AS_NODE`, `VSCODE_*`,
+  /// `ANTIGRAVITY_*`) so any GUI apps launched via `NSWorkspace` do not exit immediately
+  /// in Node.js CLI mode when the agent itself was started from a terminal.
+  private static func sanitizeProcessEnvironment() {
+    for key in ProcessInfo.processInfo.environment.keys {
+      if isPoisonedParentEnvKey(key) {
+        unsetenv(key)
+      }
+    }
+  }
+
+  private static func isPoisonedParentEnvKey(_ key: String) -> Bool {
+    let upper = key.uppercased()
+    return upper == "ELECTRON_RUN_AS_NODE"
+      || upper == "ELECTRON_NO_ATTACH_CONSOLE"
+      || upper == "CHROME_DESKTOP"
+      || upper.hasPrefix("VSCODE_")
+      || upper.hasPrefix("ANTIGRAVITY_")
+      || upper.hasPrefix("AGY_")
+  }
+
+  private static func sanitizedChildEnvironment() -> [String: String] {
+    var env = ProcessInfo.processInfo.environment
+    for key in env.keys where isPoisonedParentEnvKey(key) {
+      env.removeValue(forKey: key)
+    }
+    return env
   }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -619,20 +649,45 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       let config = NSWorkspace.OpenConfiguration()
       config.arguments = [] // Never pass arguments.
       config.activates = true
+      config.environment = Self.sanitizedChildEnvironment()
 
       let semaphore = DispatchSemaphore(value: 0)
       var launchError: Error?
-      NSWorkspace.shared.openApplication(at: resolvedUrl, configuration: config) { _, err in
+      var launchedApp: NSRunningApplication?
+      NSWorkspace.shared.openApplication(at: resolvedUrl, configuration: config) { runningApp, err in
+        launchedApp = runningApp
         launchError = err
         semaphore.signal()
       }
       _ = semaphore.wait(timeout: .now() + .seconds(8))
 
-      if launchError != nil {
-        replyError(result, code: "failed", message: "Failed to launch application")
-      } else {
+      if launchError == nil {
+        DispatchQueue.main.async {
+          if #available(macOS 14.0, *) {
+            launchedApp?.activate()
+          } else {
+            launchedApp?.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+          }
+        }
         replySuccess(result, [:])
+        return
       }
+
+      // Fallback via /usr/bin/open -a <appPath> (no shell, no arguments) if LaunchServices XPC failed
+      let openProcess = Process()
+      openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+      openProcess.arguments = ["-a", resolvedUrl.path]
+      openProcess.environment = Self.sanitizedChildEnvironment()
+      do {
+        try openProcess.run()
+        openProcess.waitUntilExit()
+        if openProcess.terminationStatus == 0 {
+          replySuccess(result, [:])
+          return
+        }
+      } catch {}
+
+      replyError(result, code: "failed", message: "Failed to launch application")
     } else {
       let opened = NSWorkspace.shared.open(resolvedUrl)
       if opened {
@@ -796,7 +851,7 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
          )
       {
-        NSWorkspace.shared.open(prefUrl)
+        openSystemSettingsUrl(prefUrl)
       }
       replySuccess(result, ["state": trusted ? "granted" : "denied"])
       return
@@ -811,7 +866,7 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
          )
       {
-        NSWorkspace.shared.open(prefUrl)
+        openSystemSettingsUrl(prefUrl)
       }
       replySuccess(result, ["state": state])
       return
@@ -830,6 +885,14 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     }
 
     replySuccess(result, ["state": "granted"])
+  }
+
+  private func openSystemSettingsUrl(_ url: URL) {
+    let openProcess = Process()
+    openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    openProcess.arguments = [url.absoluteString]
+    openProcess.environment = Self.sanitizedChildEnvironment()
+    try? openProcess.run()
   }
 
   private func checkAutomationPermission(bundleId: String, prompt: Bool) -> String {

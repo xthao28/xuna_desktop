@@ -140,10 +140,19 @@ class AutoWorkspaceIndexer {
   }
 
   static Future<void> _defaultAgentLauncher(CodingAgentLaunchPlan plan) async {
+    final cleanEnv = Map<String, String>.from(Platform.environment)
+      ..removeWhere(
+        (key, _) =>
+            key == 'ELECTRON_RUN_AS_NODE' ||
+            key.startsWith('VSCODE_') ||
+            key.startsWith('ANTIGRAVITY_'),
+      );
     await Process.start(
       plan.executable,
       plan.arguments,
       workingDirectory: plan.workingDirectory,
+      environment: cleanEnv,
+      includeParentEnvironment: false,
       runInShell: false,
       mode: ProcessStartMode.detached,
     );

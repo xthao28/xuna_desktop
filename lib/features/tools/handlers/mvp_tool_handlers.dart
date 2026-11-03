@@ -112,9 +112,17 @@ class AppListAllowedTool extends HostToolHandler {
         apps.add(<String, Object?>{'id': app.id, 'name': app.name});
       }
     }
+    final appNames = apps
+        .map((a) => a['name'])
+        .whereType<String>()
+        .toList(growable: false);
     return ToolHandlerOutput(
       text: 'Có ${apps.length} ứng dụng được phép mở.',
-      structuredContent: <String, Object?>{'apps': apps},
+      structuredContent: <String, Object?>{
+        'totalCount': apps.length,
+        'appNames': appNames.join(', '),
+        'apps': apps,
+      },
     );
   }
 }

@@ -1,4 +1,22 @@
+import 'dart:io';
+
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
+
+String _resolveWorkspaceSkillDir(String rawFolder) {
+  final clean = rawFolder.trim();
+  final home =
+      Platform.environment['HOME'] ??
+      Platform.environment['USERPROFILE'] ??
+      Directory.systemTemp.path;
+  if (clean.startsWith('~/')) {
+    return '$home/${clean.substring(2)}';
+  }
+  if (clean.startsWith('/') || RegExp(r'^[A-Za-z]:[\\/]').hasMatch(clean)) {
+    return clean;
+  }
+  final safeSubPath = clean.isEmpty ? 'XUNA_Tools/Output' : clean;
+  return '$home/Documents/XUNA_Workspace/$safeSubPath';
+}
 
 class ForgeSynthesizeSkillTool extends HostToolHandler {
   const ForgeSynthesizeSkillTool();
@@ -22,6 +40,19 @@ class ForgeSynthesizeSkillTool extends HostToolHandler {
       fileExtensions: exts,
       nowUtc: context.nowUtc,
     );
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      try {
+        final realDir = _resolveWorkspaceSkillDir(res.targetFolder);
+        Directory(realDir).createSync(recursive: true);
+        final mdRes = context.symbioticService.bridgeSkillMarkdown(
+          action: 'export_skill_md',
+          skillId: res.skillId,
+        );
+        if (mdRes.skillMarkdown.isNotEmpty) {
+          File('$realDir/SKILL.md').writeAsStringSync(mdRes.skillMarkdown);
+        }
+      } catch (_) {}
+    }
     return ToolHandlerOutput(
       text: res.summaryVi,
       structuredContent: <String, Object?>{
@@ -69,6 +100,42 @@ class ForgeRunSkillTool extends HostToolHandler {
         recordedAt: context.nowUtc,
       ),
     );
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      try {
+        final realDir = _resolveWorkspaceSkillDir(res.outputDirectory);
+        Directory(realDir).createSync(recursive: true);
+        final list = context.symbioticService.listForgedSkillEntries();
+        final idx = list.indexWhere((s) => s.skillId == res.skillId);
+        final entry = idx >= 0
+            ? list[idx]
+            : (list.isNotEmpty ? list.first : null);
+        final rows = <Map<String, Object?>>[
+          if (entry != null)
+            for (var i = 0; i < entry.scriptSteps.length; i++)
+              <String, Object?>{
+                'Buoc': i + 1,
+                'ThaoTac': entry.scriptSteps[i],
+                'MucTieu': entry.goal,
+              }
+          else
+            <String, Object?>{
+              'SkillId': res.skillId,
+              'SoMucXuLy': res.processedCount,
+              'ThuMuc': realDir,
+            },
+        ];
+        final csvPath = context.symbioticService.pipeline
+            .exportUniversalArtifactToDisk(
+              filePath: '$realDir/BangKe_TongHop.csv',
+              format: 'csv',
+              titleVi: entry?.titleVi ?? res.skillId,
+              rows: rows,
+            );
+        if (Platform.isMacOS && File(csvPath).existsSync()) {
+          await Process.run('/usr/bin/open', <String>['-R', csvPath]);
+        }
+      } catch (_) {}
+    }
     return ToolHandlerOutput(
       text: res.summaryVi,
       structuredContent: <String, Object?>{

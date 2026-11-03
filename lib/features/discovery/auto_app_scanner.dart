@@ -103,7 +103,11 @@ class AutoAppScanner {
           'visual_studio_code',
           'code',
         ],
-      'antigravity' || 'agy' => const <String>['antigravity', 'agy'],
+      'antigravity' || 'agy' || 'antigravity_ide' => const <String>[
+          'antigravity_ide',
+          'antigravity',
+          'agy',
+        ],
       'cursor' => const <String>['cursor'],
       'claude' || 'claude_code' => const <String>[
           'claude',

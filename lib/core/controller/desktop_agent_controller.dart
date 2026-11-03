@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -242,7 +243,28 @@ class DesktopAgentController extends BaseGetxController {
     );
     frontierStatusSummaryVi.value = entry.lastActionSummaryVi;
     refreshSymbioticState();
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      unawaited(_launchAppForPlaybookInspection(appName, entry));
+    }
     return entry;
+  }
+
+  Future<void> _launchAppForPlaybookInspection(
+    String rawAppName,
+    AppPlaybookEntry entry,
+  ) async {
+    try {
+      final matched = _findInstalledAppFromText(rawAppName);
+      if (matched != null) {
+        await channel.appLaunch(target: matched.target, kind: matched.kind);
+        frontierStatusSummaryVi.value =
+            '🚀 Đã mở "${matched.name}" & học thao tác (${entry.tierBadgeVi})';
+      }
+      await channel.showToast(
+        title: 'XUNA Học App (${entry.appName})',
+        body: entry.lastActionSummaryVi,
+      );
+    } catch (_) {}
   }
 
   /// Removes a learned [AppPlaybookEntry] by [appId] (`CLAW-APP-ENGINE`).
@@ -440,6 +462,160 @@ class DesktopAgentController extends BaseGetxController {
     return frontierStatusSummaryVi.value;
   }
 
+  /// Resolves a relative skill folder (e.g. `XUNA_HoaDon/Thang_11_2026`) into a real writable path on disk.
+  String resolveRealSkillDirectory(String rawFolder) {
+    final clean = rawFolder.trim();
+    final home =
+        Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'] ??
+        Directory.systemTemp.path;
+    if (clean.startsWith('~/')) {
+      return '$home/${clean.substring(2)}';
+    }
+    if (clean.startsWith('/') || RegExp(r'^[A-Za-z]:[\\/]').hasMatch(clean)) {
+      return clean;
+    }
+    final safeSubPath = clean.isEmpty ? 'XUNA_Tools/Output' : clean;
+    return '$home/Documents/XUNA_Workspace/$safeSubPath';
+  }
+
+  /// Scans real files on the user's Mac (`~/Downloads`, `~/Documents`, `~/Desktop`) for a forged skill.
+  List<Map<String, Object?>> _scanRealFilesForSkill(ForgedSkillEntry skill) {
+    final home =
+        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+    if (home == null || home.isEmpty) return const <Map<String, Object?>>[];
+    final lowerGoal = skill.goal.toLowerCase();
+    final candidateDirs = <String>[
+      if (lowerGoal.contains('desktop') || lowerGoal.contains('màn hình'))
+        '$home/Desktop',
+      '$home/Downloads',
+      '$home/Documents',
+      if (!lowerGoal.contains('desktop') && !lowerGoal.contains('màn hình'))
+        '$home/Desktop',
+    ];
+    final normalizedExts = skill.fileExtensions
+        .map((e) => e.trim().toLowerCase().replaceFirst(RegExp(r'^\.'), ''))
+        .where((e) => e.isNotEmpty)
+        .toSet();
+    final matchedFiles = <File>[];
+    final fallbackFiles = <File>[];
+
+    for (final dirPath in candidateDirs) {
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) continue;
+      try {
+        for (final entity in dir.listSync(followLinks: false)) {
+          if (entity is! File) continue;
+          final name = entity.uri.pathSegments.isEmpty
+              ? ''
+              : entity.uri.pathSegments.last;
+          if (name.isEmpty || name.startsWith('.')) continue;
+          if (entity.path.contains('XUNA_Workspace')) continue;
+          final dotIdx = name.lastIndexOf('.');
+          final ext = dotIdx >= 0
+              ? name.substring(dotIdx + 1).toLowerCase()
+              : '';
+          if (normalizedExts.isEmpty || normalizedExts.contains(ext)) {
+            matchedFiles.add(entity);
+            if (matchedFiles.length >= 50) break;
+          } else if (fallbackFiles.length < 25) {
+            fallbackFiles.add(entity);
+          }
+        }
+      } catch (_) {}
+      if (matchedFiles.length >= 50) break;
+    }
+
+    final chosen = matchedFiles.isNotEmpty ? matchedFiles : fallbackFiles;
+    final rows = <Map<String, Object?>>[];
+    for (var i = 0; i < chosen.length; i++) {
+      final f = chosen[i];
+      try {
+        final stat = f.statSync();
+        final name = f.uri.pathSegments.last;
+        final dotIdx = name.lastIndexOf('.');
+        final ext = dotIdx >= 0 ? name.substring(dotIdx + 1).toUpperCase() : '';
+        final sizeKb = (stat.size / 1024).toStringAsFixed(1);
+        final modIso = stat.modified.toLocal().toIso8601String();
+        rows.add(<String, Object?>{
+          'STT': i + 1,
+          'TenTep': name,
+          'DinhDang': ext.isEmpty ? 'FILE' : ext,
+          'DungLuongKB': sizeKb,
+          'CapNhatLuc': modIso.length >= 16 ? modIso.substring(0, 16) : modIso,
+          'DuongDanGoc': f.path,
+        });
+      } catch (_) {}
+    }
+    return rows;
+  }
+
+  /// Finds an installed application mentioned in [rawText] (or slash-separated preset).
+  DiscoveredApp? _findInstalledAppFromText(String rawText) {
+    final text = rawText.trim();
+    if (text.isEmpty) return null;
+    if (discoveredApps.isEmpty) {
+      scanInstalledApps();
+    }
+    for (final part in text.split(RegExp(r'[/,|]'))) {
+      final q = part.trim();
+      if (q.isEmpty) continue;
+      final direct = _appScanner.findApp(q);
+      if (direct != null) return direct;
+    }
+    final lower = text.toLowerCase();
+    const aliasMap = <String, String>{
+      'vscode': 'Visual Studio Code',
+      'vs code': 'Visual Studio Code',
+      'visual studio code': 'Visual Studio Code',
+      'antigravity': 'Antigravity',
+      'safari': 'Safari',
+      'chrome': 'Google Chrome',
+      'google chrome': 'Google Chrome',
+      'brave': 'Brave Browser',
+      'arc': 'Arc',
+      'firefox': 'Firefox',
+      'ghi chú': 'Notes',
+      'apple notes': 'Notes',
+      'notes': 'Notes',
+      'notion': 'Notion',
+      'máy tính': 'Calculator',
+      'calculator': 'Calculator',
+      'lịch': 'Calendar',
+      'calendar': 'Calendar',
+      'nhắc nhở': 'Reminders',
+      'reminders': 'Reminders',
+      'zalo': 'Zalo',
+      'telegram': 'Telegram',
+      'discord': 'Discord',
+      'slack': 'Slack',
+      'spotify': 'Spotify',
+      'nhạc': 'Music',
+      'music': 'Music',
+      'figma': 'Figma',
+      'capcut': 'CapCut',
+      'terminal': 'Terminal',
+      'iterm': 'iTerm',
+      'docker': 'Docker',
+      'postman': 'Postman',
+      'finder': 'Finder',
+      'excel': 'Microsoft Excel',
+      'word': 'Microsoft Word',
+    };
+    for (final entry in aliasMap.entries) {
+      if (lower.contains(entry.key)) {
+        final found = _appScanner.findApp(entry.value);
+        if (found != null) return found;
+      }
+    }
+    for (final app in discoveredApps) {
+      if (app.name.length >= 3 && lower.contains(app.name.toLowerCase())) {
+        return app;
+      }
+    }
+    return null;
+  }
+
   /// Synthesizes a quick citizen tool (e.g., Invoice Harvester) from Desktop UI (`FORGE-3`).
   ForgedSkillEntry? forgeQuickInvoiceTool({
     String goal =
@@ -448,34 +624,240 @@ class DesktopAgentController extends BaseGetxController {
   }) {
     final svc = symbioticService;
     if (svc == null) return null;
-    final entry = svc.synthesizeSkill(
+    var entry = svc.synthesizeSkill(
       goal: goal,
       targetFolder: (targetFolder == null || targetFolder.trim().isEmpty)
           ? null
           : targetFolder.trim(),
     );
-    frontierStatusSummaryVi.value =
-        '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.skillId}) — thư mục: ${entry.targetFolder}';
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      try {
+        final realDir = resolveRealSkillDirectory(entry.targetFolder);
+        Directory(realDir).createSync(recursive: true);
+        final realRows = _scanRealFilesForSkill(entry);
+        final mdRes = svc.bridgeSkillMarkdown(
+          action: 'export_skill_md',
+          skillId: entry.skillId,
+        );
+        if (mdRes.skillMarkdown.isNotEmpty) {
+          File('$realDir/SKILL.md').writeAsStringSync(mdRes.skillMarkdown);
+        }
+        File('$realDir/recipe.json').writeAsStringSync(
+          const JsonEncoder.withIndent('  ').convert(entry.toWireJson()),
+        );
+        if (realRows.isNotEmpty) {
+          final firstFile = realRows.first['TenTep'] ?? 'file';
+          final updated = ForgedSkillEntry(
+            skillId: entry.skillId,
+            titleVi: entry.titleVi,
+            category: entry.category,
+            goal: entry.goal,
+            targetFolder: entry.targetFolder,
+            fileExtensions: entry.fileExtensions,
+            detectedItemsCount: realRows.length,
+            dryRunSample:
+                'Quét thật ${realRows.length} tệp trên Mac (mẫu: "$firstFile") → xuất vào "$realDir/BangKe_TongHop.csv"',
+            selfDebugIterations: entry.selfDebugIterations,
+            parameterFields: entry.parameterFields,
+            scriptSteps: entry.scriptSteps,
+            summaryVi: entry.summaryVi,
+            createdAt: entry.createdAt,
+            runCount: entry.runCount,
+            lastRunSummaryVi: 'Thư mục thật trên máy: $realDir',
+            selfHealGeneration: entry.selfHealGeneration,
+            correctionRules: entry.correctionRules,
+            primitives: entry.primitives,
+            canvasSurfaceKind: entry.canvasSurfaceKind,
+            version: entry.version,
+            versionHistory: entry.versionHistory,
+            autoTriggerOnDelta: entry.autoTriggerOnDelta,
+            selfTestPassed: entry.selfTestPassed,
+          );
+          final list = svc.forge.forgedSkillsMutable;
+          final idx = list.indexWhere((s) => s.skillId == entry.skillId);
+          if (idx >= 0) {
+            list[idx] = updated;
+            entry = updated;
+          }
+        }
+        frontierStatusSummaryVi.value =
+            '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.detectedItemsCount} tệp thật trên máy) → $realDir';
+        unawaited(
+          channel.showToast(
+            title: 'XUNA đã tạo Tool mới',
+            body: '${entry.titleVi} — Sẵn sàng chạy với ${entry.detectedItemsCount} tệp thật',
+          ),
+        );
+      } catch (_) {
+        frontierStatusSummaryVi.value =
+            '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.skillId}) — thư mục: ${entry.targetFolder}';
+      }
+    } else {
+      frontierStatusSummaryVi.value =
+          '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.skillId}) — thư mục: ${entry.targetFolder}';
+    }
     refreshSymbioticState();
     return entry;
   }
 
-  /// Runs a forged personal skill from Desktop UI (`FORGE-3`).
+  /// Runs a forged personal skill from Desktop UI (`FORGE-3`) and writes real artifacts to disk.
   Map<String, Object?>? runForgedSkillFromUi(String skillId) {
     final svc = symbioticService;
     if (svc == null) return null;
     final res = svc.runForgedSkill(skillId: skillId);
-    frontierStatusSummaryVi.value = '▶ ${res.summaryVi}';
+    var processedCount = res.processedCount;
+    var outputDirectory = res.outputDirectory;
+    var exportedCsvFile = res.exportedCsvFile;
+    var summaryVi = res.summaryVi;
+
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      try {
+        final list = svc.forge.forgedSkillsMutable;
+        final idx = list.indexWhere((s) => s.skillId == res.skillId);
+        final entry = idx >= 0
+            ? list[idx]
+            : (list.isNotEmpty ? list.first : null);
+        if (entry != null) {
+          final realDir = resolveRealSkillDirectory(entry.targetFolder);
+          Directory(realDir).createSync(recursive: true);
+          final realRows = _scanRealFilesForSkill(entry);
+          final rowsToWrite = realRows.isNotEmpty
+              ? realRows
+              : <Map<String, Object?>>[
+                  for (var i = 0; i < entry.scriptSteps.length; i++)
+                    <String, Object?>{
+                      'Buoc': i + 1,
+                      'MoTaThaoTac': entry.scriptSteps[i],
+                      'MucTieu': entry.goal,
+                      'ThoiGianChay': DateTime.now().toLocal().toIso8601String(),
+                    },
+                ];
+          final csvFilePath = svc.pipeline.exportUniversalArtifactToDisk(
+            filePath: '$realDir/BangKe_TongHop.csv',
+            format: 'csv',
+            titleVi: entry.titleVi,
+            rows: rowsToWrite,
+          );
+          final mdFilePath = svc.pipeline.exportUniversalArtifactToDisk(
+            filePath: '$realDir/BaoCao_KetQua.md',
+            format: 'md',
+            titleVi: '${entry.titleVi} — Báo cáo kết quả thực thi',
+            rows: rowsToWrite,
+          );
+          final mdBridge = svc.bridgeSkillMarkdown(
+            action: 'export_skill_md',
+            skillId: entry.skillId,
+          );
+          if (mdBridge.skillMarkdown.isNotEmpty) {
+            File('$realDir/SKILL.md').writeAsStringSync(mdBridge.skillMarkdown);
+          }
+          File('$realDir/recipe.json').writeAsStringSync(
+            const JsonEncoder.withIndent('  ').convert(entry.toWireJson()),
+          );
+
+          processedCount = rowsToWrite.length;
+          outputDirectory = realDir;
+          exportedCsvFile = csvFilePath;
+          summaryVi =
+              'Đã chạy thật "${entry.titleVi}": xử lý $processedCount mục và xuất file thật tại "$exportedCsvFile" (+ "$mdFilePath")';
+
+          if (idx >= 0) {
+            list[idx] = ForgedSkillEntry(
+              skillId: entry.skillId,
+              titleVi: entry.titleVi,
+              category: entry.category,
+              goal: entry.goal,
+              targetFolder: entry.targetFolder,
+              fileExtensions: entry.fileExtensions,
+              detectedItemsCount: processedCount,
+              dryRunSample: entry.dryRunSample,
+              selfDebugIterations: entry.selfDebugIterations,
+              parameterFields: entry.parameterFields,
+              scriptSteps: entry.scriptSteps,
+              summaryVi: entry.summaryVi,
+              createdAt: entry.createdAt,
+              runCount: entry.runCount,
+              lastRunSummaryVi: summaryVi,
+              selfHealGeneration: entry.selfHealGeneration,
+              correctionRules: entry.correctionRules,
+              primitives: entry.primitives,
+              canvasSurfaceKind: entry.canvasSurfaceKind,
+              version: entry.version,
+              versionHistory: entry.versionHistory,
+              autoTriggerOnDelta: entry.autoTriggerOnDelta,
+              selfTestPassed: entry.selfTestPassed,
+            );
+          }
+          unawaited(_triggerSideEffectsForSkillRun(entry, exportedCsvFile));
+        }
+      } catch (_) {}
+    }
+
+    frontierStatusSummaryVi.value = '▶ $summaryVi';
     refreshSymbioticState();
     return <String, Object?>{
       'skillId': res.skillId,
-      'processedCount': res.processedCount,
-      'outputDirectory': res.outputDirectory,
-      'exportedCsvFile': res.exportedCsvFile,
+      'processedCount': processedCount,
+      'outputDirectory': outputDirectory,
+      'exportedCsvFile': exportedCsvFile,
       'selfHealedSelectors': res.selfHealedSelectors,
       'undoSnapshotId': res.undoSnapshotId,
-      'summaryVi': res.summaryVi,
+      'summaryVi': summaryVi,
     };
+  }
+
+  Future<void> _triggerSideEffectsForSkillRun(
+    ForgedSkillEntry entry,
+    String exportedCsvFile,
+  ) async {
+    try {
+      final urlMatch = RegExp(r'https://[^\s"<>]+').firstMatch(entry.goal);
+      if (urlMatch != null) {
+        await channel.urlOpen(urlMatch.group(0)!);
+      }
+      final matchedApp = _findInstalledAppFromText(entry.goal);
+      if (matchedApp != null) {
+        await channel.appLaunch(
+          target: matchedApp.target,
+          kind: matchedApp.kind,
+        );
+      }
+      if (Platform.isMacOS && File(exportedCsvFile).existsSync()) {
+        await Process.run('/usr/bin/open', <String>['-R', exportedCsvFile]);
+      } else if (Platform.isWindows && File(exportedCsvFile).existsSync()) {
+        await Process.run('explorer.exe', <String>[
+          '/select,${exportedCsvFile.replaceAll('/', '\\')}',
+        ]);
+      }
+      await channel.showToast(
+        title: 'Đã chạy xong: ${entry.titleVi}',
+        body: 'Đã xuất kết quả thật tại $exportedCsvFile',
+      );
+    } catch (_) {}
+  }
+
+  /// Opens the real output directory of a forged skill in macOS Finder / Windows Explorer.
+  Future<void> openForgedSkillOutputFolderFromUi(String skillId) async {
+    final svc = symbioticService;
+    if (svc == null) return;
+    final list = svc.listForgedSkillEntries();
+    final idx = list.indexWhere((s) => s.skillId == skillId);
+    final entry = idx >= 0 ? list[idx] : (list.isNotEmpty ? list.first : null);
+    if (entry == null) return;
+    final realDir = resolveRealSkillDirectory(entry.targetFolder);
+    try {
+      Directory(realDir).createSync(recursive: true);
+      if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+        if (Platform.isMacOS) {
+          await Process.run('/usr/bin/open', <String>[realDir]);
+        } else if (Platform.isWindows) {
+          await Process.run('explorer.exe', <String>[
+            realDir.replaceAll('/', '\\'),
+          ]);
+        }
+      }
+      frontierStatusSummaryVi.value = '📂 Đã mở thư mục kết quả: $realDir';
+    } catch (_) {}
   }
 
   /// Deletes a forged personal skill from Desktop UI.

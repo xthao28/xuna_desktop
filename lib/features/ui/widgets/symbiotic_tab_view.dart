@@ -667,6 +667,15 @@ class SymbioticTabView extends BaseTabView<DesktopAgentController> {
                               controller.runForgedSkillFromUi(sk.skillId),
                         ),
                         AppPillButton(
+                          label: '📂 Mở thư mục',
+                          selected: false,
+                          onPressed: () => unawaited(
+                            controller.openForgedSkillOutputFolderFromUi(
+                              sk.skillId,
+                            ),
+                          ),
+                        ),
+                        AppPillButton(
                           label: '📄 Copy SKILL.md',
                           selected: false,
                           onPressed: () => unawaited(
@@ -690,7 +699,7 @@ class SymbioticTabView extends BaseTabView<DesktopAgentController> {
                         ),
                         UtilWidget.sizedBox4,
                         Text(
-                          '📂 Thư mục: ${sk.targetFolder} · Định dạng: ${sk.fileExtensions.join(", ").toUpperCase()} · Đã chạy: ${sk.runCount} lần',
+                          '📂 Thư mục thật: ${controller.resolveRealSkillDirectory(sk.targetFolder)} · Định dạng: ${sk.fileExtensions.join(", ").toUpperCase()} · Đã chạy: ${sk.runCount} lần',
                           style: AppTextStyle.font12Re.copyWith(
                             color: AppColors.xunaInkMuted,
                           ),
