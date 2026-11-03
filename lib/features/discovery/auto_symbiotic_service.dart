@@ -680,6 +680,11 @@ class AutoSymbioticService {
     nowUtc: nowUtc,
   );
 
+  String get activeColorThemeId => frontier2026.activeColorThemeId;
+
+  void syncColorTheme(String themeId, {DateTime? nowUtc}) =>
+      frontier2026.syncColorTheme(themeId, nowUtc: nowUtc);
+
   ({
     String mode,
     String vocalKind,

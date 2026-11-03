@@ -12,6 +12,7 @@ import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
+import 'package:xuna_desktop/shared/themes/xuna_color_themes.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Navigation tabs inside the Desktop Agent settings window.
@@ -64,6 +65,8 @@ class DesktopAgentController extends BaseGetxController {
   final lastHeartbeatStatus = Rxn<HeartbeatStatusSnapshot>();
   final activeLiveCanvas = Rxn<LiveCanvasSurfaceSnapshot>();
   final frontierStatusSummaryVi = ''.obs;
+  final selectedColorThemeId = 'green_edition'.obs;
+  final isAutoColorTheme = false.obs;
 
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
@@ -207,6 +210,35 @@ class DesktopAgentController extends BaseGetxController {
     isTeachRecording.value = svc.isTeachRecordingActive;
     lastHeartbeatStatus.value = svc.lastHeartbeatStatus;
     activeLiveCanvas.value = svc.activeLiveCanvas;
+    selectedColorThemeId.value = svc.activeColorThemeId;
+  }
+
+  /// Selects one of the 7 XUNA Color Themes on Desktop and records it in ChronoGraph (`THEME-3`).
+  XunaColorThemeData selectColorTheme(String themeId) {
+    final resolved = XunaColorThemes.byId(themeId);
+    isAutoColorTheme.value = false;
+    selectedColorThemeId.value = resolved.id;
+    symbioticService?.syncColorTheme(resolved.id);
+    frontierStatusSummaryVi.value =
+        '🎨 Đã đồng bộ bảng màu ${resolved.name} (${resolved.nameVi}) trên Desktop & ChronoGraph';
+    return resolved;
+  }
+
+  /// Toggles Experience-Driven Epigenetic Auto-Theme mode on Desktop (`THEME-3`).
+  XunaColorThemeData toggleAutoColorTheme({String? dominantTrait}) {
+    final nextAuto = !isAutoColorTheme.value;
+    isAutoColorTheme.value = nextAuto;
+    final resolved = nextAuto
+        ? XunaColorThemes.resolveAutoThemeForTraits(
+            dominantTrait: dominantTrait ?? 'curiosity',
+          )
+        : XunaColorThemes.byId(selectedColorThemeId.value);
+    selectedColorThemeId.value = resolved.id;
+    symbioticService?.syncColorTheme(resolved.id);
+    frontierStatusSummaryVi.value = nextAuto
+        ? '✨ Đã bật tự động tiến hoá màu (${resolved.nameVi}) trên Desktop'
+        : '🎨 Đã cố định bảng màu ${resolved.name} (${resolved.nameVi}) trên Desktop';
+    return resolved;
   }
 
   /// Runs a Zero-Token 2-Tier Heartbeat tick from the Desktop UI (`CLAW-2`).

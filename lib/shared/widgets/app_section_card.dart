@@ -38,10 +38,24 @@ class AppSectionCard extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Expanded(child: Text(title, style: AppTextStyle.font15Bo)),
+              Expanded(
+                flex: 3,
+                child: Text(
+                  title,
+                  style: AppTextStyle.font15Bo,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
               if (trailing != null) ...[
                 const SizedBox(width: AppDimens.paddingSmall),
-                trailing!,
+                Flexible(
+                  flex: 2,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: trailing!,
+                  ),
+                ),
               ],
             ],
           ),
@@ -101,9 +115,15 @@ class AppSubItemTile extends StatelessWidget {
           ? child
           : Row(
               children: [
-                Expanded(child: child),
+                Expanded(flex: 3, child: child),
                 const SizedBox(width: AppDimens.paddingSmall),
-                trailing!,
+                Flexible(
+                  flex: 2,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: trailing!,
+                  ),
+                ),
               ],
             ),
     );

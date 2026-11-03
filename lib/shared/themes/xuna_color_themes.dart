@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Official 7 XUNA Color Theme identifiers.
+/// Official 7 XUNA Color Theme identifiers (`THEME-1` / `THEME-2`).
 enum XunaColorThemeId {
   greenEdition('green_edition'),
   forestMint('forest_mint'),
@@ -57,12 +57,14 @@ class XunaColorThemeData {
   final bool isDefault;
   final String accentParticle;
 
+  String get nameEn => name;
   Color get highlight => parseHexColor(highlightHex);
   Color get hair => parseHexColor(hairHex);
   Color get body => parseHexColor(bodyHex);
   Color get shadow => parseHexColor(shadowHex);
   Color get outline => parseHexColor(outlineHex);
 
+  /// Ordered 5-role swatch list (`[highlight, hair, body, shadow, outline]`).
   List<Color> get swatches => <Color>[
         highlight,
         hair,
@@ -71,14 +73,56 @@ class XunaColorThemeData {
         outline,
       ];
 
+  List<Color> get swatchRow => swatches;
+
   static Color parseHexColor(String hex) {
     final clean = hex.trim().replaceFirst('#', '');
     final value = int.tryParse(clean, radix: 16) ?? 0x1E1E1E;
     return Color(0xFF000000 | (value & 0xFFFFFF));
   }
+
+  factory XunaColorThemeData.fromJson(Map<String, dynamic> json) {
+    final roles = json['roles'] is Map
+        ? Map<String, dynamic>.from(json['roles'] as Map)
+        : json;
+    return XunaColorThemeData(
+      id: (json['id']?.toString() ?? 'green_edition').trim(),
+      index: (json['index'] as num?)?.toInt() ?? 1,
+      code: (json['code']?.toString() ?? 'theme_01').trim(),
+      name: (json['name']?.toString() ?? 'Green Edition').trim(),
+      nameVi: (json['nameVi']?.toString() ?? 'Xanh Nguyên Bản').trim(),
+      tagline:
+          (json['tagline']?.toString() ?? 'Fresh · Vibrant · Original').trim(),
+      highlightHex: (roles['highlight']?.toString() ?? '#EAF7C9').toUpperCase(),
+      hairHex: (roles['hair']?.toString() ?? '#B7E17D').toUpperCase(),
+      bodyHex: (roles['body']?.toString() ?? '#8FB06B').toUpperCase(),
+      shadowHex: (roles['shadow']?.toString() ?? '#5F7F52').toUpperCase(),
+      outlineHex: (roles['outline']?.toString() ?? '#1E1E1E').toUpperCase(),
+      isDefault: json['isDefault'] == true,
+      accentParticle: (json['accentParticle']?.toString() ?? 'rays').trim(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'index': index,
+        'code': code,
+        'name': name,
+        'nameVi': nameVi,
+        'tagline': tagline,
+        'isDefault': isDefault,
+        'accentParticle': accentParticle,
+        'roles': <String, String>{
+          'highlight': highlightHex,
+          'hair': hairHex,
+          'body': bodyHex,
+          'shadow': shadowHex,
+          'outline': outlineHex,
+        },
+      };
 }
 
-/// Registry of XUNA's 7 official Color Themes.
+/// Registry of XUNA's 7 official Color Themes with runtime configuration support.
 abstract final class XunaColorThemes {
   static const XunaColorThemeData greenEdition = XunaColorThemeData(
     id: 'green_edition',
@@ -196,14 +240,56 @@ abstract final class XunaColorThemes {
     berryCandy,
   ];
 
+  static final Map<String, XunaColorThemeData> _overrides =
+      <String, XunaColorThemeData>{};
+
+  static XunaColorThemeData get defaultTheme =>
+      _overrides[greenEdition.id] ?? greenEdition;
+
+  static List<XunaColorThemeData> get all =>
+      builtIn.map((t) => _overrides[t.id] ?? t).toList(growable: false);
+
+  static List<XunaColorThemeData> get themes => all;
+
   static XunaColorThemeData byId(String? id) {
     final clean = (id ?? '').trim().toLowerCase();
+    if (_overrides.containsKey(clean)) {
+      return _overrides[clean]!;
+    }
     for (final theme in builtIn) {
       if (theme.id == clean || theme.code == clean) {
         return theme;
       }
     }
-    return greenEdition;
+    return defaultTheme;
+  }
+
+  /// Resolves the experience-driven Epigenetic Auto-Theme from XUNA's dominant trait and lived habits.
+  static XunaColorThemeData resolveAutoThemeForTraits({
+    String? dominantTrait,
+    bool hasNightDreams = false,
+    bool hasDeepFocus = false,
+  }) {
+    if (hasNightDreams) return byId(lavenderDream.id);
+    if (hasDeepFocus) return byId(skyBlue.id);
+    final trait = (dominantTrait ?? '').trim().toLowerCase();
+    return switch (trait) {
+      'sociability' || 'affection' || 'warmth' => byId(berryCandy.id),
+      'energy' || 'playful' || 'cheerful' => byId(sunnyGold.id),
+      'curiosity' || 'knowledge' || 'smart' => byId(seafoam.id),
+      'sensitivity' || 'focus' || 'peaceful' => byId(skyBlue.id),
+      'calm' || 'natural' || 'steady' => byId(forestMint.id),
+      'dream' || 'mysterious' => byId(lavenderDream.id),
+      _ => defaultTheme,
+    };
+  }
+
+  /// Allows runtime overrides of any palette from JSON/Remote Config.
+  static void registerOrOverride(XunaColorThemeData theme) {
+    _overrides[theme.id.trim().toLowerCase()] = theme;
+  }
+
+  static void clearOverrides() {
+    _overrides.clear();
   }
 }
-

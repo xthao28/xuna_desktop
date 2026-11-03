@@ -46,6 +46,8 @@ class AppTag extends StatelessWidget {
           Flexible(
             child: Text(
               text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: style ?? AppTextStyle.mono9Bo,
             ),
           ),

@@ -32,6 +32,81 @@ class SymbioticTabView extends BaseTabView<DesktopAgentController> {
           ),
           UtilWidget.sizedBox12,
 
+          // 0. Synchronized 7 Color Themes
+          Builder(
+            builder: (context) {
+              final activeTheme = XunaColorThemes.byId(
+                controller.selectedColorThemeId.value,
+              );
+              return AppSectionCard(
+                title: '0. Bảng màu XUNA đồng bộ',
+                subtitle:
+                    '${activeTheme.name} · ${activeTheme.nameVi} — ${activeTheme.tagline}',
+                trailing: AppTag(
+                  text: activeTheme.nameVi.toUpperCase(),
+                  color: activeTheme.hair,
+                ),
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AppPetAvatarBadge(
+                        expression: AppPetExpression.happy,
+                        themeId: activeTheme.id,
+                        size: 52,
+                        backgroundColor: activeTheme.highlight,
+                      ),
+                      UtilWidget.sizedBoxWidth12,
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                Text(
+                                  '${activeTheme.name} — ${activeTheme.nameVi}',
+                                  style: AppTextStyle.font13Bo,
+                                ),
+                                AppPillButton(
+                                  label: controller.isAutoColorTheme.value
+                                      ? '✨ Tự động (Bật)'
+                                      : 'Tự động theo Tính cách',
+                                  selected: controller.isAutoColorTheme.value,
+                                  onPressed: controller.toggleAutoColorTheme,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                for (final t in XunaColorThemes.all)
+                                  AppPillButton(
+                                    label: t.nameVi,
+                                    selected: t.id == activeTheme.id,
+                                    fillColor: t.id == activeTheme.id
+                                        ? t.hair
+                                        : t.highlight,
+                                    onPressed: () =>
+                                        controller.selectColorTheme(t.id),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
+          UtilWidget.sizedBox12,
+
           // 1. Workspace Time-Capsules
           AppSectionCard(
             title: '1. Phiên làm việc đã lưu (${capsules.length})',

@@ -82,6 +82,7 @@ class Frontier2026Service {
   String _lastMunchAnimation = 'idle_float';
   String _lastVocalKind = 'happy_chirp';
   String _lastDetectedTone = 'warm_relaxed';
+  String _activeColorThemeId = 'green_edition';
   bool _standbyDockActive = false;
   String _activeRitual = 'none';
   final List<String> _unlockedKeepsakes = <String>[
@@ -94,10 +95,46 @@ class Frontier2026Service {
   String get lastMunchAnimation => _lastMunchAnimation;
   String get lastVocalKind => _lastVocalKind;
   String get lastDetectedTone => _lastDetectedTone;
+  String get activeColorThemeId => _activeColorThemeId;
   bool get standbyDockActive => _standbyDockActive;
   String get activeRitual => _activeRitual;
   List<TemporalGraphEdge> get temporalEdges =>
       List<TemporalGraphEdge>.unmodifiable(_temporalEdges);
+
+  void syncColorTheme(String themeId, {DateTime? nowUtc}) {
+    final cleaned = themeId.trim().toLowerCase();
+    if (cleaned.isEmpty) return;
+    final normalized = switch (cleaned) {
+      'forest_mint' || 'theme_02' || 'theme_02_forest_mint' => 'forest_mint',
+      'seafoam' || 'theme_03' || 'theme_03_seafoam' => 'seafoam',
+      'lavender_dream' ||
+      'theme_04' ||
+      'theme_04_lavender_dream' =>
+        'lavender_dream',
+      'sunny_gold' || 'theme_05' || 'theme_05_sunny_gold' => 'sunny_gold',
+      'sky_blue' || 'theme_06' || 'theme_06_sky_blue' => 'sky_blue',
+      'berry_candy' || 'theme_07' || 'theme_07_berry_candy' => 'berry_candy',
+      _ => 'green_edition',
+    };
+    if (_activeColorThemeId == normalized) return;
+    _activeColorThemeId = normalized;
+    final label = switch (normalized) {
+      'forest_mint' => 'Forest Mint (#86A668)',
+      'seafoam' => 'Seafoam (#6EACA8)',
+      'lavender_dream' => 'Lavender Dream (#A191C7)',
+      'sunny_gold' => 'Sunny Gold (#EDB264)',
+      'sky_blue' => 'Sky Blue (#71A0D6)',
+      'berry_candy' => 'Berry Candy (#D8858D)',
+      _ => 'Green Edition (#8FB06B)',
+    };
+    manageTemporalLifeGraph(
+      mode: 'record_fact',
+      subject: 'XUNA',
+      predicate: 'bảng_màu_yêu_thích',
+      object: label,
+      nowUtc: nowUtc,
+    );
+  }
 
   void _seedDefaultTemporalEdges() {
     if (_temporalEdges.isNotEmpty) return;
@@ -261,6 +298,9 @@ class Frontier2026Service {
   }) {
     final kind = (vocalKind ?? _lastVocalKind).trim();
     _lastVocalKind = kind;
+    if (themeId != null && themeId.trim().isNotEmpty) {
+      syncColorTheme(themeId);
+    }
     const sampleRate = 16000;
     const numSamples = 2880; // 180 ms @ 16 kHz
     const pcmBytesLen = numSamples * 2;
@@ -268,7 +308,7 @@ class Frontier2026Service {
     // Synthesize real 16-bit mono RIFF WAV with harmonic F0 contour + vibrato
     final wavBytes = _synthesizeBioAcousticWav(
       vocalKind: kind,
-      themeId: themeId ?? 'theme_01_green_edition',
+      themeId: themeId ?? _activeColorThemeId,
       sampleRate: sampleRate,
       numSamples: numSamples,
     );

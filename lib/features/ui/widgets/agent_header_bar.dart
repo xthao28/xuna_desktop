@@ -113,18 +113,21 @@ class AgentHeaderBar extends StatelessWidget {
 
         final isReady = !stopped && healthy && phase == HostSessionPhase.ready;
         final isAlert = stopped || !healthy;
+        final activeTheme =
+            XunaColorThemes.byId(controller.selectedColorThemeId.value);
 
         return Row(
           children: [
             AppPetAvatarBadge(
               expression:
                   isReady ? AppPetExpression.happy : AppPetExpression.idle,
+              themeId: activeTheme.id,
               size: 46,
               backgroundColor: isAlert
                   ? AppColors.xunaHeart
                   : isReady
-                      ? AppColors.xunaLime
-                      : AppColors.xunaLilacSoft,
+                      ? activeTheme.hair
+                      : activeTheme.highlight,
             ),
             UtilWidget.sizedBoxWidth12,
             Expanded(
