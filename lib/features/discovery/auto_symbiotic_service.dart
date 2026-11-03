@@ -141,6 +141,14 @@ class AutoSymbioticService {
     project: project,
   );
 
+  bool removeWorkspaceCapsule(String capsuleId) =>
+      workspacePocket.removeWorkspaceCapsule(capsuleId);
+
+  bool removePocketItem(String itemId) =>
+      workspacePocket.removePocketItem(itemId);
+
+  void clearWorkspaceAndPocket() => workspacePocket.clearAll();
+
   UniversalPocketItem pushPocketItem({
     required String rawText,
     String? label,
@@ -787,4 +795,43 @@ class AutoSymbioticService {
     valueText: valueText,
     maxNodes: maxNodes,
   );
+
+  // ── CLAW-APP-ENGINE: 3-Tier App Router, App Playbooks & Human Handover ────
+
+  List<AppPlaybookEntry> listAppPlaybooks() =>
+      uiAccessibility.listAppPlaybooks();
+
+  HumanHandoverSnapshot? get activeHandover => uiAccessibility.activeHandover;
+
+  String get activeFocusedAppName => uiAccessibility.activeFocusedAppName;
+
+  AppPlaybookEntry switchActiveFocusedApp(String appName) =>
+      uiAccessibility.switchActiveFocusedApp(appName);
+
+  AppPlaybookEntry learnOrInspectApp(
+    String rawAppName, {
+    String? customActionVi,
+  }) => uiAccessibility.learnOrInspectApp(
+    rawAppName,
+    customActionVi: customActionVi,
+  );
+
+  void removeAppPlaybook(String appId) =>
+      uiAccessibility.removeAppPlaybook(appId);
+
+  HumanHandoverSnapshot triggerHumanHandover({
+    required String appName,
+    required String taskTitleVi,
+    String? blockerReasonVi,
+    List<String>? remainingStepsVi,
+  }) => uiAccessibility.triggerHumanHandover(
+    appName: appName,
+    taskTitleVi: taskTitleVi,
+    blockerReasonVi: blockerReasonVi,
+    remainingStepsVi: remainingStepsVi,
+  );
+
+  String resumeHumanHandover() => uiAccessibility.resumeHumanHandover();
+
+  void cancelHumanHandover() => uiAccessibility.cancelHumanHandover();
 }

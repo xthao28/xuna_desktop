@@ -362,3 +362,79 @@ class TeachDemonstrationStep {
   };
 }
 
+/// Self-learning App Playbook entry (`CLAW-APP-ENGINE`):
+/// Stores how XUNA controls a specific macOS/Windows application across the 3-tier ladder
+/// (Tier 1 Native Bridge, Tier 2 Menu-Bar Hotkeys, Tier 3 Peekaboo Semantic Map `[B1]`, `[T1]`).
+class AppPlaybookEntry {
+  const AppPlaybookEntry({
+    required this.appId,
+    required this.appName,
+    required this.executionTier,
+    required this.tierBadgeVi,
+    required this.learnedShortcuts,
+    required this.peekabooNodes,
+    required this.quickActionsVi,
+    required this.lastActionSummaryVi,
+    this.runCount = 1,
+  });
+
+  final String appId;
+  final String appName;
+  final int executionTier;
+  final String tierBadgeVi;
+  final List<String> learnedShortcuts;
+  final List<String> peekabooNodes;
+  final List<String> quickActionsVi;
+  final String lastActionSummaryVi;
+  final int runCount;
+
+  AppPlaybookEntry copyWith({
+    String? lastActionSummaryVi,
+    int? runCount,
+  }) => AppPlaybookEntry(
+    appId: appId,
+    appName: appName,
+    executionTier: executionTier,
+    tierBadgeVi: tierBadgeVi,
+    learnedShortcuts: learnedShortcuts,
+    peekabooNodes: peekabooNodes,
+    quickActionsVi: quickActionsVi,
+    lastActionSummaryVi: lastActionSummaryVi ?? this.lastActionSummaryVi,
+    runCount: runCount ?? this.runCount,
+  );
+
+  Map<String, Object?> toWireJson() => <String, Object?>{
+    'appId': appId,
+    'appName': appName,
+    'executionTier': executionTier,
+    'tierBadgeVi': tierBadgeVi,
+    'learnedShortcuts': learnedShortcuts,
+    'peekabooNodes': peekabooNodes,
+    'quickActionsVi': quickActionsVi,
+    'lastActionSummaryVi': lastActionSummaryVi,
+    'runCount': runCount,
+  };
+}
+
+/// Human-in-the-Loop Handover snapshot (`CLAW-APP-ENGINE`):
+/// Pauses automation when XUNA encounters a login, 2FA/OTP, Captcha, or payment screen
+/// and resumes seamlessly once the owner clicks "Làm tiếp".
+class HumanHandoverSnapshot {
+  const HumanHandoverSnapshot({
+    required this.handoverId,
+    required this.appName,
+    required this.taskTitleVi,
+    required this.blockerReasonVi,
+    required this.remainingStepsVi,
+    this.waitingForHuman = true,
+  });
+
+  final String handoverId;
+  final String appName;
+  final String taskTitleVi;
+  final String blockerReasonVi;
+  final List<String> remainingStepsVi;
+  final bool waitingForHuman;
+}
+
+

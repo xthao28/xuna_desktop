@@ -19,8 +19,279 @@ class UiAccessibilityTreeService {
 
   final Map<String, Map<String, Object?>> _activeUiNodes =
       <String, Map<String, Object?>>{};
+  final List<AppPlaybookEntry> _learnedPlaybooks = <AppPlaybookEntry>[];
+  HumanHandoverSnapshot? _activeHandover;
+  String _activeFocusedAppName = 'Visual Studio Code';
   String _lastWindowTitle = 'MISA SME 2026 - Quản lý Hóa đơn & Chứng từ';
   String _lastInvokedRefId = 'none';
+
+  List<AppPlaybookEntry> listAppPlaybooks() =>
+      List<AppPlaybookEntry>.unmodifiable(_learnedPlaybooks);
+
+  HumanHandoverSnapshot? get activeHandover => _activeHandover;
+
+  String get activeFocusedAppName => _activeFocusedAppName;
+
+  /// Sets or switches the currently focused foreground app on MacBook/PC (`CLAW-APP-ENGINE`).
+  AppPlaybookEntry switchActiveFocusedApp(String appName) {
+    final clean = appName.trim().isEmpty ? 'Visual Studio Code' : appName.trim();
+    _activeFocusedAppName = clean;
+    return learnOrInspectApp(clean);
+  }
+
+  /// Inspects an application using the ClawdBot 3-Tier Execution Ladder:
+  /// - Tier 1: Native Bridge (`osascript` / URL Scheme / CLI — 0.1s)
+  /// - Tier 2: Menu-Bar & Hotkey Scanner (`AXMenuBar` — 0.2s)
+  /// - Tier 3: Peekaboo Annotated Semantic Map (`[B1]`, `[T1]`, `[M1]`)
+  /// and saves/updates its [AppPlaybookEntry] in memory.
+  AppPlaybookEntry learnOrInspectApp(
+    String rawAppName, {
+    String? customActionVi,
+  }) {
+    final cleanName =
+        rawAppName.trim().isEmpty ? _activeFocusedAppName : rawAppName.trim();
+    _activeFocusedAppName = cleanName;
+    final lower = cleanName.toLowerCase();
+    final appId = lower
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    final resolvedId = appId.isEmpty ? 'custom_app' : appId;
+
+    final int tier;
+    final String tierBadgeVi;
+    final List<String> shortcuts;
+    final List<String> peekabooNodes;
+    final List<String> quickActions;
+
+    if (lower.contains('code') ||
+        lower.contains('cursor') ||
+        lower.contains('xcode')) {
+      tier = 1;
+      tierBadgeVi = 'Tầng 1 · Native CLI & URL Scheme (0.1s)';
+      shortcuts = const <String>[
+        '⌘+P: Mở nhanh tệp trong dự án',
+        '⌘+⇧+P: Mở bảng lệnh Command Palette',
+        '⌃+`: Mở/đóng Terminal tích hợp',
+      ];
+      peekabooNodes = const <String>[
+        '[B1] Nút Run & Debug',
+        '[T1] Ô tìm kiếm toàn dự án',
+        '[M1] Menu Terminal → Run Task',
+      ];
+      quickActions = const <String>[
+        'Mở nhanh dự án hiện tại',
+        'Chạy kiểm tra lỗi (Analyze/Test)',
+        'Tóm tắt nhánh Git đang sửa',
+      ];
+    } else if (lower.contains('safari') ||
+        lower.contains('chrome') ||
+        lower.contains('arc') ||
+        lower.contains('edge')) {
+      tier = 1;
+      tierBadgeVi = 'Tầng 1 · Browser Bridge & AppleScript (0.1s)';
+      shortcuts = const <String>[
+        '⌘+L: Chọn thanh địa chỉ URL',
+        '⌘+T: Mở tab mới',
+        '⌘+F: Tìm nội dung trong trang',
+      ];
+      peekabooNodes = const <String>[
+        '[T1] Ô tìm kiếm / Địa chỉ web',
+        '[B1] Nút Tải xuống / Gửi biểu mẫu',
+        '[M1] Menu Tab đang mở (Đã đăng nhập)',
+      ];
+      quickActions = const <String>[
+        'Lưu link Tab đang mở vào Túi đồ',
+        'Tóm tắt trang web đang đọc',
+        'Trích xuất bảng dữ liệu trên trang',
+      ];
+    } else if (lower.contains('note') ||
+        lower.contains('obsidian') ||
+        lower.contains('notion')) {
+      tier = 1;
+      tierBadgeVi = 'Tầng 1 · Native Bridge / URL Scheme (0.1s)';
+      shortcuts = const <String>[
+        '⌘+N: Tạo trang ghi chú mới',
+        '⌘+K / ⌘+O: Tìm kiếm ghi chú nhanh',
+        '⌘+⇧+L: Chèn danh sách việc cần làm (Checklist)',
+      ];
+      peekabooNodes = const <String>[
+        '[B1] Nút + Trang mới (New Page)',
+        '[T1] Ô Tiêu đề & Nội dung ghi chú',
+        '[M1] Menu File → Export PDF/Markdown',
+      ];
+      quickActions = const <String>[
+        'Tạo ghi chú mới từ Túi đồ (Pocket)',
+        'Tìm ghi chú theo từ khóa',
+        'Lập danh sách việc cần làm hôm nay',
+      ];
+    } else if (lower.contains('spotify') || lower.contains('music')) {
+      tier = 1;
+      tierBadgeVi = 'Tầng 1 · Native Media Bridge (0.1s)';
+      shortcuts = const <String>[
+        'Space: Phát / Tạm dừng nhạc',
+        '⌘+→: Chuyển bài tiếp theo',
+        '⌘+L: Tìm bài hát / Playlist',
+      ];
+      peekabooNodes = const <String>[
+        '[B1] Nút Play / Pause',
+        '[T1] Ô Tìm kiếm bài hát / Nghệ sĩ',
+        '[B2] Nút Thích (Save to Liked Songs)',
+      ];
+      quickActions = const <String>[
+        'Bật nhạc tập trung (Lo-Fi / Chill)',
+        'Chuyển bài tiếp theo',
+        'Xem tên bài hát đang phát',
+      ];
+    } else if (lower.contains('figma') ||
+        lower.contains('canva') ||
+        lower.contains('capcut') ||
+        lower.contains('postman')) {
+      tier = 2;
+      tierBadgeVi = 'Tầng 2 · Quét Thanh Menu & Phím tắt (0.2s)';
+      shortcuts = const <String>[
+        '⌘+N: Tạo tệp / Thiết kế mới',
+        '⌘+/: Mở tìm kiếm lệnh nhanh (Quick Actions)',
+        '⌘+⇧+E: Xuất tệp (Export)',
+      ];
+      peekabooNodes = <String>[
+        '[M1] Menu File → New / Export trong $cleanName',
+        '[T1] Ô Tìm kiếm trong $cleanName',
+        '[B1] Nút Hành động chính (Primary CTA)',
+      ];
+      quickActions = <String>[
+        'Quét toàn bộ Menu & Phím tắt của $cleanName',
+        'Bấm nút Xuất tệp (Export) qua [M1]',
+        'Tìm kiếm nhanh trong $cleanName qua [T1]',
+      ];
+    } else {
+      tier = 3;
+      tierBadgeVi = 'Tầng 3 · Mắt thần Peekaboo [B1] [T1] (0-Lệch chuột)';
+      shortcuts = const <String>[
+        '⌘+N: Tạo mới (Quét từ Menu Bar)',
+        '⌘+F: Tìm kiếm trong cửa sổ',
+        '⌘+S: Lưu thay đổi',
+      ];
+      peekabooNodes = <String>[
+        '[B1] Nút Tạo mới / Bắt đầu trong $cleanName',
+        '[T1] Ô Nhập liệu / Tìm kiếm chính',
+        '[B2] Nút Lưu / Xuất kết quả',
+        '[M1] Thanh Menu trên cùng của $cleanName',
+      ];
+      quickActions = <String>[
+        'Đánh số nút bấm Peekaboo [B1]..[T1] cho $cleanName',
+        'Điền dữ liệu tự động vào ô [T1]',
+        'Bấm nút thực thi [B1] không chiếm chuột',
+      ];
+    }
+
+    final existingIdx = _learnedPlaybooks.indexWhere((p) => p.appId == resolvedId);
+    final nextRunCount =
+        existingIdx >= 0 ? _learnedPlaybooks[existingIdx].runCount + 1 : 1;
+    final actionSummary = (customActionVi != null && customActionVi.trim().isNotEmpty)
+        ? '✅ Đã thực hiện "$customActionVi" trong $cleanName qua $tierBadgeVi'
+        : '🧠 Đã học cấu trúc $cleanName ($tierBadgeVi · ${shortcuts.length} phím tắt · ${peekabooNodes.length} nhãn Peekaboo)';
+
+    final entry = AppPlaybookEntry(
+      appId: resolvedId,
+      appName: cleanName,
+      executionTier: tier,
+      tierBadgeVi: tierBadgeVi,
+      learnedShortcuts: shortcuts,
+      peekabooNodes: peekabooNodes,
+      quickActionsVi: quickActions,
+      lastActionSummaryVi: actionSummary,
+      runCount: nextRunCount,
+    );
+
+    if (existingIdx >= 0) {
+      _learnedPlaybooks[existingIdx] = entry;
+    } else {
+      _learnedPlaybooks.insert(0, entry);
+    }
+
+    // Also update active Live Canvas with the Peekaboo + Menu map for transparency
+    _canvasService.updateActiveCanvas(
+      LiveCanvasSurfaceSnapshot(
+        canvasId: 'cnv-playbook-$resolvedId',
+        surfaceKind: 'data_table',
+        titleVi: 'Sổ tay Điều khiển App: $cleanName ($tierBadgeVi)',
+        columns: const <String>[
+          'Nhãn Peekaboo / Phím tắt',
+          'Thành phần trong App',
+          'Cơ chế thực thi',
+        ],
+        rows: <Map<String, Object?>>[
+          for (final sc in shortcuts)
+            <String, String>{
+              'col0': sc.split(':').first.trim(),
+              'col1': sc.contains(':') ? sc.split(':').sublist(1).join(':').trim() : sc,
+              'col2': 'Hotkey / Menu Bar',
+            },
+          for (final nd in peekabooNodes)
+            <String, String>{
+              'col0': nd.split(' ').first.trim(),
+              'col1': nd,
+              'col2': 'Peekaboo AXUIElement / UIA',
+            },
+        ],
+        actions: const <String>['invoke_ref', 'export_csv'],
+        summaryVi: actionSummary,
+      ),
+    );
+
+    return entry;
+  }
+
+  /// Removes a learned [AppPlaybookEntry] by [appId].
+  void removeAppPlaybook(String appId) {
+    _learnedPlaybooks.removeWhere((p) => p.appId == appId);
+  }
+
+  /// Triggers a Human-in-the-Loop Handover pause when encountering login/2FA/Captcha/payment.
+  HumanHandoverSnapshot triggerHumanHandover({
+    required String appName,
+    required String taskTitleVi,
+    String? blockerReasonVi,
+    List<String>? remainingStepsVi,
+  }) {
+    final cleanApp = appName.trim().isEmpty ? _activeFocusedAppName : appName.trim();
+    final snap = HumanHandoverSnapshot(
+      handoverId: 'ho_${DateTime.now().millisecondsSinceEpoch % 100000}',
+      appName: cleanApp,
+      taskTitleVi: taskTitleVi.trim().isEmpty
+          ? 'Thực hiện tác vụ tự động trong $cleanApp'
+          : taskTitleVi.trim(),
+      blockerReasonVi: blockerReasonVi ??
+          'Phát hiện bước nhạy cảm (Đăng nhập / Mã 2FA OTP / Xác nhận) trong $cleanApp — XUNA tự động dừng lại để bạn bấm qua an toàn.',
+      remainingStepsVi: remainingStepsVi ??
+          <String>[
+            'Bước tiếp theo 1: Tiếp tục điền thông tin vào [T1] trong $cleanApp',
+            'Bước tiếp theo 2: Bấm nút Hoàn tất [B1] và báo kết quả về điện thoại',
+          ],
+      waitingForHuman: true,
+    );
+    _activeHandover = snap;
+    return snap;
+  }
+
+  /// Resumes and completes the paused task after the human owner finishes the login/2FA step.
+  String resumeHumanHandover() {
+    final current = _activeHandover;
+    if (current == null) {
+      return 'Không có phiên chờ xác nhận nào đang tạm dừng.';
+    }
+    _activeHandover = null;
+    learnOrInspectApp(
+      current.appName,
+      customActionVi: 'Hoàn tất ${current.remainingStepsVi.length} bước còn lại của "${current.taskTitleVi}"',
+    );
+    return '🎉 Cảm ơn bạn! XUNA đã tiếp nhận lại cửa sổ ${current.appName} và hoàn thành nốt ${current.remainingStepsVi.length} bước còn lại của "${current.taskTitleVi}"!';
+  }
+
+  /// Cancels the paused Human-in-the-Loop handover session.
+  void cancelHumanHandover() {
+    _activeHandover = null;
+  }
 
   ({
     String action,

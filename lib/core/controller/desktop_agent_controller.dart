@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/presentation/controllers/base_getx_controller.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
+import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
@@ -62,11 +65,20 @@ class DesktopAgentController extends BaseGetxController {
   final habitProposals = <Map<String, Object?>>[].obs;
   final forgedSkills = <ForgedSkillEntry>[].obs;
   final isTeachRecording = false.obs;
+  final teachRecordedSteps = <String>[].obs;
   final lastHeartbeatStatus = Rxn<HeartbeatStatusSnapshot>();
   final activeLiveCanvas = Rxn<LiveCanvasSurfaceSnapshot>();
   final frontierStatusSummaryVi = ''.obs;
   final selectedColorThemeId = 'green_edition'.obs;
   final isAutoColorTheme = false.obs;
+  final latestVitals = Rxn<SystemVitalsSnapshot>();
+  final activeDevPorts = <DevPortEntry>[].obs;
+  final detectedLanIp = ''.obs;
+  final discoveredApps = <DiscoveredApp>[].obs;
+  final learnedAppPlaybooks = <AppPlaybookEntry>[].obs;
+  final activeHandover = Rxn<HumanHandoverSnapshot>();
+  final activeFocusedAppName = 'Visual Studio Code'.obs;
+  final AutoAppScanner _appScanner = AutoAppScanner();
 
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
@@ -150,6 +162,7 @@ class DesktopAgentController extends BaseGetxController {
     await enrollmentStore.load();
     await policyStore.reload();
     _syncFromStores();
+    scanInstalledApps();
     if (lanModeEnabled.value && lanServer != null) {
       try {
         await lanServer!.start();
@@ -207,10 +220,72 @@ class DesktopAgentController extends BaseGetxController {
     );
     habitProposals.assignAll(svc.proposeHabitWorkflows());
     forgedSkills.assignAll(svc.listForgedSkillEntries());
+    learnedAppPlaybooks.assignAll(svc.listAppPlaybooks());
+    activeHandover.value = svc.activeHandover;
+    activeFocusedAppName.value = svc.activeFocusedAppName;
     isTeachRecording.value = svc.isTeachRecordingActive;
     lastHeartbeatStatus.value = svc.lastHeartbeatStatus;
     activeLiveCanvas.value = svc.activeLiveCanvas;
     selectedColorThemeId.value = svc.activeColorThemeId;
+  }
+
+  /// Inspects and learns an application across the 3-tier ladder (`CLAW-APP-ENGINE`).
+  AppPlaybookEntry? learnOrInspectAppFromUi(
+    String appName, {
+    String? customActionVi,
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final entry = svc.learnOrInspectApp(
+      appName,
+      customActionVi: customActionVi,
+    );
+    frontierStatusSummaryVi.value = entry.lastActionSummaryVi;
+    refreshSymbioticState();
+    return entry;
+  }
+
+  /// Removes a learned [AppPlaybookEntry] by [appId] (`CLAW-APP-ENGINE`).
+  void removeAppPlaybookFromUi(String appId) {
+    final svc = symbioticService;
+    if (svc == null) return;
+    svc.removeAppPlaybook(appId);
+    frontierStatusSummaryVi.value = '🗑️ Đã xóa ứng dụng khỏi Sổ tay Học App';
+    refreshSymbioticState();
+  }
+
+  /// Pauses automation at a sensitive step (Login / 2FA / Captcha / Payment) and waits for the owner (`CLAW-APP-ENGINE`).
+  HumanHandoverSnapshot? triggerHumanHandoverFromUi({
+    required String appName,
+    required String taskTitleVi,
+  }) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final snap = svc.triggerHumanHandover(
+      appName: appName,
+      taskTitleVi: taskTitleVi,
+    );
+    frontierStatusSummaryVi.value = '✋ ${snap.blockerReasonVi}';
+    refreshSymbioticState();
+    return snap;
+  }
+
+  /// Resumes a paused Human-in-the-Loop Handover session (`CLAW-APP-ENGINE`).
+  void resumeHumanHandoverFromUi() {
+    final svc = symbioticService;
+    if (svc == null) return;
+    final summary = svc.resumeHumanHandover();
+    frontierStatusSummaryVi.value = summary;
+    refreshSymbioticState();
+  }
+
+  /// Cancels a paused Human-in-the-Loop Handover session (`CLAW-APP-ENGINE`).
+  void cancelHumanHandoverFromUi() {
+    final svc = symbioticService;
+    if (svc == null) return;
+    svc.cancelHumanHandover();
+    frontierStatusSummaryVi.value = '⏹️ Đã hủy phiên chờ xác nhận thủ công';
+    refreshSymbioticState();
   }
 
   /// Selects one of the 7 XUNA Color Themes on Desktop and records it in ChronoGraph (`THEME-3`).
@@ -369,14 +444,18 @@ class DesktopAgentController extends BaseGetxController {
   ForgedSkillEntry? forgeQuickInvoiceTool({
     String goal =
         'Tự động tải hết hóa đơn PDF/XML và gom bảng kê Excel vào HoaDon_Thang',
+    String? targetFolder,
   }) {
     final svc = symbioticService;
     if (svc == null) return null;
     final entry = svc.synthesizeSkill(
       goal: goal,
-      targetFolder: 'HoaDon_Thang',
-      fileExtensions: const <String>['pdf', 'xml'],
+      targetFolder: (targetFolder == null || targetFolder.trim().isEmpty)
+          ? null
+          : targetFolder.trim(),
     );
+    frontierStatusSummaryVi.value =
+        '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.skillId}) — thư mục: ${entry.targetFolder}';
     refreshSymbioticState();
     return entry;
   }
@@ -386,6 +465,7 @@ class DesktopAgentController extends BaseGetxController {
     final svc = symbioticService;
     if (svc == null) return null;
     final res = svc.runForgedSkill(skillId: skillId);
+    frontierStatusSummaryVi.value = '▶ ${res.summaryVi}';
     refreshSymbioticState();
     return <String, Object?>{
       'skillId': res.skillId,
@@ -398,8 +478,44 @@ class DesktopAgentController extends BaseGetxController {
     };
   }
 
+  /// Deletes a forged personal skill from Desktop UI.
+  void removeForgedSkillFromUi(String skillId) {
+    final svc = symbioticService;
+    if (svc == null) return;
+    svc.listAndManageForgedSkills(action: 'delete_one', skillId: skillId);
+    frontierStatusSummaryVi.value = '🗑️ Đã xóa công cụ $skillId khỏi OmniForge';
+    refreshSymbioticState();
+  }
+
+  /// Exports a forged skill as OpenClaw `SKILL.md` and copies it to the PC Clipboard.
+  Future<void> copySkillMarkdownToClipboard(String skillId) async {
+    final md = exportSkillMarkdownFromUi(skillId);
+    if (md == null || md.isEmpty) return;
+    await copyTextToSystemClipboard(md, labelVi: 'tài liệu SKILL.md');
+  }
+
+  /// Adds a demonstrated action step during an active `Show-Me-Once` session on Desktop.
+  void addTeachStepFromUi(String stepText) {
+    final svc = symbioticService;
+    final clean = stepText.trim();
+    if (svc == null || clean.isEmpty) return;
+    if (!svc.isTeachRecordingActive) {
+      svc.handleTeachSession(
+        mode: 'start',
+        skillTitle: 'Công cụ học từ thao tác mẫu',
+      );
+    }
+    svc.handleTeachSession(
+      mode: 'record_action',
+      demonstratedAction: clean,
+    );
+    teachRecordedSteps.add(clean);
+    frontierStatusSummaryVi.value = '🎥 Đã ghi nhận bước mẫu: $clean';
+    refreshSymbioticState();
+  }
+
   /// Toggles `Show-Me-Once` demonstration recording and compiles a skill when stopped (`FORGE-3`).
-  Map<String, Object?>? toggleTeachModeFromUi() {
+  Map<String, Object?>? toggleTeachModeFromUi({String? customTitle}) {
     final svc = symbioticService;
     if (svc == null) return null;
     if (!svc.isTeachRecordingActive) {
@@ -412,13 +528,25 @@ class DesktopAgentController extends BaseGetxController {
         demonstratedAction: 'Click tải hóa đơn PDF mẫu #1',
         selectorOrPattern: 'a.btn-download-invoice',
       );
+      teachRecordedSteps.assignAll(<String>[
+        'Bước 1: Chọn dòng đầu tiên trong danh sách dữ liệu',
+        'Bước 2: Bấm tải tệp & chuẩn hóa tên theo ngày tháng',
+      ]);
+      frontierStatusSummaryVi.value =
+          '🎥 Đang ở chế độ Làm mẫu 1 lần (Show-Me-Once) — hãy thêm bước hoặc bấm Đóng gói thành Tool!';
       refreshSymbioticState();
       return null;
     } else {
+      final resolvedTitle =
+          (customTitle != null && customTitle.trim().isNotEmpty)
+          ? customTitle.trim()
+          : 'Tải hóa đơn mẫu và lặp lại cho toàn bộ danh sách';
       final res = svc.handleTeachSession(
         mode: 'stop_and_compile',
-        skillTitle: 'Tải hóa đơn mẫu và lặp lại cho toàn bộ danh sách',
+        skillTitle: resolvedTitle,
       );
+      teachRecordedSteps.clear();
+      frontierStatusSummaryVi.value = '🎉 ${res.generalizedLoopSummaryVi}';
       refreshSymbioticState();
       return <String, Object?>{
         'recordingActive': res.recordingActive,
@@ -460,13 +588,156 @@ class DesktopAgentController extends BaseGetxController {
   UniversalPocketItem? pushQuickPocketSnippet(String rawText, {String? label}) {
     final svc = symbioticService;
     if (svc == null) return null;
+    final clean = rawText.trim();
+    if (clean.isEmpty) return null;
     final item = svc.pushPocketItem(
-      rawText: rawText,
+      rawText: clean,
       label: label,
       sourceDevice: 'desktop_ui',
     );
+    frontierStatusSummaryVi.value =
+        '📥 Đã cất "${item.label}" vào Bộ nhớ tạm (Pocket)';
     refreshSymbioticState();
     return item;
+  }
+
+  /// Reads the PC/Mac system Clipboard and pushes it into XUNA Universal Pocket.
+  Future<UniversalPocketItem?> pasteSystemClipboardToPocket() async {
+    String clipText = '';
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain).timeout(
+        const Duration(milliseconds: 300),
+        onTimeout: () => null,
+      );
+      clipText = (data?.text ?? '').trim();
+    } catch (_) {}
+    if (clipText.isEmpty) {
+      frontierStatusSummaryVi.value =
+          '⚠️ Clipboard đang trống — hãy sao chép văn bản hoặc link trước nhé!';
+      return null;
+    }
+    return pushQuickPocketSnippet(clipText, label: 'Từ Clipboard PC');
+  }
+
+  /// Copies [text] to the system Clipboard and updates the status banner.
+  Future<void> copyTextToSystemClipboard(
+    String text, {
+    String labelVi = 'nội dung',
+  }) async {
+    final clean = text.trim();
+    if (clean.isEmpty) return;
+    try {
+      await symbioticService?.writeClipboardText(clean);
+      await Clipboard.setData(ClipboardData(text: clean)).timeout(
+        const Duration(milliseconds: 300),
+        onTimeout: () {},
+      );
+    } catch (_) {}
+    frontierStatusSummaryVi.value = '📋 Đã sao chép $labelVi vào Clipboard PC!';
+  }
+
+  /// Removes a saved Workspace Capsule by [capsuleId].
+  void removeWorkspaceCapsule(String capsuleId) {
+    final svc = symbioticService;
+    if (svc == null) return;
+    svc.removeWorkspaceCapsule(capsuleId);
+    frontierStatusSummaryVi.value = '🗑️ Đã xóa phiên làm việc đã lưu';
+    refreshSymbioticState();
+  }
+
+  /// Removes a Pocket item by [itemId].
+  void removePocketItem(String itemId) {
+    final svc = symbioticService;
+    if (svc == null) return;
+    svc.removePocketItem(itemId);
+    frontierStatusSummaryVi.value = '🗑️ Đã xóa mục khỏi Bộ nhớ tạm';
+    refreshSymbioticState();
+  }
+
+  /// Transforms a Pocket item (format JSON, extract tasks, or summarize) and saves the result.
+  UniversalPocketItem? transformPocketItemFromUi(UniversalPocketItem item) {
+    final svc = symbioticService;
+    if (svc == null) return null;
+    final mode = item.kind == 'json'
+        ? 'format_json'
+        : (item.suggestedActions.contains('extract_tasks')
+            ? 'extract_tasks'
+            : 'prepare_knowledge_fact');
+    final res = svc.transformPocketItem(
+      itemId: item.itemId,
+      rawText: item.text,
+      mode: mode,
+    );
+    if (res.transformedText.trim().isEmpty) return null;
+    final created = svc.pushPocketItem(
+      rawText: res.transformedText,
+      label: 'Biến đổi: ${item.label}',
+      sourceDevice: 'desktop_transform',
+    );
+    frontierStatusSummaryVi.value =
+        '⚡ Đã biến đổi "${item.label}" (${res.mode})';
+    refreshSymbioticState();
+    return created;
+  }
+
+  /// Registers a background port or process watchdog from the Desktop UI.
+  Future<void> watchDevPortFromUi(
+    int port, {
+    String? label,
+  }) async {
+    final svc = symbioticService;
+    if (svc == null) return;
+    final res = await svc.registerProcessOrPortWatchdog(
+      targetKind: 'port',
+      port: port,
+      label: label ?? 'Dev Server :$port',
+    );
+    frontierStatusSummaryVi.value = '🛡️ ${res.summary}';
+    refreshSymbioticState();
+  }
+
+  /// Registers a custom process or port watchdog from the Desktop UI.
+  Future<void> watchCustomTargetFromUi({
+    required String targetKind,
+    int? port,
+    String? processName,
+    String? label,
+  }) async {
+    final svc = symbioticService;
+    if (svc == null) return;
+    final res = await svc.registerProcessOrPortWatchdog(
+      targetKind: targetKind,
+      port: port,
+      processName: processName,
+      label: label,
+    );
+    frontierStatusSummaryVi.value = '🛡️ ${res.summary}';
+    refreshSymbioticState();
+  }
+
+  /// Scans real-time PC system vitals (Battery, RAM, Disk) and active localhost dev ports.
+  Future<void> scanSystemVitalsAndPorts() async {
+    final svc = symbioticService;
+    if (svc == null) return;
+    final vitals = await svc.readSystemVitals();
+    final ports = await svc.scanDevPorts();
+    latestVitals.value = vitals;
+    activeDevPorts.assignAll(ports.activePorts);
+    detectedLanIp.value = ports.lanIp;
+    frontierStatusSummaryVi.value =
+        '💻 Pin ${vitals.batteryPercent}% (${vitals.isCharging ? "Đang sạc" : "Dùng pin"}) · RAM ${vitals.memoryUsedPercent}% · Ổ trống ${vitals.diskFreeGb}GB · ${ports.activePorts.length} cổng Dev đang mở';
+    refreshSymbioticState();
+  }
+
+  /// Clears all capsules, pocket items, and watchdogs on Desktop.
+  void clearAllSymbioticDataFromUi() {
+    final svc = symbioticService;
+    if (svc == null) return;
+    svc.clearWorkspaceAndPocket();
+    svc.listAndClearWatchdogs(action: 'clear_all');
+    frontierStatusSummaryVi.value =
+        '🧹 Đã làm sạch toàn bộ dữ liệu Cộng sinh trên Desktop';
+    refreshSymbioticState();
   }
 
   Future<void> reloadPolicy() async {
@@ -490,6 +761,125 @@ class DesktopAgentController extends BaseGetxController {
       families: nextFamilies,
       apps: current.apps,
       urlDomains: current.urlDomains,
+      workflows: current.workflows,
+      players: current.players,
+    );
+    await policyStore.savePolicy(updated);
+  }
+
+  /// Scans installed applications on macOS (`/Applications`) or Windows (Start Menu) (`UDC-11`).
+  List<DiscoveredApp> scanInstalledApps({
+    bool forceRefresh = false,
+  }) {
+    try {
+      final apps = _appScanner.discoverApps(forceRefresh: forceRefresh);
+      discoveredApps.assignAll(apps);
+      return apps;
+    } catch (_) {
+      return const <DiscoveredApp>[];
+    }
+  }
+
+  /// Adds a custom application entry to `host-policy.json` (`apps`).
+  Future<bool> addAllowedAppToPolicy({
+    required String name,
+    required String target,
+    String? customId,
+  }) async {
+    final current = activePolicy.value;
+    if (current == null) return false;
+    final cleanName = name.trim();
+    final cleanTarget = target.trim();
+    if (cleanName.isEmpty || cleanTarget.isEmpty) return false;
+    final rawId = (customId != null && customId.trim().isNotEmpty)
+        ? customId.trim()
+        : cleanName;
+    final normalizedId = AutoAppScanner.normalizeId(rawId);
+    final validId = isValidShortId(normalizedId)
+        ? normalizedId
+        : 'app_${DateTime.now().millisecondsSinceEpoch % 100000}';
+    final kind = Platform.isMacOS ? AppLaunchKind.bundle : AppLaunchKind.exe;
+    try {
+      final entry = AllowedAppConfig(
+        id: validId,
+        name: cleanName.length > 80 ? cleanName.substring(0, 80) : cleanName,
+        kind: kind,
+        target: cleanTarget,
+        risk: RiskTier.r2,
+      );
+      final nextApps = <AllowedAppConfig>[
+        ...current.apps.where((a) => a.id != validId),
+        entry,
+      ];
+      final updated = HostPolicy(
+        schemaVersion: current.schemaVersion,
+        families: current.families,
+        apps: nextApps,
+        urlDomains: current.urlDomains,
+        workflows: current.workflows,
+        players: current.players,
+      );
+      await policyStore.savePolicy(updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Removes a custom application entry from `host-policy.json` by [appId].
+  Future<void> removeAllowedAppFromPolicy(String appId) async {
+    final current = activePolicy.value;
+    if (current == null) return;
+    final nextApps = current.apps.where((a) => a.id != appId).toList();
+    final updated = HostPolicy(
+      schemaVersion: current.schemaVersion,
+      families: current.families,
+      apps: nextApps,
+      urlDomains: current.urlDomains,
+      workflows: current.workflows,
+      players: current.players,
+    );
+    await policyStore.savePolicy(updated);
+  }
+
+  /// Adds an HTTPS domain to `host-policy.json` (`urlDomains`).
+  Future<bool> addAllowedDomainToPolicy(String rawDomain) async {
+    final current = activePolicy.value;
+    if (current == null) return false;
+    var clean = rawDomain.trim().toLowerCase();
+    clean = clean
+        .replaceFirst(RegExp(r'^https?://'), '')
+        .split('/')
+        .first
+        .trim();
+    if (clean.isEmpty || current.urlDomains.contains(clean)) return false;
+    try {
+      final nextDomains = <String>[...current.urlDomains, clean];
+      final updated = HostPolicy(
+        schemaVersion: current.schemaVersion,
+        families: current.families,
+        apps: current.apps,
+        urlDomains: nextDomains,
+        workflows: current.workflows,
+        players: current.players,
+      );
+      await policyStore.savePolicy(updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Removes an HTTPS domain from `host-policy.json` (`urlDomains`).
+  Future<void> removeAllowedDomainFromPolicy(String domain) async {
+    final current = activePolicy.value;
+    if (current == null) return;
+    final nextDomains = current.urlDomains.where((d) => d != domain).toList();
+    final updated = HostPolicy(
+      schemaVersion: current.schemaVersion,
+      families: current.families,
+      apps: current.apps,
+      urlDomains: nextDomains,
       workflows: current.workflows,
       players: current.players,
     );

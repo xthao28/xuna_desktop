@@ -76,6 +76,26 @@ class WorkspacePocketService {
     return _capsules.isNotEmpty ? _capsules.first : null;
   }
 
+  /// Removes a saved Time-Travel Workspace Capsule by [capsuleId].
+  bool removeWorkspaceCapsule(String capsuleId) {
+    final before = _capsules.length;
+    _capsules.removeWhere((c) => c.capsuleId == capsuleId);
+    return _capsules.length != before;
+  }
+
+  /// Removes a Universal Pocket item by [itemId].
+  bool removePocketItem(String itemId) {
+    final before = _pocketItems.length;
+    _pocketItems.removeWhere((item) => item.itemId == itemId);
+    return _pocketItems.length != before;
+  }
+
+  /// Clears all saved capsules and pocket items.
+  void clearAll() {
+    _capsules.clear();
+    _pocketItems.clear();
+  }
+
   /// Pushes a secret-redacted snippet or item into XUNA Universal Pocket (`SYM-1` S1.1).
   UniversalPocketItem pushPocketItem({
     required String rawText,
