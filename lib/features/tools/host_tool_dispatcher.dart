@@ -331,9 +331,15 @@ class HostToolDispatcher {
       LinkedHashMap<String, XtpResponse>();
   final Map<Object, ToolCancellationToken> _inFlightByRequestId =
       <Object, ToolCancellationToken>{};
+  final StreamController<void> _toolsListChanged =
+      StreamController<void>.broadcast();
   Future<void> _serialLaneTail = Future<void>.value();
   int _parallelReadLaneCount = 0;
   int _serialActionLaneCount = 0;
+
+  /// Broadcast stream that fires whenever the dynamic forged-tool catalog changes
+  /// (`FORGE-LATM` — triggers `notifications/tools/list_changed` on the active XTP session).
+  Stream<void> get toolsListChanged => _toolsListChanged.stream;
 
   /// Number of read-only / observation tool calls executed on the concurrent
   /// `ParallelReadLane` (`CLAW-4`).
@@ -401,11 +407,15 @@ class HostToolDispatcher {
       includeOmniForgeTools: true,
       includeClawPulseTools: true,
     );
+    final dynamicForged = symbioticService.buildDynamicToolDescriptors(
+      defaultPermission: perms.accessibility,
+    );
     if (computerUseManager == null) {
-      return mvp;
+      return <ToolDescriptor>[...mvp, ...dynamicForged];
     }
     return <ToolDescriptor>[
       ...mvp,
+      ...dynamicForged,
       ...buildComputerUseTools(defaultPermission: perms.accessibility),
     ];
   }
@@ -488,7 +498,10 @@ class HostToolDispatcher {
       return response;
     }
 
-    final handler = _handlers[params.name];
+    final isDynamicForgedTool = params.name.startsWith('forge.custom_');
+    final handler = isDynamicForgedTool
+        ? _handlers['forge.run_skill']
+        : _handlers[params.name];
     if (handler == null) {
       stopwatch.stop();
       final response = XtpResponse.toolCallResult(
@@ -583,8 +596,12 @@ class HostToolDispatcher {
         return subOut;
       }
 
+      final effectiveArguments = isDynamicForgedTool
+          ? <String, Object?>{'skillId': params.name, ...params.arguments}
+          : params.arguments;
+
       final execContext = ToolExecutionContext(
-        arguments: params.arguments,
+        arguments: effectiveArguments,
         evaluation: evaluation,
         policy: evaluator.policy,
         channel: channel,
@@ -651,6 +668,17 @@ class HostToolDispatcher {
             nowUtc: effectiveNow,
           );
           symbioticService.recordToolExecution(params.name);
+        }
+        if (const <String>{
+          'forge.synthesize_skill',
+          'forge.list_and_manage',
+          'skill.workshop_sync',
+          'skill.markdown_bridge',
+          'teach.record_session',
+        }.contains(params.name)) {
+          if (!_toolsListChanged.isClosed) {
+            _toolsListChanged.add(null);
+          }
         }
       }
     } on TimeoutException {
@@ -738,5 +766,6 @@ class HostToolDispatcher {
 
   void dispose() {
     stopController.removeCancelListener(_onEmergencyStop);
+    unawaited(_toolsListChanged.close());
   }
 }

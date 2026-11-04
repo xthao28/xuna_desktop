@@ -29,6 +29,11 @@ class ForgeSynthesizeSkillTool extends HostToolHandler {
     final goal = context.arguments['goal'] as String;
     final category = context.arguments['category'] as String?;
     final targetFolder = context.arguments['targetFolder'] as String?;
+    final toolName = context.arguments['toolName'] as String?;
+    final runtime = context.arguments['runtime'] as String?;
+    final scriptCode = context.arguments['scriptCode'] as String?;
+    final testArgsJson = context.arguments['testArgsJson'] as String?;
+    final skillIdToUpdate = context.arguments['skillIdToUpdate'] as String?;
     final rawExts = context.arguments['fileExtensions'];
     final exts = rawExts is List
         ? rawExts.whereType<String>().toList(growable: false)
@@ -38,6 +43,11 @@ class ForgeSynthesizeSkillTool extends HostToolHandler {
       category: category,
       targetFolder: targetFolder,
       fileExtensions: exts,
+      toolName: toolName,
+      runtime: runtime,
+      scriptCode: scriptCode,
+      testArgsJson: testArgsJson,
+      skillIdToUpdate: skillIdToUpdate,
       nowUtc: context.nowUtc,
     );
     if (!Platform.environment.containsKey('FLUTTER_TEST')) {
@@ -51,16 +61,40 @@ class ForgeSynthesizeSkillTool extends HostToolHandler {
         if (mdRes.skillMarkdown.isNotEmpty) {
           File('$realDir/SKILL.md').writeAsStringSync(mdRes.skillMarkdown);
         }
+        if (res.scriptCode.isNotEmpty) {
+          final ext = switch (res.runtime) {
+            'python' => 'py',
+            'node' => 'js',
+            'powershell' => 'ps1',
+            'bash' => 'sh',
+            _ => 'txt',
+          };
+          final slug = res.toolName.isNotEmpty ? res.toolName : res.skillId;
+          File('$realDir/$slug.$ext').writeAsStringSync(res.scriptCode);
+        }
+        final workshopRoot = _resolveWorkspaceSkillDir('XUNA_Skill_Workshop');
+        Directory(workshopRoot).createSync(recursive: true);
+        context.symbioticService.syncSkillWorkshop(
+          action: 'sync_to_disk',
+          skillId: res.skillId,
+          workshopFolder: workshopRoot,
+          nowUtc: context.nowUtc,
+        );
       } catch (_) {}
     }
     return ToolHandlerOutput(
       text: res.summaryVi,
       structuredContent: <String, Object?>{
         'skillId': res.skillId,
+        'toolName': res.toolName,
+        'runtime': res.runtime,
         'titleVi': res.titleVi,
         'category': res.category,
         'detectedItemsCount': res.detectedItemsCount,
+        'dryRunOk': res.selfTestPassed,
         'dryRunSample': res.dryRunSample,
+        'stdoutPreview': res.lastStdoutPreview,
+        'stderrPreview': res.lastStderrPreview,
         'selfDebugIterations': res.selfDebugIterations,
         'parameterFields': res.parameterFields,
         'scriptSteps': res.scriptSteps,
@@ -83,11 +117,13 @@ class ForgeRunSkillTool extends HostToolHandler {
     final maxItems = context.arguments['maxItems'] as int?;
     final outputFolder = context.arguments['outputFolder'] as String?;
     final exportCsv = (context.arguments['exportCsv'] as bool?) ?? true;
+    final argsJson = context.arguments['argsJson'] as String?;
     final res = context.symbioticService.runForgedSkill(
       skillId: skillId,
       maxItems: maxItems,
       outputFolder: outputFolder,
       exportCsv: exportCsv,
+      argsJson: argsJson,
       nowUtc: context.nowUtc,
     );
     context.actionLedger.pushEntry(
@@ -204,9 +240,13 @@ class ForgeRunSkillTool extends HostToolHandler {
       text: res.summaryVi,
       structuredContent: <String, Object?>{
         'skillId': res.skillId,
+        'runtime': res.runtime,
+        'exitCode': res.exitCode,
         'processedCount': res.processedCount,
         'outputDirectory': res.outputDirectory,
         'exportedCsvFile': res.exportedCsvFile,
+        'stdoutPreview': res.stdoutPreview,
+        'stderrPreview': res.stderrPreview,
         'selfHealedSelectors': res.selfHealedSelectors,
         'undoSnapshotId': res.undoSnapshotId,
         'summaryVi': res.summaryVi,

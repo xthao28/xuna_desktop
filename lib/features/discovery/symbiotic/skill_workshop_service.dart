@@ -98,6 +98,8 @@ class SkillWorkshopService {
         '---\n'
         'name: "${target.titleVi}"\n'
         'skill_id: "${target.skillId}"\n'
+        '${target.toolName.isNotEmpty ? 'tool_name: "${target.toolName}"\n' : ''}'
+        'runtime: "${target.runtime}"\n'
         'category: "${target.category}"\n'
         'risk: "R2"\n'
         'target_folder: "${target.targetFolder}"\n'
@@ -272,6 +274,42 @@ class SkillWorkshopService {
         final subDirs = rootDir.listSync().whereType<Directory>().toList()
           ..sort((a, b) => a.path.compareTo(b.path));
         for (final sub in subDirs) {
+          final recipeFile = File(
+            '${sub.path}${Platform.pathSeparator}recipe.json',
+          );
+          if (recipeFile.existsSync()) {
+            try {
+              final rawJson = jsonDecode(recipeFile.readAsStringSync());
+              if (rawJson is Map) {
+                final recipeMap = rawJson.map(
+                  (k, v) => MapEntry<String, Object?>(k.toString(), v),
+                );
+                final entry = ForgedSkillEntry.fromDiskRecipeJson(recipeMap);
+                if (entry.scriptCode.isNotEmpty) {
+                  final check = validateSynthesizedToolScript(
+                    scriptCode: entry.scriptCode,
+                    runtime: entry.runtime,
+                  );
+                  if (!check.safe) {
+                    continue;
+                  }
+                }
+                final existingIdx = forgedSkills.indexWhere(
+                  (s) => s.skillId.toLowerCase() == entry.skillId.toLowerCase(),
+                );
+                if (existingIdx >= 0) {
+                  forgedSkills[existingIdx] = entry;
+                } else {
+                  forgedSkills.insert(0, entry);
+                }
+                reloaded++;
+                continue;
+              }
+            } catch (_) {
+              // Fall back to SKILL.md if recipe.json is malformed.
+            }
+          }
+
           final mdFile = File('${sub.path}${Platform.pathSeparator}SKILL.md');
           if (!mdFile.existsSync()) continue;
           final rawMd = mdFile.readAsStringSync();
@@ -359,9 +397,22 @@ class SkillWorkshopService {
         File(
           '${skillDir.path}${Platform.pathSeparator}recipe.json',
         ).writeAsStringSync(
-          const JsonEncoder.withIndent('  ').convert(s.toWireJson()),
+          const JsonEncoder.withIndent('  ').convert(s.toDiskRecipeJson()),
           encoding: utf8,
         );
+        if (s.scriptCode.isNotEmpty) {
+          final ext = switch (s.runtime) {
+            'python' => 'py',
+            'node' => 'js',
+            'powershell' => 'ps1',
+            'bash' => 'sh',
+            _ => 'txt',
+          };
+          final slug = s.toolName.isNotEmpty ? s.toolName : s.skillId;
+          File(
+            '${skillDir.path}${Platform.pathSeparator}$slug.$ext',
+          ).writeAsStringSync(s.scriptCode, encoding: utf8);
+        }
       }
     }
     final idxList = buildCompactIndex();

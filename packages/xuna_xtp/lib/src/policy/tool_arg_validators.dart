@@ -730,11 +730,21 @@ PolicyEvaluationResult validateToolArguments({
       final category = arguments['category'];
       final targetFolder = arguments['targetFolder'];
       final fileExtensions = arguments['fileExtensions'];
+      final toolName = arguments['toolName'];
+      final runtime = arguments['runtime'];
+      final scriptCode = arguments['scriptCode'];
+      final testArgsJson = arguments['testArgsJson'];
+      final skillIdToUpdate = arguments['skillIdToUpdate'];
       const allowedSynthKeys = <String>{
         'goal',
         'category',
         'targetFolder',
         'fileExtensions',
+        'toolName',
+        'runtime',
+        'scriptCode',
+        'testArgsJson',
+        'skillIdToUpdate',
       };
       if (arguments.keys.any((k) => !allowedSynthKeys.contains(k)) ||
           goal is! String ||
@@ -746,13 +756,52 @@ PolicyEvaluationResult validateToolArguments({
                   !allowedForgeSkillCategories.contains(category))) ||
           (targetFolder != null &&
               (targetFolder is! String ||
-                  !isValidSandboxFolderName(targetFolder)))) {
+                  !isValidSandboxFolderName(targetFolder))) ||
+          (toolName != null &&
+              (toolName is! String ||
+                  toolName.trim().isEmpty ||
+                  toolName.length > 48)) ||
+          (runtime != null &&
+              (runtime is! String ||
+                  !allowedSynthesizedToolRuntimes
+                      .contains(runtime.trim().toLowerCase()))) ||
+          (testArgsJson != null &&
+              (testArgsJson is! String ||
+                  testArgsJson.length > 1000 ||
+                  !isSafeClipboardWriteText(testArgsJson))) ||
+          (skillIdToUpdate != null &&
+              (skillIdToUpdate is! String ||
+                  !isValidShortId(skillIdToUpdate)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
           effectiveRisk: RiskTier.r1,
           errorCode: 'schema_mismatch',
         );
+      }
+      if (scriptCode != null) {
+        if (scriptCode is! String ||
+            scriptCode.trim().isEmpty ||
+            scriptCode.length > 4000) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        final scriptCheck = validateSynthesizedToolScript(
+          runtime: (runtime as String?) ?? 'python',
+          scriptCode: scriptCode,
+        );
+        if (!scriptCheck.safe) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.denied,
+            effectiveRisk: RiskTier.r1,
+            errorCode: 'forge_script_security_violation',
+          );
+        }
       }
       if (fileExtensions != null) {
         if (fileExtensions is! List ||
@@ -782,11 +831,13 @@ PolicyEvaluationResult validateToolArguments({
       final maxItems = arguments['maxItems'];
       final outputFolder = arguments['outputFolder'];
       final exportCsv = arguments['exportCsv'];
+      final argsJson = arguments['argsJson'];
       const allowedRunKeys = <String>{
         'skillId',
         'maxItems',
         'outputFolder',
         'exportCsv',
+        'argsJson',
       };
       if (arguments.keys.any((k) => !allowedRunKeys.contains(k)) ||
           skillId is! String ||
@@ -796,7 +847,11 @@ PolicyEvaluationResult validateToolArguments({
           (outputFolder != null &&
               (outputFolder is! String ||
                   !isValidSandboxFolderName(outputFolder))) ||
-          (exportCsv != null && exportCsv is! bool)) {
+          (exportCsv != null && exportCsv is! bool) ||
+          (argsJson != null &&
+              (argsJson is! String ||
+                  argsJson.length > 2000 ||
+                  !isSafeClipboardWriteText(argsJson)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -2110,6 +2165,28 @@ PolicyEvaluationResult validateToolArguments({
       }
       effectiveRisk = RiskTier.r2;
     default:
+      if (toolName.startsWith('forge.custom_')) {
+        final argsJson = arguments['argsJson'];
+        final outputFolder = arguments['outputFolder'];
+        const allowedCustomKeys = <String>{'argsJson', 'outputFolder'};
+        if (arguments.keys.any((k) => !allowedCustomKeys.contains(k)) ||
+            (argsJson != null &&
+                (argsJson is! String ||
+                    argsJson.length > 2000 ||
+                    !isSafeClipboardWriteText(argsJson))) ||
+            (outputFolder != null &&
+                (outputFolder is! String ||
+                    !isValidSandboxFolderName(outputFolder)))) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        effectiveRisk = RiskTier.r2;
+        break;
+      }
       return const PolicyEvaluationResult(
         allowed: false,
         status: XtpStatus.unsupported,

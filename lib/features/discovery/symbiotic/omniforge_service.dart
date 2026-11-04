@@ -3,16 +3,67 @@ import 'dart:io';
 
 import 'package:xuna_xtp/xuna_xtp.dart';
 
+import 'sandboxed_tool_runner.dart';
 import 'symbiotic_models.dart';
 
-/// XUNA OmniForge Citizen Toolsmith & Show-Me-Once service (`FORGE-1`, `FORGE-2`, `FORGE-3`, `UNIV-2`).
+export 'sandboxed_tool_runner.dart';
+
+/// XUNA OmniForge Citizen Toolsmith & Show-Me-Once service (`FORGE-1`, `FORGE-2`, `FORGE-3`, `UNIV-2`, `FORGE-LATM`).
 class OmniForgeService {
+  OmniForgeService({SandboxedToolRunner? sandboxRunner})
+      : sandboxRunner = sandboxRunner ?? SandboxedToolRunner() {
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      _loadPersistedWorkshopSkillsFromDisk();
+    }
+  }
+
+  final SandboxedToolRunner sandboxRunner;
   int _forgeSeq = 0;
   int _undoSnapSeq = 0;
   bool _teachRecordingActive = false;
   String _teachSkillTitle = '';
   final List<ForgedSkillEntry> _forgedSkills = <ForgedSkillEntry>[];
   final List<TeachDemonstrationStep> _teachSteps = <TeachDemonstrationStep>[];
+
+  void _loadPersistedWorkshopSkillsFromDisk() {
+    try {
+      final home =
+          Platform.environment['HOME'] ??
+          Platform.environment['USERPROFILE'] ??
+          Directory.systemTemp.path;
+      final workshopDir = Directory(
+        '$home/Documents/XUNA_Workspace/XUNA_Skill_Workshop',
+      );
+      if (!workshopDir.existsSync()) return;
+      final subDirs = workshopDir.listSync().whereType<Directory>().toList()
+        ..sort((a, b) => a.path.compareTo(b.path));
+      for (final sub in subDirs) {
+        final recipeFile = File(
+          '${sub.path}${Platform.pathSeparator}recipe.json',
+        );
+        if (!recipeFile.existsSync()) continue;
+        try {
+          final rawJson = jsonDecode(recipeFile.readAsStringSync());
+          if (rawJson is! Map) continue;
+          final entry = ForgedSkillEntry.fromDiskRecipeJson(
+            rawJson.map((k, v) => MapEntry<String, Object?>(k.toString(), v)),
+          );
+          if (entry.scriptCode.isNotEmpty) {
+            final check = validateSynthesizedToolScript(
+              scriptCode: entry.scriptCode,
+              runtime: entry.runtime,
+            );
+            if (!check.safe) continue;
+          }
+          if (!_forgedSkills.any(
+            (s) => s.skillId.toLowerCase() == entry.skillId.toLowerCase(),
+          )) {
+            _forgedSkills.add(entry);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
 
   /// Whether a `Show-Me-Once` (`teach.record_session`) demonstration is currently recording.
   bool get isTeachRecordingActive => _teachRecordingActive;
@@ -97,13 +148,18 @@ class OmniForgeService {
     return 'universal_data_pipeline';
   }
 
-  /// Synthesizes a sandboxed `XunaScript` tool from [goal], performs a 1-item dry-run
-  /// preview with Voyager-style self-debugging, and stores it in [_forgedSkills] (`FORGE-1`, `UNIV-2`).
+  /// Synthesizes a sandboxed `XunaScript` or executable script tool from [goal], performs a
+  /// dry-run verification with Voyager/Claude-Code-style self-debugging, and stores it in [_forgedSkills] (`FORGE-1`, `UNIV-2`, `FORGE-LATM`).
   ForgedSkillEntry synthesizeSkill({
     required String goal,
     String? category,
     String? targetFolder,
     List<String>? fileExtensions,
+    String? toolName,
+    String? runtime,
+    String? scriptCode,
+    String? testArgsJson,
+    String? skillIdToUpdate,
     DateTime? nowUtc,
   }) {
     _forgeSeq++;
@@ -112,9 +168,13 @@ class OmniForgeService {
       goal.trim(),
       maxChars: 400,
     ).text;
+    final hasExecutableScript =
+        scriptCode != null && scriptCode.trim().isNotEmpty;
     final resolvedCategory =
         (category == null || category == 'auto' || category.trim().isEmpty)
-        ? inferForgeSkillCategory(cleanGoal)
+        ? (hasExecutableScript
+              ? 'custom_script'
+              : inferForgeSkillCategory(cleanGoal))
         : category.trim();
 
     final exts = (fileExtensions == null || fileExtensions.isEmpty)
@@ -162,7 +222,7 @@ class OmniForgeService {
     late final int detectedCount;
     late final String dryRunSample;
     late final List<Map<String, Object?>> paramFields;
-    late final List<String> scriptSteps;
+    late List<String> scriptSteps;
     late final String surfaceKind;
 
     switch (resolvedCategory) {
@@ -385,24 +445,106 @@ class OmniForgeService {
     }
 
     final probed = _probeRealFilesForSkill(folder, exts);
-    final realCount = probed != null ? probed.count : detectedCount;
-    final realSample = probed != null ? probed.sample : dryRunSample;
+    var realCount = probed != null ? probed.count : detectedCount;
+    var realSample = probed != null ? probed.sample : dryRunSample;
 
     final primitives = inferUniversalPrimitivesForGoal(cleanGoal);
-    final skillId = 'skill-$resolvedCategory-$_forgeSeq'.replaceAll('_', '-');
-    final summaryVi =
-        'Đã rèn xong công cụ "$titleVi": tìm thấy $realCount mục phù hợp. $realSample';
+    final updateIdx =
+        (skillIdToUpdate != null && skillIdToUpdate.trim().isNotEmpty)
+        ? _forgedSkills.indexWhere(
+            (s) =>
+                s.skillId.toLowerCase() == skillIdToUpdate.trim().toLowerCase(),
+          )
+        : -1;
+    final previousEntry = updateIdx >= 0 ? _forgedSkills[updateIdx] : null;
+    final skillId = previousEntry != null
+        ? previousEntry.skillId
+        : 'skill-$resolvedCategory-$_forgeSeq'.replaceAll('_', '-');
+
+    final normalizedToolName = normalizeSynthesizedToolSlug(
+      toolName,
+      fallback: skillId.replaceAll('-', '_'),
+    );
+    var resolvedRuntime = 'pipeline';
+    var resolvedScriptCode = '';
+    var stdoutPreview = '';
+    var stderrPreview = '';
+    var selfTestPassed = true;
+    var debugIters = previousEntry != null
+        ? previousEntry.selfDebugIterations + 1
+        : 1;
+
+    if (hasExecutableScript) {
+      resolvedScriptCode = scriptCode.trim();
+      final reqRuntime = (runtime == null || runtime.trim().isEmpty)
+          ? 'python'
+          : runtime.trim().toLowerCase();
+      final dryRes = sandboxRunner.executeSync(
+        skillId: skillId,
+        runtime: reqRuntime,
+        scriptCode: resolvedScriptCode,
+        argsJson: testArgsJson ?? '{}',
+        targetFolder: folder,
+      );
+      resolvedRuntime = dryRes.runtime;
+      selfTestPassed = dryRes.ok;
+      stdoutPreview = dryRes.stdoutPreview;
+      stderrPreview = dryRes.stderrPreview;
+      final parsedCount = dryRes.parsedJsonOutput?['processedCount'];
+      if (parsedCount is int && parsedCount >= 0) {
+        realCount = parsedCount;
+      }
+      if (dryRes.ok) {
+        final previewLine = stdoutPreview.isNotEmpty
+            ? stdoutPreview.replaceAll(RegExp(r'\s+'), ' ')
+            : 'exitCode=0';
+        realSample =
+            'Dry-run ($resolvedRuntime) thành công: ${previewLine.length <= 140 ? previewLine : "${previewLine.substring(0, 140)}..."}';
+        scriptSteps = <String>[
+          '1. [guard.static] Kiểm tra AST & chính sách an toàn sandbox ($resolvedRuntime)',
+          '2. [sandbox.dry_run] Chạy thử với XUNA_TOOL_ARGS_JSON -> exitCode=0',
+          '3. [register.tool] Đăng ký công cụ "$normalizedToolName" ($skillId) vào XUNA Skill Library',
+        ];
+      } else {
+        final errLine = stderrPreview.isNotEmpty
+            ? stderrPreview.replaceAll(RegExp(r'\s+'), ' ')
+            : 'exitCode=${dryRes.exitCode}';
+        realSample =
+            'Dry-run ($resolvedRuntime) lỗi: ${errLine.length <= 150 ? errLine : "${errLine.substring(0, 150)}..."}';
+      }
+    }
+
+    final summaryVi = hasExecutableScript
+        ? (selfTestPassed
+              ? 'Đã rèn và kiểm thử thành công công cụ "$titleVi" ($resolvedRuntime, mã: $skillId). $realSample'
+              : 'Công cụ "$titleVi" ($skillId) gặp lỗi khi chạy thử ($resolvedRuntime): $realSample — hãy sửa scriptCode và gọi lại với skillIdToUpdate="$skillId".')
+        : 'Đã rèn xong công cụ "$titleVi": tìm thấy $realCount mục phù hợp. $realSample';
+
+    final nextVersion = previousEntry != null ? previousEntry.version + 1 : 1;
+    final nextHistory = previousEntry != null
+        ? <String>[
+            ...previousEntry.versionHistory,
+            'v$nextVersion: Tự sửa lỗi & cập nhật công cụ ($resolvedRuntime, dryRunOk=$selfTestPassed)',
+          ]
+        : <String>['v1: Khởi tạo kỹ năng gốc ($resolvedRuntime)'];
 
     final entry = ForgedSkillEntry(
       skillId: skillId,
+      toolName: normalizedToolName,
+      runtime: resolvedRuntime,
+      scriptCode: resolvedScriptCode,
+      lastStdoutPreview: stdoutPreview,
+      lastStderrPreview: stderrPreview,
       titleVi: titleVi,
       category: resolvedCategory,
       goal: cleanGoal,
       targetFolder: folder,
       fileExtensions: exts,
       detectedItemsCount: realCount,
-      dryRunSample: realSample,
-      selfDebugIterations: 1,
+      dryRunSample: realSample.length <= 240
+          ? realSample
+          : realSample.substring(0, 240),
+      selfDebugIterations: debugIters,
       parameterFields: paramFields,
       scriptSteps: scriptSteps,
       summaryVi: summaryVi.length <= 240
@@ -411,20 +553,31 @@ class OmniForgeService {
       createdAt: ts.toIso8601String(),
       primitives: primitives,
       canvasSurfaceKind: surfaceKind,
+      version: nextVersion,
+      versionHistory: nextHistory,
+      selfTestPassed: selfTestPassed,
     );
-    _forgedSkills.insert(0, entry);
-    if (_forgedSkills.length > 25) {
-      _forgedSkills.removeLast();
+    if (updateIdx >= 0) {
+      _forgedSkills[updateIdx] = entry;
+    } else {
+      _forgedSkills.insert(0, entry);
+      if (_forgedSkills.length > 25) {
+        _forgedSkills.removeLast();
+      }
     }
     return entry;
   }
 
-  /// Executes a forged skill in the local sandbox and records an undo snapshot (`FORGE-1`).
+  /// Executes a forged skill in the local sandbox and records an undo snapshot (`FORGE-1`, `FORGE-LATM`).
   ({
     String skillId,
+    String runtime,
+    int exitCode,
     int processedCount,
     String outputDirectory,
     String exportedCsvFile,
+    String stdoutPreview,
+    String stderrPreview,
     int selfHealedSelectors,
     String undoSnapshotId,
     String summaryVi,
@@ -434,11 +587,17 @@ class OmniForgeService {
     int? maxItems,
     String? outputFolder,
     bool exportCsv = true,
+    String? argsJson,
     DateTime? nowUtc,
   }) {
     final snapSeq = nextUndoSnapSeq();
+    final needle = skillId.trim().toLowerCase();
     final idx = _forgedSkills.indexWhere(
-      (s) => s.skillId.toLowerCase() == skillId.trim().toLowerCase(),
+      (s) =>
+          s.skillId.toLowerCase() == needle ||
+          (s.toolName.isNotEmpty && s.toolName.toLowerCase() == needle) ||
+          'forge.custom_${s.toolName}'.toLowerCase() == needle ||
+          'custom.${s.toolName}'.toLowerCase() == needle,
     );
     final existing = idx >= 0
         ? _forgedSkills[idx]
@@ -453,12 +612,62 @@ class OmniForgeService {
         (outputFolder != null && outputFolder.trim().isNotEmpty)
         ? outputFolder.trim()
         : existing.targetFolder;
+    final undoId = 'undo-forge-$snapSeq';
+
+    if (existing.scriptCode.isNotEmpty && existing.runtime != 'pipeline') {
+      final execRes = sandboxRunner.executeSync(
+        skillId: existing.skillId,
+        runtime: existing.runtime,
+        scriptCode: existing.scriptCode,
+        argsJson: argsJson ?? '{}',
+        targetFolder: effectiveFolder,
+      );
+      final parsedCount = execRes.parsedJsonOutput?['processedCount'];
+      final processed = parsedCount is int && parsedCount >= 0
+          ? parsedCount
+          : (execRes.ok ? 1 : 0);
+      final csvFile = exportCsv ? '$effectiveFolder/BangKe_TongHop.csv' : '';
+      final outSnippet = execRes.stdoutPreview.isNotEmpty
+          ? execRes.stdoutPreview.replaceAll(RegExp(r'\s+'), ' ')
+          : (execRes.stderrPreview.isNotEmpty
+                ? execRes.stderrPreview.replaceAll(RegExp(r'\s+'), ' ')
+                : 'exitCode=${execRes.exitCode}');
+      final summary = execRes.ok
+          ? 'Đã thực thi công cụ "${existing.titleVi}" (${existing.runtime}): $outSnippet (mã hoàn tác: $undoId).'
+          : 'Lỗi khi chạy công cụ "${existing.titleVi}" (${existing.runtime}, mã ${execRes.exitCode}): $outSnippet.';
+      final trimmedSummary = summary.length <= 240
+          ? summary
+          : summary.substring(0, 240);
+
+      if (idx >= 0) {
+        _forgedSkills[idx] = existing.copyWith(
+          runCount: existing.runCount + 1,
+          lastRunSummaryVi: trimmedSummary,
+          lastStdoutPreview: execRes.stdoutPreview,
+          lastStderrPreview: execRes.stderrPreview,
+          selfTestPassed: execRes.ok,
+        );
+      }
+      return (
+        skillId: existing.skillId,
+        runtime: existing.runtime,
+        exitCode: execRes.exitCode,
+        processedCount: processed,
+        outputDirectory: effectiveFolder,
+        exportedCsvFile: csvFile,
+        stdoutPreview: execRes.stdoutPreview,
+        stderrPreview: execRes.stderrPreview,
+        selfHealedSelectors: execRes.ok ? 1 : 0,
+        undoSnapshotId: undoId,
+        summaryVi: trimmedSummary,
+      );
+    }
+
     final limit = (maxItems ?? existing.detectedItemsCount).clamp(1, 500);
     final processed = limit < existing.detectedItemsCount
         ? limit
         : existing.detectedItemsCount;
     final csvFile = exportCsv ? '$effectiveFolder/BangKe_TongHop.csv' : '';
-    final undoId = 'undo-forge-$snapSeq';
     final summary = exportCsv
         ? 'Đã chạy xong "${existing.titleVi}": xử lý $processed mục vào "$effectiveFolder" và xuất bảng kê "$csvFile" (mã hoàn tác: $undoId).'
         : 'Đã chạy xong "${existing.titleVi}": xử lý $processed mục vào "$effectiveFolder" (mã hoàn tác: $undoId).';
@@ -475,13 +684,88 @@ class OmniForgeService {
 
     return (
       skillId: existing.skillId,
+      runtime: existing.runtime,
+      exitCode: 0,
       processedCount: processed,
       outputDirectory: effectiveFolder,
       exportedCsvFile: csvFile,
+      stdoutPreview: existing.lastStdoutPreview,
+      stderrPreview: existing.lastStderrPreview,
       selfHealedSelectors: 1,
       undoSnapshotId: undoId,
       summaryVi: trimmedSummary,
     );
+  }
+
+  /// Exposes verified executable forged skills as dynamic XTP `ToolDescriptor`s (`forge.custom_<toolName>`, `FORGE-LATM`).
+  List<ToolDescriptor> buildDynamicToolDescriptors({
+    XtpPermissionState defaultPermission = XtpPermissionState.granted,
+  }) {
+    final descriptors = <ToolDescriptor>[];
+    final seenNames = <String>{};
+    for (final entry in _forgedSkills) {
+      if (!entry.selfTestPassed ||
+          entry.toolName.isEmpty ||
+          entry.scriptCode.isEmpty) {
+        continue;
+      }
+      final safeSlug = normalizeSynthesizedToolSlug(entry.toolName);
+      final descriptorName = 'forge.custom_$safeSlug';
+      if (!seenNames.add(descriptorName)) continue;
+      final rawDesc = '${entry.titleVi} — ${entry.goal}'.trim();
+      final cleanDesc = rawDesc.length <= 200
+          ? rawDesc
+          : rawDesc.substring(0, 200);
+      descriptors.add(
+        ToolDescriptor(
+          name: descriptorName,
+          description: cleanDesc,
+          inputSchema: const <String, Object?>{
+            'type': 'object',
+            'properties': <String, Object?>{
+              'argsJson': <String, Object?>{
+                'type': 'string',
+                'maxLength': 2000,
+                'description':
+                    'JSON object string of arguments passed to the synthesized tool.',
+              },
+              'outputFolder': <String, Object?>{
+                'type': 'string',
+                'maxLength': 120,
+              },
+            },
+            'required': <String>[],
+            'additionalProperties': false,
+          },
+          outputSchema: const <String, Object?>{
+            'type': 'object',
+            'properties': <String, Object?>{
+              'skillId': <String, Object?>{'type': 'string', 'maxLength': 64},
+              'runtime': <String, Object?>{'type': 'string', 'maxLength': 24},
+              'exitCode': <String, Object?>{'type': 'integer'},
+              'stdoutPreview': <String, Object?>{
+                'type': 'string',
+                'maxLength': 800,
+              },
+              'summaryVi': <String, Object?>{
+                'type': 'string',
+                'maxLength': 240,
+              },
+            },
+            'required': <String>['skillId', 'summaryVi'],
+            'additionalProperties': false,
+          },
+          policy: ToolPolicyMeta(
+            family: ToolFamily.app,
+            risk: RiskTier.r2,
+            observes: false,
+            reversible: true,
+            permission: defaultPermission,
+          ),
+        ),
+      );
+    }
+    return descriptors;
   }
 
   /// Lists, deletes, or exports a portable JSON recipe from [_forgedSkills] (`FORGE-1`).

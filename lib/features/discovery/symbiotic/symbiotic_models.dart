@@ -160,7 +160,7 @@ class WatchdogSentinelEntry {
   };
 }
 
-/// Forged personal citizen tool entry in XUNA OmniForge (`FORGE-1`, `FORGE-2`, `WORKSHOP-2`).
+/// Forged personal citizen tool entry in XUNA OmniForge (`FORGE-1`, `FORGE-2`, `WORKSHOP-2`, `FORGE-LATM`).
 class ForgedSkillEntry {
   const ForgedSkillEntry({
     required this.skillId,
@@ -176,6 +176,11 @@ class ForgedSkillEntry {
     required this.scriptSteps,
     required this.summaryVi,
     required this.createdAt,
+    this.toolName = '',
+    this.runtime = 'pipeline',
+    this.scriptCode = '',
+    this.lastStdoutPreview = '',
+    this.lastStderrPreview = '',
     this.runCount = 0,
     this.lastRunSummaryVi,
     this.selfHealGeneration = 0,
@@ -201,6 +206,11 @@ class ForgedSkillEntry {
   final List<String> scriptSteps;
   final String summaryVi;
   final String createdAt;
+  final String toolName;
+  final String runtime;
+  final String scriptCode;
+  final String lastStdoutPreview;
+  final String lastStderrPreview;
   final int runCount;
   final String? lastRunSummaryVi;
   final int selfHealGeneration;
@@ -215,7 +225,15 @@ class ForgedSkillEntry {
   ForgedSkillEntry copyWith({
     String? goal,
     String? targetFolder,
+    String? dryRunSample,
+    int? selfDebugIterations,
+    List<String>? scriptSteps,
     String? summaryVi,
+    String? toolName,
+    String? runtime,
+    String? scriptCode,
+    String? lastStdoutPreview,
+    String? lastStderrPreview,
     int? runCount,
     String? lastRunSummaryVi,
     int? selfHealGeneration,
@@ -234,12 +252,17 @@ class ForgedSkillEntry {
     targetFolder: targetFolder ?? this.targetFolder,
     fileExtensions: fileExtensions,
     detectedItemsCount: detectedItemsCount,
-    dryRunSample: dryRunSample,
-    selfDebugIterations: selfDebugIterations,
+    dryRunSample: dryRunSample ?? this.dryRunSample,
+    selfDebugIterations: selfDebugIterations ?? this.selfDebugIterations,
     parameterFields: parameterFields,
-    scriptSteps: scriptSteps,
+    scriptSteps: scriptSteps ?? this.scriptSteps,
     summaryVi: summaryVi ?? this.summaryVi,
     createdAt: createdAt,
+    toolName: toolName ?? this.toolName,
+    runtime: runtime ?? this.runtime,
+    scriptCode: scriptCode ?? this.scriptCode,
+    lastStdoutPreview: lastStdoutPreview ?? this.lastStdoutPreview,
+    lastStderrPreview: lastStderrPreview ?? this.lastStderrPreview,
     runCount: runCount ?? this.runCount,
     lastRunSummaryVi: lastRunSummaryVi ?? this.lastRunSummaryVi,
     selfHealGeneration: selfHealGeneration ?? this.selfHealGeneration,
@@ -254,13 +277,18 @@ class ForgedSkillEntry {
 
   Map<String, Object?> toWireJson() => <String, Object?>{
     'skillId': skillId,
+    if (toolName.isNotEmpty) 'toolName': toolName,
+    'runtime': runtime,
     'titleVi': titleVi,
     'category': category,
     'goal': goal,
     'targetFolder': targetFolder,
     'fileExtensions': fileExtensions,
     'detectedItemsCount': detectedItemsCount,
+    'dryRunOk': selfTestPassed,
     'dryRunSample': dryRunSample,
+    if (lastStdoutPreview.isNotEmpty) 'stdoutPreview': lastStdoutPreview,
+    if (lastStderrPreview.isNotEmpty) 'stderrPreview': lastStderrPreview,
     'selfDebugIterations': selfDebugIterations,
     'parameterFields': parameterFields,
     'scriptSteps': scriptSteps,
@@ -277,6 +305,104 @@ class ForgedSkillEntry {
     'autoTriggerOnDelta': autoTriggerOnDelta,
     'selfTestPassed': selfTestPassed,
   };
+
+  Map<String, Object?> toDiskRecipeJson() => <String, Object?>{
+    ...toWireJson(),
+    if (scriptCode.isNotEmpty) 'scriptCode': scriptCode,
+  };
+
+  factory ForgedSkillEntry.fromDiskRecipeJson(Map<String, Object?> json) {
+    List<String> readStringList(Object? raw, List<String> fallback) {
+      if (raw is List) {
+        final items = raw.whereType<String>().toList(growable: false);
+        if (items.isNotEmpty) return List<String>.unmodifiable(items);
+      }
+      return fallback;
+    }
+
+    List<Map<String, Object?>> readParamFields(Object? raw) {
+      if (raw is List) {
+        final out = <Map<String, Object?>>[];
+        for (final item in raw) {
+          if (item is Map) {
+            out.add(
+              item.map((k, v) => MapEntry<String, Object?>(k.toString(), v)),
+            );
+          }
+        }
+        if (out.isNotEmpty) {
+          return List<Map<String, Object?>>.unmodifiable(out);
+        }
+      }
+      return const <Map<String, Object?>>[
+        <String, Object?>{
+          'name': 'argsJson',
+          'type': 'string',
+          'default': '{}',
+        },
+      ];
+    }
+
+    final skillId = (json['skillId'] as String? ?? '').trim();
+    final titleVi = (json['titleVi'] as String? ?? 'Công cụ tùy chỉnh').trim();
+    final category = (json['category'] as String? ?? 'custom_automation').trim();
+    final goal = (json['goal'] as String? ?? titleVi).trim();
+    final targetFolder =
+        (json['targetFolder'] as String? ?? 'XUNA_Tools/Output').trim();
+    final toolName = (json['toolName'] as String? ?? '').trim();
+    final runtime = (json['runtime'] as String? ?? 'pipeline').trim();
+    final scriptCode = json['scriptCode'] as String? ?? '';
+    final selfTestPassed =
+        (json['selfTestPassed'] as bool?) ??
+        (json['dryRunOk'] as bool?) ??
+        true;
+
+    return ForgedSkillEntry(
+      skillId: skillId.isEmpty ? 'skill_reloaded_1' : skillId,
+      titleVi: titleVi,
+      category: category,
+      goal: goal,
+      targetFolder: targetFolder,
+      fileExtensions: readStringList(
+        json['fileExtensions'],
+        const <String>['.json', '.txt'],
+      ),
+      detectedItemsCount: (json['detectedItemsCount'] as num?)?.toInt() ?? 1,
+      dryRunSample: (json['dryRunSample'] as String? ?? 'OK').trim(),
+      selfDebugIterations: (json['selfDebugIterations'] as num?)?.toInt() ?? 1,
+      parameterFields: readParamFields(json['parameterFields']),
+      scriptSteps: readStringList(
+        json['scriptSteps'],
+        const <String>['1. Nạp từ đĩa'],
+      ),
+      summaryVi: (json['summaryVi'] as String? ?? titleVi).trim(),
+      createdAt:
+          (json['createdAt'] as String? ?? DateTime.now().toUtc().toIso8601String())
+              .trim(),
+      toolName: toolName,
+      runtime: runtime,
+      scriptCode: scriptCode,
+      lastStdoutPreview: (json['stdoutPreview'] as String? ?? '').trim(),
+      lastStderrPreview: (json['stderrPreview'] as String? ?? '').trim(),
+      runCount: (json['runCount'] as num?)?.toInt() ?? 0,
+      lastRunSummaryVi: json['lastRunSummaryVi'] as String?,
+      selfHealGeneration: (json['selfHealGeneration'] as num?)?.toInt() ?? 0,
+      correctionRules: readStringList(
+        json['correctionRules'],
+        const <String>[],
+      ),
+      primitives: readStringList(json['primitives'], const <String>[]),
+      canvasSurfaceKind:
+          (json['canvasSurfaceKind'] as String? ?? 'data_table').trim(),
+      version: (json['version'] as num?)?.toInt() ?? 1,
+      versionHistory: readStringList(
+        json['versionHistory'],
+        const <String>['v1: Khởi tạo kỹ năng gốc'],
+      ),
+      autoTriggerOnDelta: (json['autoTriggerOnDelta'] as bool?) ?? false,
+      selfTestPassed: selfTestPassed,
+    );
+  }
 }
 
 /// Snapshot of XUNA's Zero-Token 2-Tier Heartbeat (`CLAW-2`).

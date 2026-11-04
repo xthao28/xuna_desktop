@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:xuna_xtp/xuna_xtp.dart';
+
 import 'symbiotic/frontier_2026_service.dart';
 import 'symbiotic/heartbeat_canvas_service.dart';
 import 'symbiotic/memory_aria_service.dart';
@@ -46,6 +48,7 @@ class AutoSymbioticService {
     portProbe,
     Future<String> Function()? lanIpResolver,
     Future<SystemVitalsSnapshot> Function()? vitalsReader,
+    SandboxedToolRunner? sandboxRunner,
     bool initialInMeeting = false,
     String initialMeetingApp = 'none',
     bool initialMicMuted = false,
@@ -63,7 +66,7 @@ class AutoSymbioticService {
     );
     workspacePocket = WorkspacePocketService();
     watchdogCoach = WatchdogCoachService(vitalsService: vitals);
-    forge = OmniForgeService();
+    forge = OmniForgeService(sandboxRunner: sandboxRunner);
     late final HeartbeatCanvasService hbCanvas;
     pipeline = UniversalPipelineService(
       forgeService: forge,
@@ -298,20 +301,34 @@ class AutoSymbioticService {
     String? category,
     String? targetFolder,
     List<String>? fileExtensions,
+    String? toolName,
+    String? runtime,
+    String? scriptCode,
+    String? testArgsJson,
+    String? skillIdToUpdate,
     DateTime? nowUtc,
   }) => forge.synthesizeSkill(
     goal: goal,
     category: category,
     targetFolder: targetFolder,
     fileExtensions: fileExtensions,
+    toolName: toolName,
+    runtime: runtime,
+    scriptCode: scriptCode,
+    testArgsJson: testArgsJson,
+    skillIdToUpdate: skillIdToUpdate,
     nowUtc: nowUtc,
   );
 
   ({
     String skillId,
+    String runtime,
+    int exitCode,
     int processedCount,
     String outputDirectory,
     String exportedCsvFile,
+    String stdoutPreview,
+    String stderrPreview,
     int selfHealedSelectors,
     String undoSnapshotId,
     String summaryVi,
@@ -321,14 +338,20 @@ class AutoSymbioticService {
     int? maxItems,
     String? outputFolder,
     bool exportCsv = true,
+    String? argsJson,
     DateTime? nowUtc,
   }) => forge.runForgedSkill(
     skillId: skillId,
     maxItems: maxItems,
     outputFolder: outputFolder,
     exportCsv: exportCsv,
+    argsJson: argsJson,
     nowUtc: nowUtc,
   );
+
+  List<ToolDescriptor> buildDynamicToolDescriptors({
+    XtpPermissionState defaultPermission = XtpPermissionState.granted,
+  }) => forge.buildDynamicToolDescriptors(defaultPermission: defaultPermission);
 
   ({List<Map<String, Object?>> skills, String exportedRecipeJson})
   listAndManageForgedSkills({String action = 'list', String? skillId}) =>

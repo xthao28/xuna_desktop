@@ -16,7 +16,7 @@ List<ToolDescriptor> buildOmniForgeTools({
     ToolDescriptor(
       name: 'forge.synthesize_skill',
       description:
-          'Synthesize a sandboxed XunaScript tool from natural language or active browser/folder context and run a 1-item dry-run preview with self-debugging.',
+          'Synthesize a sandboxed XUNA tool (declarative pipeline or executable Python/Node/PowerShell/Bash script) from natural language or LLM code, run a dry-run verification with self-debugging, and register it in the XUNA Skill Library.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -50,6 +50,43 @@ List<ToolDescriptor> buildOmniForgeTools({
             'type': 'array',
             'items': <String, Object?>{'type': 'string', 'maxLength': 12},
           },
+          'toolName': <String, Object?>{
+            'type': 'string',
+            'maxLength': 48,
+            'description':
+                'Optional snake_case slug for the synthesized tool (e.g. parse_bank_csv).',
+          },
+          'runtime': <String, Object?>{
+            'type': 'string',
+            'enum': <String>[
+              'auto',
+              'pipeline',
+              'python',
+              'node',
+              'powershell',
+              'bash',
+            ],
+            'description':
+                'Execution runtime when providing executable scriptCode.',
+          },
+          'scriptCode': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4000,
+            'description':
+                'Executable script reading JSON args from XUNA_TOOL_ARGS_JSON env var and printing JSON result to stdout.',
+          },
+          'testArgsJson': <String, Object?>{
+            'type': 'string',
+            'maxLength': 1000,
+            'description':
+                'Optional JSON object string passed via XUNA_TOOL_ARGS_JSON during dry-run verification.',
+          },
+          'skillIdToUpdate': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+            'description':
+                'Existing skillId to patch during iterative self-debugging when a previous dry-run failed.',
+          },
         },
         'required': <String>['goal'],
         'additionalProperties': false,
@@ -58,15 +95,26 @@ List<ToolDescriptor> buildOmniForgeTools({
         'type': 'object',
         'properties': <String, Object?>{
           'skillId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'toolName': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'runtime': <String, Object?>{'type': 'string', 'maxLength': 24},
           'titleVi': <String, Object?>{'type': 'string', 'maxLength': 120},
           'category': <String, Object?>{'type': 'string', 'maxLength': 40},
           'detectedItemsCount': <String, Object?>{
             'type': 'integer',
             'minimum': 0,
           },
+          'dryRunOk': <String, Object?>{'type': 'boolean'},
           'dryRunSample': <String, Object?>{
             'type': 'string',
             'maxLength': 240,
+          },
+          'stdoutPreview': <String, Object?>{
+            'type': 'string',
+            'maxLength': 500,
+          },
+          'stderrPreview': <String, Object?>{
+            'type': 'string',
+            'maxLength': 500,
           },
           'selfDebugIterations': <String, Object?>{
             'type': 'integer',
@@ -100,7 +148,7 @@ List<ToolDescriptor> buildOmniForgeTools({
     ToolDescriptor(
       name: 'forge.run_skill',
       description:
-          'Execute a synthesized XunaScript tool in the local sandbox (batch download invoices, organize files, reconcile sheets) with automatic undo snapshot.',
+          'Execute a synthesized XUNA tool or script in the local isolated sandbox with runtime JSON arguments and automatic undo snapshot.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -121,6 +169,12 @@ List<ToolDescriptor> buildOmniForgeTools({
           'exportCsv': <String, Object?>{
             'type': 'boolean',
           },
+          'argsJson': <String, Object?>{
+            'type': 'string',
+            'maxLength': 2000,
+            'description':
+                'Optional JSON object string of runtime arguments passed to the synthesized tool via XUNA_TOOL_ARGS_JSON.',
+          },
         },
         'required': <String>['skillId'],
         'additionalProperties': false,
@@ -129,6 +183,8 @@ List<ToolDescriptor> buildOmniForgeTools({
         'type': 'object',
         'properties': <String, Object?>{
           'skillId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'runtime': <String, Object?>{'type': 'string', 'maxLength': 24},
+          'exitCode': <String, Object?>{'type': 'integer'},
           'processedCount': <String, Object?>{'type': 'integer', 'minimum': 0},
           'outputDirectory': <String, Object?>{
             'type': 'string',
@@ -137,6 +193,14 @@ List<ToolDescriptor> buildOmniForgeTools({
           'exportedCsvFile': <String, Object?>{
             'type': 'string',
             'maxLength': 120,
+          },
+          'stdoutPreview': <String, Object?>{
+            'type': 'string',
+            'maxLength': 800,
+          },
+          'stderrPreview': <String, Object?>{
+            'type': 'string',
+            'maxLength': 500,
           },
           'selfHealedSelectors': <String, Object?>{
             'type': 'integer',

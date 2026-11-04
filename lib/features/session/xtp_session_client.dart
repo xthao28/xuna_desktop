@@ -72,18 +72,23 @@ class XtpSessionClient {
              protocols: const <String>['xtp/1'],
            )),
        _random = random ?? Random.secure() {
-    _policySub = policyStore.changes.listen((_) {
-      if (_phase == HostSessionPhase.ready) {
-        _sendNotification(
-          const XtpNotification(
-            method: 'notifications/tools/list_changed',
-            params: <String, Object?>{},
-            typedParams: ToolsListChangedParams(),
-          ),
-        );
-      }
-    });
+    _policySub = policyStore.changes.listen((_) => _notifyToolsListChanged());
+    _toolsListSub = dispatcher.toolsListChanged.listen(
+      (_) => _notifyToolsListChanged(),
+    );
     stopController.addCancelListener(_onLocalEmergencyStop);
+  }
+
+  void _notifyToolsListChanged() {
+    if (_phase == HostSessionPhase.ready) {
+      _sendNotification(
+        const XtpNotification(
+          method: 'notifications/tools/list_changed',
+          params: <String, Object?>{},
+          typedParams: ToolsListChangedParams(),
+        ),
+      );
+    }
   }
 
   void _onLocalEmergencyStop(StopReason reason) {
@@ -146,6 +151,7 @@ class XtpSessionClient {
       StreamController<PendingEnrollmentDisplay?>.broadcast();
 
   StreamSubscription<HostPolicyEvaluator>? _policySub;
+  StreamSubscription<void>? _toolsListSub;
   StreamSubscription<Object?>? _socketSub;
   WebSocketChannel? _socket;
   Timer? _reconnectTimer;
@@ -560,6 +566,7 @@ class XtpSessionClient {
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
     await _policySub?.cancel();
+    await _toolsListSub?.cancel();
     await _closeCurrentSocket();
     await _phaseChanges.close();
     await _enrollmentDisplayChanges.close();

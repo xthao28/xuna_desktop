@@ -449,3 +449,183 @@ bool isSafeClipboardWriteText(String? text) {
   }
   return true;
 }
+
+/// Allowed execution runtimes for LLM-synthesized tools (`FORGE-LATM`).
+const Set<String> allowedSynthesizedToolRuntimes = <String>{
+  'auto',
+  'pipeline',
+  'python',
+  'node',
+  'powershell',
+  'bash',
+};
+
+final RegExp _toolSlugRe = RegExp(r'^[a-z][a-z_]{1,47}$');
+
+/// Normalizes or validates an LLM-proposed tool slug (`a-z_`, `2..48` chars, XTP `^[a-z]+\.[a-z_]+$` safe).
+String normalizeSynthesizedToolSlug(String? rawName, {String fallback = 'custom_tool'}) {
+  final cleanFallback = fallback
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z_]+'), '_')
+      .replaceAll(RegExp(r'_+'), '_')
+      .replaceAll(RegExp(r'^_+|_+$'), '');
+  final safeFallback =
+      cleanFallback.length >= 2 && _toolSlugRe.hasMatch(cleanFallback)
+          ? cleanFallback
+          : 'custom_tool';
+  if (rawName == null || rawName.trim().isEmpty) return safeFallback;
+  var slug = rawName
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z_]+'), '_')
+      .replaceAll(RegExp(r'_+'), '_')
+      .replaceAll(RegExp(r'^_+|_+$'), '');
+  if (slug.isEmpty) return safeFallback;
+  if (!RegExp(r'^[a-z]').hasMatch(slug)) {
+    slug = 'tool_$slug';
+  }
+  if (slug.length > 48) {
+    slug = slug.substring(0, 48).replaceAll(RegExp(r'_+$'), '');
+  }
+  if (slug.length < 2 || !_toolSlugRe.hasMatch(slug)) {
+    return safeFallback;
+  }
+  return slug;
+}
+
+/// Result of static safety inspection on an LLM-synthesized script (`FORGE-LATM`).
+typedef SynthesizedScriptValidationResult = ({
+  bool safe,
+  String normalizedRuntime,
+  String? violationCode,
+  String? reasonVi,
+});
+
+final List<({String code, RegExp pattern, String reasonVi})>
+    _dangerousScriptRules = <({String code, RegExp pattern, String reasonVi})>[
+  (
+    code: 'destructive_fs',
+    pattern: RegExp(
+      r'(?:\brm\s+-[a-zA-Z]*r[a-zA-Z]*f\b|\brm\s+-[a-zA-Z]*f[a-zA-Z]*r\b|'
+      r'\bdel\s+/[fqs]|\brmdir\s+/s\b|\bFormat-Volume\b|\bClear-Disk\b|'
+      r'Remove-Item\b[^\n]*-Recurse[^\n]*-Force|'
+      r'shutil\.rmtree\s*\(\s*["\x27](?:/|[A-Za-z]:\\|~))',
+      caseSensitive: false,
+    ),
+    reasonVi:
+        'Từ chối mã công cụ chứa lệnh xóa hoặc định dạng ổ đĩa nguy hiểm (rm -rf / Format-Volume / rmtree gốc).',
+  ),
+  (
+    code: 'credential_harvesting',
+    pattern: RegExp(
+      r'(?:[/\\]\.ssh[/\\]|[/\\]\.aws[/\\]|[/\\]\.gnupg[/\\]|[/\\]\.kube[/\\]|'
+      r'\bid_rsa\b|\bid_ed25519\b|/etc/shadow\b|/etc/passwd\b|'
+      r'\bsecurity\s+find-(?:generic|internet)-password\b|'
+      r'\bcmdkey\b|\bvaultcmd\b|\b Mimikatz\b|\breg\s+save\s+hklm\\(?:sam|system)\b)',
+      caseSensitive: false,
+    ),
+    reasonVi:
+        'Từ chối mã công cụ truy cập khóa SSH, thông tin xác thực đám mây (.aws/.ssh) hoặc kho mật khẩu hệ điều hành.',
+  ),
+  (
+    code: 'remote_shell_or_eval',
+    pattern: RegExp(
+      r'(?:/dev/tcp/|\bnc\s+-[a-zA-Z]*e\b|\bncat\b[^\n]*--exec|'
+      r'\bInvoke-Expression\b|\biex\s*\(|\bDownloadString\s*\(|'
+      r'\bcurl\b[^\n|]*\|\s*(?:sh|bash|zsh|pwsh|powershell|python)\b|'
+      r'\bwget\b[^\n|]*\|\s*(?:sh|bash|zsh|python)\b|'
+      r'\bpty\.spawn\s*\()',
+      caseSensitive: false,
+    ),
+    reasonVi:
+        'Từ chối mã công cụ tải thực thi từ xa (curl|sh, Invoke-Expression) hoặc mở kết nối reverse shell.',
+  ),
+  (
+    code: 'arbitrary_shell_spawn',
+    pattern: RegExp(
+      r'(?:\bos\.system\s*\(|\bsubprocess\.(?:Popen|call|run|check_output)\s*\([^\)]*shell\s*=\s*True|'
+      r'\bchild_process\b[^\n]*\bexec(?:Sync)?\s*\(|'
+      r'\bStart-Process\b[^\n]*-Verb\s+RunAs)',
+      caseSensitive: false,
+    ),
+    reasonVi:
+        'Từ chối mã công cụ gọi shell lồng nhau không an toàn (os.system / shell=True / RunAs). Hãy dùng thư viện chuẩn trực tiếp.',
+  ),
+  (
+    code: 'system_binary_modification',
+    pattern: RegExp(
+      r'(?:/System/Library/|/bin/|/sbin/|/usr/bin/|C:\\Windows\\System32|'
+      r'\bchmod\s+[0-7]*777\b|\bchown\s+root\b|\bsudo\s+)',
+      caseSensitive: false,
+    ),
+    reasonVi:
+        'Từ chối mã công cụ can thiệp thư mục hệ thống hoặc leo thang đặc quyền (sudo / System32).',
+  ),
+];
+
+/// Performs static defense-in-depth validation on LLM-synthesized tool code
+/// (`FORGE-LATM`) before writing or executing it inside the XUNA sandbox.
+SynthesizedScriptValidationResult validateSynthesizedToolScript({
+  required String runtime,
+  required String scriptCode,
+}) {
+  final normRuntime = runtime.trim().toLowerCase();
+  if (!allowedSynthesizedToolRuntimes.contains(normRuntime)) {
+    return (
+      safe: false,
+      normalizedRuntime: 'pipeline',
+      violationCode: 'unsupported_runtime',
+      reasonVi:
+          'Runtime "$runtime" không nằm trong danh sách cho phép (python, node, powershell, bash, pipeline).',
+    );
+  }
+  final trimmed = scriptCode.trim();
+  if (trimmed.isEmpty) {
+    return (
+      safe: false,
+      normalizedRuntime: normRuntime,
+      violationCode: 'empty_script',
+      reasonVi: 'Mã nguồn công cụ (scriptCode) không được để trống.',
+    );
+  }
+  if (scriptCode.length > 4000) {
+    return (
+      safe: false,
+      normalizedRuntime: normRuntime,
+      violationCode: 'script_too_large',
+      reasonVi: 'Mã nguồn công cụ vượt quá giới hạn an toàn 4.000 ký tự.',
+    );
+  }
+  for (var i = 0; i < scriptCode.length; i++) {
+    final code = scriptCode.codeUnitAt(i);
+    if ((code >= 0x00 && code <= 0x08) ||
+        code == 0x0B ||
+        code == 0x0C ||
+        (code >= 0x0E && code <= 0x1F) ||
+        code == 0x7F) {
+      return (
+        safe: false,
+        normalizedRuntime: normRuntime,
+        violationCode: 'control_characters',
+        reasonVi: 'Mã nguồn công cụ chứa ký tự điều khiển nhị phân không hợp lệ.',
+      );
+    }
+  }
+  for (final rule in _dangerousScriptRules) {
+    if (rule.pattern.hasMatch(scriptCode)) {
+      return (
+        safe: false,
+        normalizedRuntime: normRuntime,
+        violationCode: rule.code,
+        reasonVi: rule.reasonVi,
+      );
+    }
+  }
+  return (
+    safe: true,
+    normalizedRuntime: normRuntime == 'auto' ? 'python' : normRuntime,
+    violationCode: null,
+    reasonVi: null,
+  );
+}
+
