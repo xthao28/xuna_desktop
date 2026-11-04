@@ -1609,6 +1609,16 @@ List<ToolDescriptor> buildComputerUseTools({
         'type': 'string',
         'enum': <String>['changed', 'no_change'],
       },
+      'route': <String, Object?>{
+        'type': 'string',
+        'enum': <String>['semantic_headless', 'physical_headed'],
+      },
+      'disposition': <String, Object?>{
+        'type': 'object',
+      },
+      'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 32},
+      'surfaces': <String, Object?>{'type': 'array'},
+      'waitSatisfied': <String, Object?>{'type': 'boolean'},
     },
     'required': <String>['effect'],
     'additionalProperties': false,
@@ -1719,7 +1729,7 @@ List<ToolDescriptor> buildComputerUseTools({
     ToolDescriptor(
       name: 'ui.inspect',
       description:
-          'Inspect active window UI tree with password fields redacted.',
+          'Inspect active window UI tree with password redaction, @s<id>:e<N> refs, skeleton drill-down, and web-wrapper collapsing.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -1732,6 +1742,13 @@ List<ToolDescriptor> buildComputerUseTools({
             'minimum': 1,
             'maximum': 300,
           },
+          'skeleton': <String, Object?>{'type': 'boolean'},
+          'interactiveOnly': <String, Object?>{'type': 'boolean'},
+          'rootElementId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'collapseWebWrappers': <String, Object?>{'type': 'boolean'},
         },
         'required': <String>['scope', 'maxNodes'],
         'additionalProperties': false,
@@ -1741,6 +1758,12 @@ List<ToolDescriptor> buildComputerUseTools({
         'properties': <String, Object?>{
           'appId': <String, Object?>{'type': 'string', 'maxLength': 64},
           'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'surfaces': <String, Object?>{'type': 'array'},
+          'collapsedWrappersCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
           'nodes': <String, Object?>{'type': 'array'},
         },
         'required': <String>['appId', 'windowTitle', 'nodes'],
@@ -1757,7 +1780,7 @@ List<ToolDescriptor> buildComputerUseTools({
     ToolDescriptor(
       name: 'input.click',
       description:
-          'Click a UI element by elementId or coordinates inside an allowlisted app.',
+          'Click a UI element by elementId (@s<id>:e<N> or id) or coordinates inside an allowlisted app, with actionability checks and optional wait.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -1765,6 +1788,9 @@ List<ToolDescriptor> buildComputerUseTools({
           'elementName': <String, Object?>{'type': 'string', 'maxLength': 120},
           'x': <String, Object?>{'type': 'integer'},
           'y': <String, Object?>{'type': 'integer'},
+          'headed': <String, Object?>{'type': 'boolean'},
+          'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'waitForGone': <String, Object?>{'type': 'string', 'maxLength': 120},
         },
         'additionalProperties': false,
       },
@@ -1780,7 +1806,7 @@ List<ToolDescriptor> buildComputerUseTools({
     ToolDescriptor(
       name: 'input.type_text',
       description:
-          'Type text into a non-password UI element (always R3 phone-signed).',
+          'Type or semantically set text into a non-password UI element (always R3 phone-signed), with actionability checks and optional wait.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -1795,6 +1821,9 @@ List<ToolDescriptor> buildComputerUseTools({
             'minLength': 1,
             'maxLength': 200,
           },
+          'headed': <String, Object?>{'type': 'boolean'},
+          'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'waitForGone': <String, Object?>{'type': 'string', 'maxLength': 120},
         },
         'required': <String>['elementId', 'text'],
         'additionalProperties': false,
@@ -1835,6 +1864,9 @@ List<ToolDescriptor> buildComputerUseTools({
             ],
           },
           'inForm': <String, Object?>{'type': 'boolean'},
+          'headed': <String, Object?>{'type': 'boolean'},
+          'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'waitForGone': <String, Object?>{'type': 'string', 'maxLength': 120},
         },
         'required': <String>['combo'],
         'additionalProperties': false,
@@ -1864,6 +1896,9 @@ List<ToolDescriptor> buildComputerUseTools({
             'minimum': 1,
             'maximum': 10,
           },
+          'headed': <String, Object?>{'type': 'boolean'},
+          'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'waitForGone': <String, Object?>{'type': 'string', 'maxLength': 120},
         },
         'required': <String>['direction', 'amount'],
         'additionalProperties': false,

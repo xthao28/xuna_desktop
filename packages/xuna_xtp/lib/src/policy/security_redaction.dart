@@ -175,27 +175,234 @@ bool isPasswordUiNode(Map<String, Object?> node) {
   return false;
 }
 
+/// Roles treated as transparent web/Electron layout wrappers when unnamed and
+/// non-actionable (`agent-desktop` web-wrapper skipping).
+const Set<String> transparentWebWrapperRoles = <String>{
+  'group',
+  'custom',
+  'pane',
+  'generic',
+  'div',
+  'section',
+  'layout_item',
+  'axgroup',
+};
+
+/// Returns `true` when [node] is an unnamed, non-actionable layout wrapper
+/// (`group`/`custom`/`pane`/`div`) that adds DOM bloat in Electron/WebView2
+/// trees without carrying semantic identity or direct actionability.
+bool isTransparentWebWrapperNode(Map<String, Object?> node) {
+  if (isPasswordUiNode(node)) return false;
+  if (node['actionable'] == true || node['interactive'] == true) return false;
+  final role = ((node['role'] as String?) ?? '').trim().toLowerCase();
+  if (!transparentWebWrapperRoles.contains(role)) return false;
+  final name = ((node['name'] as String?) ?? '').trim();
+  final value = ((node['value'] as String?) ?? '').trim();
+  return name.isEmpty && value.isEmpty;
+}
+
+/// Roles treated as modal/overlay surfaces (`dialog`, `sheet`, `alert`,
+/// `popover`, `menu`) that can occlude underlying window controls.
+const Set<String> overlaySurfaceRoles = <String>{
+  'dialog',
+  'alert',
+  'alertdialog',
+  'sheet',
+  'menu',
+  'popover',
+  'modal',
+};
+
+/// Returns `true` when [node] represents an open overlay surface (modal dialog,
+/// sheet, alert, popover, or menu).
+bool isOverlaySurfaceNode(Map<String, Object?> node) {
+  final role = ((node['role'] as String?) ?? '').trim().toLowerCase();
+  final surface = ((node['surface'] as String?) ?? '').trim().toLowerCase();
+  return overlaySurfaceRoles.contains(role) ||
+      overlaySurfaceRoles.contains(surface) ||
+      node['modal'] == true;
+}
+
+/// Roles treated as interactive controls when `interactiveOnly == true`.
+const Set<String> interactiveUiRoles = <String>{
+  'button',
+  'textfield',
+  'edit',
+  'searchbox',
+  'password',
+  'password_edit',
+  'checkbox',
+  'radio',
+  'combobox',
+  'menuitem',
+  'menu_item',
+  'list_item',
+  'listitem',
+  'link',
+  'tab',
+  'slider',
+  'switch',
+  'toggle',
+  'treeitem',
+};
+
+/// Returns `true` when [node] is an interactive control or explicitly marked
+/// `actionable`/`interactive`.
+bool isInteractiveUiNode(Map<String, Object?> node) {
+  if (isPasswordUiNode(node)) return true;
+  if (node['actionable'] == true || node['interactive'] == true) return true;
+  final role = ((node['role'] as String?) ?? '').trim().toLowerCase();
+  return interactiveUiRoles.contains(role);
+}
+
+/// Extracts a list of active overlay surfaces (`dialog`, `alert`, `sheet`,
+/// `popover`, `menu`) from [nodes] so the agent knows if a modal blocks the
+/// main window (`agent-desktop` surface detection).
+List<Map<String, Object?>> extractOverlaySurfaces(
+  List<Map<String, Object?>> nodes,
+) {
+  final surfaces = <Map<String, Object?>>[];
+  for (final node in nodes) {
+    if (!isOverlaySurfaceNode(node)) continue;
+    final id = (node['id'] as String?) ?? '';
+    final role = ((node['surface'] as String?) ?? (node['role'] as String?) ?? 'dialog')
+        .toLowerCase();
+    final name = (node['name'] as String?) ?? '';
+    surfaces.add(<String, Object?>{
+      'id': id,
+      'kind': role,
+      'title': name.length > 80 ? name.substring(0, 80) : name,
+      'modal': node['modal'] != false,
+    });
+  }
+  return surfaces;
+}
+
+final RegExp _snapshotRefRe =
+    RegExp(r'^@?(s[a-z0-9]{4,16}):(?:e)?([0-9]{1,6})$');
+
+/// Formats a snapshot-qualified element reference (`@s<snapshotId>:e<index>`)
+/// inspired by `agent-desktop` so stale refs from earlier observations can be
+/// deterministically detected.
+String qualifySnapshotElementRef({
+  required String snapshotId,
+  required String rawId,
+  required int index1Based,
+}) {
+  final cleanSnap = snapshotId.startsWith('@')
+      ? snapshotId.substring(1)
+      : snapshotId;
+  final parsed = parseSnapshotElementRef(rawId);
+  if (parsed != null) {
+    return '@$cleanSnap:e${parsed.elementNumber}';
+  }
+  return '@$cleanSnap:e$index1Based';
+}
+
+/// Parses either `@s00000001:e1` or `s00000001:1` into its `(snapshotId, elementNumber)`
+/// components, or returns `null` if [ref] is not snapshot-qualified.
+({String snapshotId, int elementNumber})? parseSnapshotElementRef(String? ref) {
+  if (ref == null || ref.trim().isEmpty) return null;
+  final match = _snapshotRefRe.firstMatch(ref.trim());
+  if (match == null) return null;
+  final numPart = int.tryParse(match.group(2)!);
+  if (numPart == null) return null;
+  return (snapshotId: match.group(1)!, elementNumber: numPart);
+}
+
 /// Redacts password fields in a list of UI tree nodes (`UDC-8` §4.2):
 /// replaces `name` with `'•••'` and removes `value`.
+///
+/// Supports progressive observation upgrades inspired by `agent-desktop`:
+/// - [collapseWebWrappers]: skips unnamed, non-actionable `group`/`custom`/`pane`
+///   wrappers while preserving interactive descendants.
+/// - [skeleton]: caps depth to shallow container overview (`depth <= 2`) and
+///   annotates `childrenCount` for drill-down via [rootElementId].
+/// - [interactiveOnly]: retains only interactive controls and overlay surfaces.
+/// - [rootElementId]: scopes observation to the subtree under [rootElementId].
+/// - [snapshotId]: attaches snapshot-qualified `@s<id>:e<N>` `ref` tags.
 List<Map<String, Object?>> redactUiTreeNodes(
   List<Map<String, Object?>> nodes, {
   int maxNodes = 300,
+  String? snapshotId,
+  bool collapseWebWrappers = false,
+  bool skeleton = false,
+  bool interactiveOnly = false,
+  String? rootElementId,
 }) {
   final out = <Map<String, Object?>>[];
+  final cleanRoot = rootElementId?.trim();
+  final filterByRoot = cleanRoot != null && cleanRoot.isNotEmpty;
+
+  // Collect descendant IDs when scoping to `rootElementId`.
+  final allowedSubtreeIds = <String>{};
+  if (filterByRoot) {
+    allowedSubtreeIds.add(cleanRoot);
+    for (final node in nodes) {
+      final id = (node['id'] as String?) ?? '';
+      final ref = (node['ref'] as String?) ?? '';
+      final parentId = (node['parentId'] as String?) ?? '';
+      if (id == cleanRoot || ref == cleanRoot) {
+        allowedSubtreeIds.add(id);
+      } else if (parentId.isNotEmpty && allowedSubtreeIds.contains(parentId)) {
+        allowedSubtreeIds.add(id);
+      }
+    }
+  }
+
+  var elementIndex = 0;
   for (final node in nodes) {
     if (out.length >= maxNodes) break;
+    final rawId = (node['id'] as String?) ?? '';
+    final rawRef = (node['ref'] as String?) ?? '';
+    if (filterByRoot &&
+        !allowedSubtreeIds.contains(rawId) &&
+        rawRef != cleanRoot) {
+      continue;
+    }
+    if (collapseWebWrappers && isTransparentWebWrapperNode(node)) {
+      continue;
+    }
+    if (interactiveOnly &&
+        !isInteractiveUiNode(node) &&
+        !isOverlaySurfaceNode(node)) {
+      continue;
+    }
+    final depth = (node['depth'] as int?) ?? 0;
+    if (skeleton && depth > 2) {
+      continue;
+    }
+
+    elementIndex++;
     final isPwd = isPasswordUiNode(node);
     final rawName = (node['name'] as String?) ?? '';
     final truncatedName = isPwd
         ? '•••'
         : (rawName.length > 60 ? rawName.substring(0, 60) : rawName);
     final redacted = <String, Object?>{
-      'id': (node['id'] as String?) ?? '',
+      'id': rawId,
+      if (snapshotId != null && snapshotId.isNotEmpty)
+        'ref': qualifySnapshotElementRef(
+          snapshotId: snapshotId,
+          rawId: rawId,
+          index1Based: elementIndex,
+        )
+      else if (node['ref'] is String)
+        'ref': node['ref'],
       'role': isPwd ? 'password' : ((node['role'] as String?) ?? 'unknown'),
       'name': truncatedName,
       'enabled': node['enabled'] != false,
       if (node['bounds'] is Map) 'bounds': node['bounds'],
       if (isPwd) 'isPassword': true,
+      if (node['visible'] is bool) 'visible': node['visible'],
+      if (node['editable'] is bool) 'editable': node['editable'],
+      if (node['occluded'] is bool) 'occluded': node['occluded'],
+      if (node['modal'] is bool) 'modal': node['modal'],
+      if (node['parentSurfaceId'] is String)
+        'parentSurfaceId': node['parentSurfaceId'],
+      if (node['depth'] is int) 'depth': node['depth'],
+      if (node['parentId'] is String) 'parentId': node['parentId'],
+      if (node['childrenCount'] is int) 'childrenCount': node['childrenCount'],
     };
     out.add(redacted);
   }

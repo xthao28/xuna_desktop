@@ -873,6 +873,98 @@ void main() {
       expect(redacted[1].containsKey('value'), isFalse);
       expect(redacted[1]['isPassword'], isTrue);
 
+      // agent-desktop progressive observation helpers: web-wrapper collapsing,
+      // skeleton drill-down, overlay surface detection, and @s<id>:e<N> refs
+      final progressiveNodes = <Map<String, Object?>>[
+        <String, Object?>{
+          'id': 'wrap_1',
+          'role': 'group',
+          'name': '',
+          'depth': 1,
+        },
+        <String, Object?>{
+          'id': 'dlg_1',
+          'role': 'dialog',
+          'name': 'Xác nhận lưu',
+          'modal': true,
+          'depth': 1,
+          'childrenCount': 2,
+        },
+        <String, Object?>{
+          'id': 'btn_ok',
+          'role': 'button',
+          'name': 'Đồng ý',
+          'parentId': 'dlg_1',
+          'depth': 2,
+          'enabled': true,
+        },
+        <String, Object?>{
+          'id': 'deep_leaf',
+          'role': 'text',
+          'name': 'Chi tiết sâu',
+          'parentId': 'btn_ok',
+          'depth': 4,
+          'enabled': true,
+        },
+      ];
+      expect(isTransparentWebWrapperNode(progressiveNodes[0]), isTrue);
+      expect(isOverlaySurfaceNode(progressiveNodes[1]), isTrue);
+      final surfaces = extractOverlaySurfaces(progressiveNodes);
+      expect(surfaces, hasLength(1));
+      expect(surfaces.single['id'], equals('dlg_1'));
+      expect(surfaces.single['kind'], equals('dialog'));
+
+      final collapsedSkeleton = redactUiTreeNodes(
+        progressiveNodes,
+        snapshotId: 's0000000a',
+        collapseWebWrappers: true,
+        skeleton: true,
+      );
+      expect(collapsedSkeleton, hasLength(2));
+      expect(collapsedSkeleton[0]['id'], equals('dlg_1'));
+      expect(collapsedSkeleton[0]['ref'], equals('@s0000000a:e1'));
+      expect(collapsedSkeleton[1]['id'], equals('btn_ok'));
+      expect(collapsedSkeleton[1]['ref'], equals('@s0000000a:e2'));
+
+      // ui.inspect accepts skeleton, interactiveOnly, rootElementId, collapseWebWrappers
+      final inspectProgressive = evaluator.evaluateInvocation(
+        toolName: 'ui.inspect',
+        arguments: const <String, Object?>{
+          'scope': 'active_window',
+          'maxNodes': 100,
+          'skeleton': true,
+          'interactiveOnly': true,
+          'rootElementId': 'dlg_1',
+          'collapseWebWrappers': true,
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(inspectProgressive.allowed, isTrue);
+
+      // input.click accepts headed + waitFor, but rejects setting both waitFor and waitForGone
+      final clickWithWait = evaluator.evaluateInvocation(
+        toolName: 'input.click',
+        arguments: const <String, Object?>{
+          'elementId': '@s0000000a:e2',
+          'headed': false,
+          'waitFor': 'role:dialog',
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(clickWithWait.allowed, isTrue);
+
+      final clickConflictingWaits = evaluator.evaluateInvocation(
+        toolName: 'input.click',
+        arguments: const <String, Object?>{
+          'elementId': '@s0000000a:e2',
+          'waitFor': 'role:dialog',
+          'waitForGone': 'role:dialog',
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(clickConflictingWaits.allowed, isFalse);
+      expect(clickConflictingWaits.errorCode, equals('schema_mismatch'));
+
       // Calling observation/input tools outside an active CU session -> denied
       final outsideSession = evaluator.evaluateInvocation(
         toolName: 'ui.inspect',

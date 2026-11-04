@@ -1608,7 +1608,9 @@ PolicyEvaluationResult validateToolArguments({
         'valueText',
         'maxNodes',
       };
-      final refPattern = RegExp(r'^ui_[a-z0-9_]{1,24}$');
+      final refPattern = RegExp(
+        r'^(?:ui_[a-z0-9_]{1,24}|@?s[a-z0-9]{4,16}:(?:e)?[0-9]{1,6})$',
+      );
       if (arguments.keys.any((k) => !allowedUiaKeys.contains(k)) ||
           action is! String ||
           !allowedUiAccessibilityActions.contains(action) ||
@@ -2048,11 +2050,31 @@ PolicyEvaluationResult validateToolArguments({
       }
       final scope = arguments['scope'];
       final maxNodes = arguments['maxNodes'];
-      if (arguments.length != 2 ||
+      final skeleton = arguments['skeleton'];
+      final interactiveOnly = arguments['interactiveOnly'];
+      final rootElementId = arguments['rootElementId'];
+      final collapseWebWrappers = arguments['collapseWebWrappers'];
+      const allowedInspectKeys = <String>{
+        'scope',
+        'maxNodes',
+        'skeleton',
+        'interactiveOnly',
+        'rootElementId',
+        'collapseWebWrappers',
+      };
+      if (arguments.keys.any((k) => !allowedInspectKeys.contains(k)) ||
           scope != 'active_window' ||
           maxNodes is! int ||
           maxNodes < 1 ||
-          maxNodes > 300) {
+          maxNodes > 300 ||
+          (skeleton != null && skeleton is! bool) ||
+          (interactiveOnly != null && interactiveOnly is! bool) ||
+          (collapseWebWrappers != null && collapseWebWrappers is! bool) ||
+          (rootElementId != null &&
+              (rootElementId is! String ||
+                  rootElementId.trim().isEmpty ||
+                  rootElementId.length > 64 ||
+                  !isSafeAgentPrompt(rootElementId)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -2074,10 +2096,35 @@ PolicyEvaluationResult validateToolArguments({
       final elementName = arguments['elementName'];
       final x = arguments['x'];
       final y = arguments['y'];
+      final headed = arguments['headed'];
+      final waitFor = arguments['waitFor'];
+      final waitForGone = arguments['waitForGone'];
+      const allowedClickKeys = <String>{
+        'elementId',
+        'elementName',
+        'x',
+        'y',
+        'headed',
+        'waitFor',
+        'waitForGone',
+      };
       final hasElement = elementId is String && elementId.isNotEmpty;
       final hasCoords = x is int && y is int;
-      if ((!hasElement && !hasCoords) ||
-          (elementName != null && elementName is! String)) {
+      if (arguments.keys.any((k) => !allowedClickKeys.contains(k)) ||
+          (!hasElement && !hasCoords) ||
+          (elementName != null && elementName is! String) ||
+          (headed != null && headed is! bool) ||
+          (waitFor != null && waitForGone != null) ||
+          (waitFor != null &&
+              (waitFor is! String ||
+                  waitFor.trim().isEmpty ||
+                  waitFor.length > 120 ||
+                  !isSafeAgentPrompt(waitFor))) ||
+          (waitForGone != null &&
+              (waitForGone is! String ||
+                  waitForGone.trim().isEmpty ||
+                  waitForGone.length > 120 ||
+                  !isSafeAgentPrompt(waitForGone)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -2100,13 +2147,37 @@ PolicyEvaluationResult validateToolArguments({
       final elementId = arguments['elementId'];
       final text = arguments['text'];
       final elementName = arguments['elementName'];
-      if (elementId is! String ||
+      final headed = arguments['headed'];
+      final waitFor = arguments['waitFor'];
+      final waitForGone = arguments['waitForGone'];
+      const allowedTypeKeys = <String>{
+        'elementId',
+        'elementName',
+        'text',
+        'headed',
+        'waitFor',
+        'waitForGone',
+      };
+      if (arguments.keys.any((k) => !allowedTypeKeys.contains(k)) ||
+          elementId is! String ||
           elementId.isEmpty ||
           elementId.length > 64 ||
           text is! String ||
           text.isEmpty ||
           text.length > 200 ||
-          (elementName != null && elementName is! String)) {
+          (elementName != null && elementName is! String) ||
+          (headed != null && headed is! bool) ||
+          (waitFor != null && waitForGone != null) ||
+          (waitFor != null &&
+              (waitFor is! String ||
+                  waitFor.trim().isEmpty ||
+                  waitFor.length > 120 ||
+                  !isSafeAgentPrompt(waitFor))) ||
+          (waitForGone != null &&
+              (waitForGone is! String ||
+                  waitForGone.trim().isEmpty ||
+                  waitForGone.length > 120 ||
+                  !isSafeAgentPrompt(waitForGone)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -2126,9 +2197,32 @@ PolicyEvaluationResult validateToolArguments({
       }
       final combo = arguments['combo'];
       final inForm = arguments['inForm'];
-      if (combo is! String ||
+      final headed = arguments['headed'];
+      final waitFor = arguments['waitFor'];
+      final waitForGone = arguments['waitForGone'];
+      const allowedKeyKeys = <String>{
+        'combo',
+        'inForm',
+        'headed',
+        'waitFor',
+        'waitForGone',
+      };
+      if (arguments.keys.any((k) => !allowedKeyKeys.contains(k)) ||
+          combo is! String ||
           !allowedInputKeyCombos.contains(combo) ||
-          (inForm != null && inForm is! bool)) {
+          (inForm != null && inForm is! bool) ||
+          (headed != null && headed is! bool) ||
+          (waitFor != null && waitForGone != null) ||
+          (waitFor != null &&
+              (waitFor is! String ||
+                  waitFor.trim().isEmpty ||
+                  waitFor.length > 120 ||
+                  !isSafeAgentPrompt(waitFor))) ||
+          (waitForGone != null &&
+              (waitForGone is! String ||
+                  waitForGone.trim().isEmpty ||
+                  waitForGone.length > 120 ||
+                  !isSafeAgentPrompt(waitForGone)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -2150,12 +2244,36 @@ PolicyEvaluationResult validateToolArguments({
       final direction = arguments['direction'];
       final amount = arguments['amount'];
       final elementId = arguments['elementId'];
-      if (direction is! String ||
+      final headed = arguments['headed'];
+      final waitFor = arguments['waitFor'];
+      final waitForGone = arguments['waitForGone'];
+      const allowedScrollKeys = <String>{
+        'elementId',
+        'direction',
+        'amount',
+        'headed',
+        'waitFor',
+        'waitForGone',
+      };
+      if (arguments.keys.any((k) => !allowedScrollKeys.contains(k)) ||
+          direction is! String ||
           !<String>{'up', 'down', 'left', 'right'}.contains(direction) ||
           amount is! int ||
           amount < 1 ||
           amount > 10 ||
-          (elementId != null && elementId is! String)) {
+          (elementId != null && elementId is! String) ||
+          (headed != null && headed is! bool) ||
+          (waitFor != null && waitForGone != null) ||
+          (waitFor != null &&
+              (waitFor is! String ||
+                  waitFor.trim().isEmpty ||
+                  waitFor.length > 120 ||
+                  !isSafeAgentPrompt(waitFor))) ||
+          (waitForGone != null &&
+              (waitForGone is! String ||
+                  waitForGone.trim().isEmpty ||
+                  waitForGone.length > 120 ||
+                  !isSafeAgentPrompt(waitForGone)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,

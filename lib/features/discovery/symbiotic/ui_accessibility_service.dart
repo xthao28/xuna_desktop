@@ -27,6 +27,30 @@ class UiAccessibilityTreeService {
   String _lastWindowTitle = 'Active Desktop Window';
   String _lastInvokedRefId = 'none';
   bool _hasLiveNativeTree = false;
+  int _snapshotCounter = 0;
+  String _activeSnapshotId = 's00000001';
+
+  String get activeSnapshotId => _activeSnapshotId;
+
+  String _mintNextSnapshotId() {
+    _snapshotCounter++;
+    _activeSnapshotId =
+        's${_snapshotCounter.toRadixString(16).padLeft(8, '0')}';
+    return _activeSnapshotId;
+  }
+
+  /// Resolves either a canonical `ui_<N>` ref or a snapshot-qualified
+  /// `@s<id>:e<N>` ref to the canonical key in [_activeUiNodes].
+  String _resolveCanonicalRefKey(String rawRef) {
+    final trimmed = rawRef.trim();
+    if (_activeUiNodes.containsKey(trimmed)) return trimmed;
+    final parsed = parseSnapshotElementRef(trimmed);
+    if (parsed != null) {
+      final candidate = 'ui_${parsed.elementNumber}';
+      if (_activeUiNodes.containsKey(candidate)) return candidate;
+    }
+    return trimmed;
+  }
 
   List<AppPlaybookEntry> listAppPlaybooks() =>
       List<AppPlaybookEntry>.unmodifiable(_learnedPlaybooks);
@@ -345,7 +369,9 @@ class UiAccessibilityTreeService {
     _activeHandover = null;
   }
 
-  /// Populates [_activeUiNodes] from a live native OS `inspectWindowUiTree` snapshot.
+  /// Populates [_activeUiNodes] from a live native OS `inspectWindowUiTree` snapshot,
+  /// collapsing transparent web/Electron layout wrappers (`group`/`custom`/`pane`)
+  /// and tagging each element with a snapshot-qualified `@s<id>:e<N>` reference.
   void applyNativeWindowUiTree({
     required String windowTitle,
     required List<Map<String, Object?>> nodes,
@@ -356,9 +382,25 @@ class UiAccessibilityTreeService {
     if (nodes.isEmpty) return;
     _activeUiNodes.clear();
     _hasLiveNativeTree = true;
+    final snapId = _mintNextSnapshotId();
+    var idx = 0;
     for (var i = 0; i < nodes.length; i++) {
       final raw = nodes[i];
-      final refId = (raw['refId'] as String?) ?? 'ui_${i + 1}';
+      if (isTransparentWebWrapperNode(<String, Object?>{
+        'role': raw['role'],
+        'name': raw['label'] ?? raw['name'],
+        'value': raw['value'],
+        'isPassword': raw['isPassword'],
+      })) {
+        continue;
+      }
+      idx++;
+      final refId = (raw['refId'] as String?) ?? 'ui_$idx';
+      final snapshotRef = qualifySnapshotElementRef(
+        snapshotId: snapId,
+        rawId: refId,
+        index1Based: idx,
+      );
       final role = (raw['role'] as String?) ?? 'AXElement';
       final isPwd = raw['isPassword'] == true;
       final label = isPwd
@@ -366,6 +408,7 @@ class UiAccessibilityTreeService {
           : ((raw['label'] as String?) ?? role);
       _activeUiNodes[refId] = <String, Object?>{
         'refId': refId,
+        'snapshotRef': snapshotRef,
         'role': role,
         'label': label,
         'pattern': (raw['pattern'] as String?) ??
@@ -423,13 +466,15 @@ class UiAccessibilityTreeService {
 
     String summaryVi;
     if (action == 'invoke_ref') {
-      final targetRef = (refId ?? 'ui_3').trim();
-      _lastInvokedRefId = targetRef;
+      final rawRef = (refId ?? 'ui_3').trim();
+      final targetRef = _resolveCanonicalRefKey(rawRef);
+      _lastInvokedRefId = rawRef;
       final targetNode = _activeUiNodes[targetRef] ??
           <String, Object?>{
             'refId': targetRef,
+            'snapshotRef': '@$_activeSnapshotId:e1',
             'role': 'button',
-            'label': 'Nút chức năng ($targetRef)',
+            'label': 'Nút chức năng ($rawRef)',
             'pattern': 'InvokePattern / AXPress',
             'status': 'invoked',
           };
@@ -438,18 +483,20 @@ class UiAccessibilityTreeService {
       summaryVi =
           'Đã bấm trực tiếp [${targetNode['refId']}] "${targetNode['label']}" trên cửa sổ "$cleanTitle" qua OS UIA (InvokePattern / AXPress)$detailSuffix — 0 chụp màn hình, 0 chiếm chuột!';
     } else if (action == 'set_value_ref') {
-      final targetRef = (refId ?? 'ui_1').trim();
+      final rawRef = (refId ?? 'ui_1').trim();
+      final targetRef = _resolveCanonicalRefKey(rawRef);
       final redacted = redactSensitiveSelectionText(valueText ?? '');
       final cleanVal = redacted.text;
       if (redacted.redactedCount > 0) {
         redactedCount += redacted.redactedCount;
       }
-      _lastInvokedRefId = targetRef;
+      _lastInvokedRefId = rawRef;
       final targetNode = _activeUiNodes[targetRef] ??
           <String, Object?>{
             'refId': targetRef,
+            'snapshotRef': '@$_activeSnapshotId:e1',
             'role': 'edit',
-            'label': 'Ô nhập liệu ($targetRef)',
+            'label': 'Ô nhập liệu ($rawRef)',
             'pattern': 'ValuePattern / AXValue',
             'value': cleanVal,
           };
@@ -457,7 +504,7 @@ class UiAccessibilityTreeService {
       targetNode['status'] = 'value_set_0_screenshot';
       _activeUiNodes[targetRef] = targetNode;
       summaryVi =
-          'Đã điền giá trị vào [$targetRef] "${targetNode['label']}" trên "$cleanTitle" qua ValuePattern$detailSuffix — 0 chụp màn hình!';
+          'Đã điền giá trị vào [$rawRef] "${targetNode['label']}" trên "$cleanTitle" qua ValuePattern$detailSuffix — 0 chụp màn hình!';
     } else if (action != 'inspect_window') {
       final targetRef = (refId ?? 'ui_1').trim();
       _lastInvokedRefId = targetRef;
@@ -465,17 +512,19 @@ class UiAccessibilityTreeService {
           'Đã thực thi thao tác [$action] trên cửa sổ "$cleanTitle"$detailSuffix — 0 chụp màn hình!';
     } else {
       summaryVi =
-          'Quét cây UI Automation "$cleanTitle": ${_activeUiNodes.length} phần tử ([ref=ui_1]..[ref=ui_${_activeUiNodes.length}]), che $redactedCount ô mật khẩu, 0 byte ảnh chụp màn hình (tiết kiệm 92% token).';
+          'Quét cây UI Automation "$cleanTitle" ($_activeSnapshotId): ${_activeUiNodes.length} phần tử ([ref=ui_1]..[ref=ui_${_activeUiNodes.length}]), che $redactedCount ô mật khẩu, 0 byte ảnh chụp màn hình (tiết kiệm 92% token).';
     }
 
     final nodesList = _activeUiNodes.values.toList(growable: false);
     final compactLines = nodesList.map((n) {
       final rId = n['refId'];
+      final sRef = n['snapshotRef'];
       final role = n['role'];
       final lbl = n['label'];
       final val = n['value'] ?? '';
       final valSuffix = val.toString().isNotEmpty ? ' val="$val"' : '';
-      return '[ref=$rId] <$role> "$lbl"$valSuffix';
+      final sRefSuffix = sRef is String && sRef.isNotEmpty ? ' ($sRef)' : '';
+      return '[ref=$rId]$sRefSuffix <$role> "$lbl"$valSuffix';
     }).join('\n');
 
     final rows = nodesList.map((n) {
@@ -521,12 +570,14 @@ class UiAccessibilityTreeService {
   void _seedWindowUiNodes(String windowTitle, {required int maxNodes}) {
     _activeUiNodes.clear();
     _hasLiveNativeTree = false;
+    final snapId = _mintNextSnapshotId();
     final cleanWin = windowTitle.trim().isEmpty
         ? 'Cửa sổ đang mở'
         : windowTitle.trim();
     final seed = <Map<String, Object?>>[
       <String, Object?>{
         'refId': 'ui_1',
+        'snapshotRef': '@$snapId:e1',
         'role': 'edit',
         'label': 'Ô nhập liệu / Tìm kiếm ($cleanWin)',
         'pattern': 'ValuePattern / AXValue',
@@ -536,6 +587,7 @@ class UiAccessibilityTreeService {
       },
       <String, Object?>{
         'refId': 'ui_2',
+        'snapshotRef': '@$snapId:e2',
         'role': 'password_edit',
         'label': '[REDACTED_PASSWORD_CONTROL]',
         'pattern': 'Protected / Blocked',
@@ -545,6 +597,7 @@ class UiAccessibilityTreeService {
       },
       <String, Object?>{
         'refId': 'ui_3',
+        'snapshotRef': '@$snapId:e3',
         'role': 'button',
         'label': 'Nút thực thi chính ($cleanWin)',
         'pattern': 'InvokePattern / AXPress',
@@ -554,6 +607,7 @@ class UiAccessibilityTreeService {
       },
       <String, Object?>{
         'refId': 'ui_4',
+        'snapshotRef': '@$snapId:e4',
         'role': 'checkbox',
         'label': 'Tùy chọn xác nhận ($cleanWin)',
         'pattern': 'TogglePattern / AXValue',

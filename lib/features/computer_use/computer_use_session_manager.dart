@@ -56,8 +56,9 @@ class ScreenCaptureObservation {
 
 /// Provider abstraction for desktop computer use (`UDC-8` §4.1):
 /// backed either by a bounded `cua-driver mcp` child process
-/// ([CuaDriverComputerUseProvider]) or the native UIA/AX fallback provider
-/// ([FallbackUiaAxComputerUseProvider]).
+/// ([CuaDriverComputerUseProvider]), a `vercel-labs/agent-desktop mcp` child
+/// process ([AgentDesktopComputerUseProvider]), or the native UIA/AX fallback
+/// provider ([FallbackUiaAxComputerUseProvider]).
 abstract interface class ComputerUseProvider {
   Future<void> startSession({
     required String sessionId,
@@ -332,6 +333,338 @@ class CuaDriverComputerUseProvider implements ComputerUseProvider {
   }
 }
 
+/// Computer-use provider driving a `vercel-labs/agent-desktop mcp` stdio child
+/// (`AgentDesktopDriverMap`).
+///
+/// Unwraps `agent-desktop` JSON envelopes (`{"version": "1.0", "ok": bool, "data": ..., "error": ...}`),
+/// maps `STALE_REF` / `AMBIGUOUS_TARGET` / `PERM_DENIED` errors to
+/// [XunaHostChannelException], and routes headless semantic vs physical headed
+/// actions.
+class AgentDesktopComputerUseProvider implements ComputerUseProvider {
+  AgentDesktopComputerUseProvider({
+    required this.clientFactory,
+    this.defaultAppId = 'explorer',
+  });
+
+  final Future<McpStdioClient> Function(String capabilityManifestYaml)
+  clientFactory;
+  final String defaultAppId;
+
+  McpStdioClient? _client;
+  String? _activeSessionId;
+
+  @override
+  Future<void> startSession({
+    required String sessionId,
+    required String capabilityManifestYaml,
+  }) async {
+    await _client?.close();
+    _client = await clientFactory(capabilityManifestYaml);
+    _activeSessionId = sessionId;
+    final raw = await _client!.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'cu.session_start',
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'cu.session_start',
+        sessionId: sessionId,
+        arguments: const <String, Object?>{},
+      ),
+    );
+    _unwrapEnvelopeOrThrow(raw);
+  }
+
+  @override
+  Future<ActiveWindowObservation> inspectActiveWindow({
+    required int maxNodes,
+  }) async {
+    final client = _requireClient();
+    final raw = await client.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'ui.inspect',
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'ui.inspect',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: <String, Object?>{
+          'scope': 'active_window',
+          'maxNodes': maxNodes,
+        },
+      ),
+    );
+    final data = _unwrapEnvelopeOrThrow(raw);
+    final snapshotId = (data['snapshot_id'] as String?) ?? 's00000001';
+    final windowMap = (data['window'] as Map?)?.cast<String, Object?>() ?? data;
+    final rawApp =
+        (windowMap['app'] as String?) ??
+        (data['appId'] as String?) ??
+        defaultAppId;
+    final rawTitle =
+        (windowMap['title'] as String?) ??
+        (data['windowTitle'] as String?) ??
+        '';
+    final rawNodes =
+        (data['nodes'] as List?) ??
+        (data['tree'] is Map
+            ? (data['tree'] as Map)['children'] as List?
+            : null) ??
+        const <Object?>[];
+
+    final nodes = <Map<String, Object?>>[];
+    var counter = 0;
+    void collectNodes(List<Object?> list, {int depth = 0, String? parentId}) {
+      for (final item in list) {
+        if (nodes.length >= maxNodes) return;
+        if (item is! Map) continue;
+        final map = item.cast<String, Object?>();
+        counter++;
+        final ref =
+            (map['ref_id'] as String?) ??
+            (map['ref'] as String?) ??
+            (map['id'] as String?) ??
+            '@$snapshotId:e$counter';
+        final id =
+            (map['id'] as String?) ??
+            (ref.startsWith('@') ? ref.substring(1) : ref);
+        final states =
+            (map['states'] as List?)?.map((e) => '$e'.toLowerCase()).toSet() ??
+            const <String>{};
+        final children = map['children'] as List?;
+        nodes.add(<String, Object?>{
+          'id': id,
+          'ref': ref.startsWith('@') ? ref : '@$ref',
+          'role': (map['role'] as String?) ?? 'unknown',
+          'name':
+              (map['name'] as String?) ?? (map['title'] as String?) ?? '',
+          if (map['value'] != null) 'value': '${map['value']}',
+          'enabled':
+              map['enabled'] != false && !states.contains('disabled'),
+          if (map['bounds'] is Map)
+            'bounds': (map['bounds'] as Map).cast<String, Object?>(),
+          if (map['visible'] is bool) 'visible': map['visible'],
+          if (map['editable'] is bool) 'editable': map['editable'],
+          if (map['occluded'] is bool) 'occluded': map['occluded'],
+          if (map['modal'] is bool) 'modal': map['modal'],
+          if (map['native_id'] is String) 'nativeId': map['native_id'],
+          'depth': (map['depth'] as int?) ?? depth,
+          if (parentId != null) 'parentId': parentId,
+          if (children != null) 'childrenCount': children.length,
+        });
+        if (children != null && children.isNotEmpty) {
+          collectNodes(children, depth: depth + 1, parentId: id);
+        }
+      }
+    }
+
+    collectNodes(rawNodes);
+    return ActiveWindowObservation(
+      appId: rawApp,
+      processName: (data['processName'] as String?) ?? rawApp,
+      windowTitle: rawTitle,
+      browserUrl: data['browserUrl'] as String?,
+      isElevated: data['isElevated'] == true,
+      pid: (windowMap['pid'] as int?) ?? (data['pid'] as int?) ?? 1000,
+      windowId: (data['windowId'] as int?) ?? 1,
+      nodes: nodes,
+    );
+  }
+
+  @override
+  Future<ScreenCaptureObservation> captureScreen({
+    required String scope,
+    required int maxEdge,
+  }) async {
+    final client = _requireClient();
+    final args = <String, Object?>{'scope': scope, 'maxEdge': maxEdge};
+    final raw = await client.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'screen.capture',
+        arguments: args,
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'screen.capture',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: args,
+      ),
+    );
+    final data = _unwrapEnvelopeOrThrow(raw);
+    return ScreenCaptureObservation(
+      mimeType: (data['mimeType'] as String?) ?? 'image/jpeg',
+      width: (data['width'] as int?) ?? maxEdge,
+      height: (data['height'] as int?) ?? ((maxEdge * 9) ~/ 16),
+      dataBase64:
+          (data['dataBase64'] as String?) ??
+          (data['base64'] as String?) ??
+          '',
+    );
+  }
+
+  @override
+  Future<void> performClick({
+    required ActiveWindowObservation window,
+    String? elementId,
+    int? x,
+    int? y,
+  }) async {
+    final client = _requireClient();
+    final args = <String, Object?>{
+      if (elementId != null) 'elementId': elementId,
+      if (x != null) 'x': x,
+      if (y != null) 'y': y,
+    };
+    final raw = await client.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'input.click',
+        arguments: args,
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'input.click',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: args,
+        targetApp: window.appId,
+        targetWindowId: window.windowId,
+      ),
+    );
+    _unwrapEnvelopeOrThrow(raw);
+  }
+
+  @override
+  Future<void> performTypeText({
+    required ActiveWindowObservation window,
+    required String elementId,
+    required String text,
+    bool headed = false,
+  }) async {
+    final client = _requireClient();
+    final args = <String, Object?>{
+      'elementId': elementId,
+      'text': text,
+      if (headed) 'headed': true,
+    };
+    final raw = await client.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'input.type_text',
+        arguments: args,
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'input.type_text',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: args,
+        targetApp: window.appId,
+        targetWindowId: window.windowId,
+      ),
+    );
+    _unwrapEnvelopeOrThrow(raw);
+  }
+
+  @override
+  Future<void> performKey({
+    required ActiveWindowObservation window,
+    required String combo,
+  }) async {
+    final client = _requireClient();
+    final args = <String, Object?>{'combo': combo};
+    final raw = await client.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'input.key',
+        arguments: args,
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'input.key',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: args,
+        targetApp: window.appId,
+        targetWindowId: window.windowId,
+      ),
+    );
+    _unwrapEnvelopeOrThrow(raw);
+  }
+
+  @override
+  Future<void> performScroll({
+    required ActiveWindowObservation window,
+    String? elementId,
+    required String direction,
+    required int amount,
+  }) async {
+    final client = _requireClient();
+    final args = <String, Object?>{
+      if (elementId != null) 'elementId': elementId,
+      'direction': direction,
+      'amount': amount,
+    };
+    final raw = await client.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'input.scroll',
+        arguments: args,
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'input.scroll',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: args,
+        targetApp: window.appId,
+        targetWindowId: window.windowId,
+      ),
+    );
+    _unwrapEnvelopeOrThrow(raw);
+  }
+
+  @override
+  Future<void> endSession({required String sessionId}) async {
+    final client = _client;
+    _client = null;
+    _activeSessionId = null;
+    if (client == null) return;
+    try {
+      await client.callTool(
+        name: AgentDesktopDriverMap.toAgentDesktopTool(
+          xunaToolName: 'cu.session_end',
+        ),
+        arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+          xunaToolName: 'cu.session_end',
+          sessionId: sessionId,
+          arguments: <String, Object?>{'sessionId': sessionId},
+        ),
+      );
+    } catch (_) {
+      // Ignore errors when shutting down the child process.
+    } finally {
+      await client.close();
+    }
+  }
+
+  Map<String, Object?> _unwrapEnvelopeOrThrow(Map<String, Object?> raw) {
+    final structured =
+        (raw['structuredContent'] as Map?)?.cast<String, Object?>() ?? raw;
+    if (structured['ok'] == false || raw['isError'] == true) {
+      final errMap = (structured['error'] as Map?)?.cast<String, Object?>();
+      final mapped = AgentDesktopDriverMap.mapErrorCode(
+        errMap?['code'] as String?,
+      );
+      throw XunaHostChannelException(
+        status: mapped.status,
+        errorCode: mapped.errorCode,
+      );
+    }
+    final data = structured['data'];
+    if (data is Map) {
+      return data.cast<String, Object?>();
+    }
+    return structured;
+  }
+
+  McpStdioClient _requireClient() {
+    final client = _client;
+    if (client == null || client.isClosed) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'cu_driver_not_running',
+      );
+    }
+    return client;
+  }
+}
+
 /// Fallback UIA (Windows) / AX + ScreenCaptureKit (macOS) provider skeleton
 /// (`UDC-8` §4.1 & S8.2) used when the Cua Driver binary is unavailable or in
 /// deterministic unit/E2E tests.
@@ -468,6 +801,29 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
   }
 }
 
+/// Snapshot-indexed element identity recorded during `ui.inspect` so
+/// subsequent `input.*` actions can detect `stale_ref` or `ambiguous_target`
+/// mutations (`agent-desktop` strict ref resolution).
+class SnapshotElementIdentity {
+  const SnapshotElementIdentity({
+    required this.snapshotId,
+    required this.rawId,
+    required this.qualifiedRef,
+    required this.role,
+    required this.name,
+    this.nativeId,
+    this.bounds,
+  });
+
+  final String snapshotId;
+  final String rawId;
+  final String qualifiedRef;
+  final String role;
+  final String name;
+  final String? nativeId;
+  final Map<String, Object?>? bounds;
+}
+
 /// Active computer-use session state on the Desktop Agent (`UDC-8` §4.2–§4.3).
 class ComputerUseSessionState {
   ComputerUseSessionState({
@@ -491,6 +847,17 @@ class ComputerUseSessionState {
   int stepsExecuted = 0;
   int consecutiveNoChange = 0;
   String? lastActionSignature;
+  int snapshotCounter = 0;
+  String? latestSnapshotId;
+  final Map<String, SnapshotElementIdentity> snapshotRefMaps =
+      <String, SnapshotElementIdentity>{};
+
+  String mintNextSnapshotId() {
+    snapshotCounter++;
+    final id = 's${snapshotCounter.toRadixString(16).padLeft(8, '0')}';
+    latestSnapshotId = id;
+    return id;
+  }
 
   bool isWallClockExpired(DateTime nowUtc) =>
       nowUtc.difference(startedAtUtc) > Duration(minutes: maxMinutes);
@@ -616,22 +983,69 @@ class ComputerUseSessionManager {
   }
 
   /// Inspects the active window after enforcing all hard refusals (`ui.inspect`).
+  ///
+  /// Supports `agent-desktop` progressive observation options:
+  /// - [skeleton]: shallow container overview (`depth <= 2`) with `childrenCount`
+  /// - [interactiveOnly]: only interactive controls and overlay surfaces
+  /// - [rootElementId]: drill down into a specific container subtree
+  /// - [collapseWebWrappers]: skip unnamed, non-actionable `group`/`custom`/`pane` wrappers
   Future<Map<String, Object?>> inspectWindow({
     required int maxNodes,
+    bool skeleton = false,
+    bool interactiveOnly = false,
+    String? rootElementId,
+    bool collapseWebWrappers = false,
     DateTime? nowUtc,
   }) async {
     final session = _requireActiveSession(nowUtc: nowUtc);
     final window = await provider.inspectActiveWindow(maxNodes: maxNodes);
     _enforceWindowHardRefusals(session: session, window: window);
+    final snapshotId = session.mintNextSnapshotId();
+    final collapsedWrappersCount = collapseWebWrappers
+        ? window.nodes.where(isTransparentWebWrapperNode).length
+        : 0;
+    final surfaces = extractOverlaySurfaces(window.nodes);
     final redactedNodes = redactUiTreeNodes(
       window.nodes,
       maxNodes: maxNodes.clamp(1, 300),
+      snapshotId: snapshotId,
+      collapseWebWrappers: collapseWebWrappers,
+      skeleton: skeleton,
+      interactiveOnly: interactiveOnly,
+      rootElementId: rootElementId,
     );
+
+    for (final node in redactedNodes) {
+      final rawId = (node['id'] as String?) ?? '';
+      final qualRef = (node['ref'] as String?) ?? rawId;
+      final identity = SnapshotElementIdentity(
+        snapshotId: snapshotId,
+        rawId: rawId,
+        qualifiedRef: qualRef,
+        role: (node['role'] as String?) ?? 'unknown',
+        name: (node['name'] as String?) ?? '',
+        nativeId: node['nativeId'] as String?,
+        bounds: (node['bounds'] as Map?)?.cast<String, Object?>(),
+      );
+      if (rawId.isNotEmpty) {
+        session.snapshotRefMaps[rawId] = identity;
+      }
+      if (qualRef.isNotEmpty) {
+        session.snapshotRefMaps[qualRef] = identity;
+        if (qualRef.startsWith('@')) {
+          session.snapshotRefMaps[qualRef.substring(1)] = identity;
+        }
+      }
+    }
+
     return <String, Object?>{
       'appId': window.appId,
       'windowTitle': window.windowTitle.length > 120
           ? window.windowTitle.substring(0, 120)
           : window.windowTitle,
+      'snapshotId': snapshotId,
+      'surfaces': surfaces,
+      'collapsedWrappersCount': collapsedWrappersCount,
       'nodes': redactedNodes,
     };
   }
@@ -660,7 +1074,8 @@ class ComputerUseSessionManager {
 
   /// Executes an `input.*` action (`input.click`, `input.type_text`,
   /// `input.key`, `input.scroll`) with pre-action hard refusals, budget checks,
-  /// duplicate-action detection, and post-action UI effect verification.
+  /// strict `@s<id>:e<N>` ref resolution, actionability battery, duplicate-action
+  /// detection, post-action UI effect verification, and optional `waitFor`/`waitForGone`.
   Future<Map<String, Object?>> executeInputAction({
     required String toolName,
     required Map<String, Object?> arguments,
@@ -682,17 +1097,15 @@ class ComputerUseSessionManager {
     final beforeWindow = await provider.inspectActiveWindow(maxNodes: 300);
     _enforceWindowHardRefusals(session: session, window: beforeWindow);
 
-    // Check target element against password fields and consequential lexicon.
-    final elementId = arguments['elementId'] as String?;
-    Map<String, Object?>? targetNode;
-    if (elementId != null && elementId.isNotEmpty) {
-      for (final node in beforeWindow.nodes) {
-        if (node['id'] == elementId) {
-          targetNode = node;
-          break;
-        }
-      }
-    }
+    final rawElementId = arguments['elementId'] as String?;
+    final resolvedTarget = _resolveAndValidateTargetElement(
+      session: session,
+      window: beforeWindow,
+      toolName: toolName,
+      rawElementId: rawElementId,
+    );
+    final targetNode = resolvedTarget.targetNode;
+    final effectiveElementId = resolvedTarget.effectiveElementId;
 
     if (targetNode != null && isPasswordUiNode(targetNode)) {
       throw const XunaHostChannelException(
@@ -722,6 +1135,15 @@ class ComputerUseSessionManager {
       );
     }
 
+    // Pre-dispatch Actionability Battery (`agent-desktop` actionability checks).
+    if (targetNode != null) {
+      _enforceActionabilityBattery(
+        toolName: toolName,
+        targetNode: targetNode,
+        allNodes: beforeWindow.nodes,
+      );
+    }
+
     // Duplicate-action detection (`UDC-8` §4.3): same action on the same
     // element twice in a row stops the session.
     final actionSignature = '$toolName:${argsSha256(arguments)}';
@@ -738,20 +1160,40 @@ class ComputerUseSessionManager {
     session.stepsExecuted++;
     _stateController.add(session);
 
+    final headed = arguments['headed'] == true;
+    final hasElementTarget =
+        effectiveElementId != null && effectiveElementId.isNotEmpty;
+    final route = (!headed &&
+            (toolName == 'input.type_text' ||
+                (toolName == 'input.click' && hasElementTarget) ||
+                (toolName == 'input.scroll' && hasElementTarget)))
+        ? 'semantic_headless'
+        : 'physical_headed';
+
     switch (toolName) {
       case 'input.click':
         await provider.performClick(
           window: beforeWindow,
-          elementId: elementId,
+          elementId: effectiveElementId,
           x: arguments['x'] as int?,
           y: arguments['y'] as int?,
         );
       case 'input.type_text':
-        await provider.performTypeText(
-          window: beforeWindow,
-          elementId: elementId!,
-          text: arguments['text'] as String,
-        );
+        final prov = provider;
+        if (prov is AgentDesktopComputerUseProvider) {
+          await prov.performTypeText(
+            window: beforeWindow,
+            elementId: effectiveElementId!,
+            text: arguments['text'] as String,
+            headed: headed,
+          );
+        } else {
+          await prov.performTypeText(
+            window: beforeWindow,
+            elementId: effectiveElementId!,
+            text: arguments['text'] as String,
+          );
+        }
       case 'input.key':
         await provider.performKey(
           window: beforeWindow,
@@ -760,7 +1202,7 @@ class ComputerUseSessionManager {
       case 'input.scroll':
         await provider.performScroll(
           window: beforeWindow,
-          elementId: elementId,
+          elementId: effectiveElementId,
           direction: arguments['direction'] as String,
           amount: arguments['amount'] as int,
         );
@@ -771,8 +1213,29 @@ class ComputerUseSessionManager {
         );
     }
 
-    // Re-inspect after acting to verify effect (`changed` vs `no_change`).
-    final afterWindow = await provider.inspectActiveWindow(maxNodes: 300);
+    // Optional bounded post-action wait (`waitFor` / `waitForGone`).
+    final waitFor = arguments['waitFor'] as String?;
+    final waitForGone = arguments['waitForGone'] as String?;
+    bool? waitSatisfied;
+    ActiveWindowObservation afterWindow;
+    if ((waitFor != null && waitFor.trim().isNotEmpty) ||
+        (waitForGone != null && waitForGone.trim().isNotEmpty)) {
+      final waitOutcome = await _pollPostActionWaitCondition(
+        waitFor: waitFor?.trim(),
+        waitForGone: waitForGone?.trim(),
+      );
+      afterWindow = waitOutcome.window;
+      waitSatisfied = waitOutcome.satisfied;
+      if (!waitOutcome.satisfied) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'wait_timeout',
+        );
+      }
+    } else {
+      afterWindow = await provider.inspectActiveWindow(maxNodes: 300);
+    }
+
     final changed = afterWindow.stateDigest() != beforeDigest;
     if (changed) {
       session.consecutiveNoChange = 0;
@@ -787,7 +1250,303 @@ class ComputerUseSessionManager {
       }
     }
 
-    return <String, Object?>{'effect': changed ? 'changed' : 'no_change'};
+    final disposition = <String, Object?>{
+      'delivery': changed ? 'delivered_verified' : 'delivered_unverified',
+      'retry': 'unsafe',
+    };
+    final openSurfaces = extractOverlaySurfaces(afterWindow.nodes);
+
+    return <String, Object?>{
+      'effect': changed ? 'changed' : 'no_change',
+      'route': route,
+      'disposition': disposition,
+      if (session.latestSnapshotId != null)
+        'snapshotId': session.latestSnapshotId,
+      if (openSurfaces.isNotEmpty) 'surfaces': openSurfaces,
+      if (waitSatisfied != null) 'waitSatisfied': waitSatisfied,
+    };
+  }
+
+  /// Resolves [rawElementId] against `beforeWindow.nodes` and `session.snapshotRefMaps`,
+  /// enforcing `stale_ref` and `ambiguous_target` (`agent-desktop` strict ref
+  /// resolution).
+  ({Map<String, Object?>? targetNode, String? effectiveElementId})
+  _resolveAndValidateTargetElement({
+    required ComputerUseSessionState session,
+    required ActiveWindowObservation window,
+    required String toolName,
+    required String? rawElementId,
+  }) {
+    if (rawElementId == null || rawElementId.trim().isEmpty) {
+      return (targetNode: null, effectiveElementId: rawElementId);
+    }
+    final trimmed = rawElementId.trim();
+    final recorded =
+        session.snapshotRefMaps[trimmed] ??
+        (trimmed.startsWith('@')
+            ? session.snapshotRefMaps[trimmed.substring(1)]
+            : session.snapshotRefMaps['@$trimmed']);
+    final parsedRef = parseSnapshotElementRef(trimmed);
+    final isExplicitAtRef = trimmed.startsWith('@');
+
+    // Find nodes matching by explicit ID or ref in the live window.
+    final idMatches = <Map<String, Object?>>[];
+    for (final node in window.nodes) {
+      final nodeId = (node['id'] as String?) ?? '';
+      final nodeRef = (node['ref'] as String?) ?? '';
+      if (nodeId == trimmed ||
+          nodeRef == trimmed ||
+          (trimmed.startsWith('@') && nodeId == trimmed.substring(1)) ||
+          (recorded != null &&
+              recorded.rawId.isNotEmpty &&
+              nodeId == recorded.rawId)) {
+        idMatches.add(node);
+      }
+    }
+
+    if (idMatches.length > 1) {
+      if (recorded?.nativeId != null) {
+        final nativeMatches = idMatches
+            .where((n) => n['nativeId'] == recorded!.nativeId)
+            .toList();
+        if (nativeMatches.length == 1) {
+          final matched = nativeMatches.first;
+          return (
+            targetNode: matched,
+            effectiveElementId: (matched['id'] as String?) ?? trimmed,
+          );
+        }
+      }
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'ambiguous_target',
+      );
+    }
+
+    if (idMatches.length == 1) {
+      final matched = idMatches.first;
+      if (recorded != null && !isPasswordUiNode(matched)) {
+        final liveRole = (matched['role'] as String?) ?? 'unknown';
+        final liveName = (matched['name'] as String?) ?? '';
+        final roleChanged =
+            recorded.role.toLowerCase() != liveRole.toLowerCase();
+        final nameChanged =
+            recorded.name.isNotEmpty &&
+            liveName.isNotEmpty &&
+            recorded.name != liveName;
+        if (roleChanged || nameChanged) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'stale_ref',
+          );
+        }
+        if (isExplicitAtRef && recorded.name.isNotEmpty) {
+          final semanticDuplicates = window.nodes.where((n) {
+            final r = (n['role'] as String?) ?? '';
+            final nm = (n['name'] as String?) ?? '';
+            return r.toLowerCase() == recorded.role.toLowerCase() &&
+                nm == recorded.name;
+          }).toList();
+          if (semanticDuplicates.length > 1 && matched['nativeId'] == null) {
+            throw const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'ambiguous_target',
+            );
+          }
+        }
+      }
+      return (
+        targetNode: matched,
+        effectiveElementId: (matched['id'] as String?) ?? trimmed,
+      );
+    }
+
+    if (recorded != null) {
+      final semanticMatches = window.nodes.where((n) {
+        final r = isPasswordUiNode(n)
+            ? 'password'
+            : ((n['role'] as String?) ?? 'unknown');
+        final nm = (n['name'] as String?) ?? '';
+        return r.toLowerCase() == recorded.role.toLowerCase() &&
+            nm == recorded.name &&
+            recorded.name.isNotEmpty;
+      }).toList();
+      if (semanticMatches.length > 1) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'ambiguous_target',
+        );
+      }
+      if (semanticMatches.length == 1) {
+        if (session.latestSnapshotId != null &&
+            recorded.snapshotId != session.latestSnapshotId) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'stale_ref',
+          );
+        }
+        final matched = semanticMatches.first;
+        return (
+          targetNode: matched,
+          effectiveElementId: (matched['id'] as String?) ?? trimmed,
+        );
+      }
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'stale_ref',
+      );
+    }
+
+    if (isExplicitAtRef ||
+        (parsedRef != null && session.snapshotRefMaps.isNotEmpty)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'stale_ref',
+      );
+    }
+
+    return (targetNode: null, effectiveElementId: trimmed);
+  }
+
+  /// Enforces pre-dispatch actionability checks on [targetNode] before sending
+  /// any input (`element_not_visible`, `element_not_enabled`,
+  /// `element_occluded`, `element_not_editable`).
+  void _enforceActionabilityBattery({
+    required String toolName,
+    required Map<String, Object?> targetNode,
+    required List<Map<String, Object?>> allNodes,
+  }) {
+    if (targetNode['visible'] == false || targetNode['offscreen'] == true) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'element_not_visible',
+      );
+    }
+    final bounds = targetNode['bounds'];
+    if (bounds is Map) {
+      final w = bounds['w'] ?? bounds['width'];
+      final h = bounds['h'] ?? bounds['height'];
+      if ((w is num && w <= 0) || (h is num && h <= 0)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'element_not_visible',
+        );
+      }
+    }
+    if (targetNode['enabled'] == false) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'element_not_enabled',
+      );
+    }
+    if (targetNode['occluded'] == true) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'element_occluded',
+      );
+    }
+    if (!isOverlaySurfaceNode(targetNode)) {
+      final modalNodes = allNodes
+          .where((n) => isOverlaySurfaceNode(n) && n['modal'] != false)
+          .toList();
+      if (modalNodes.isNotEmpty) {
+        final targetSurfaceId =
+            (targetNode['parentSurfaceId'] as String?) ??
+            (targetNode['parentId'] as String?) ??
+            '';
+        final modalIds = modalNodes
+            .map((m) => (m['id'] as String?) ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet();
+        if (modalIds.isNotEmpty &&
+            targetNode['insideModal'] != true &&
+            !modalIds.contains(targetSurfaceId)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'element_occluded',
+          );
+        }
+      }
+    }
+    if (toolName == 'input.type_text') {
+      if (targetNode['editable'] == false || targetNode['readOnly'] == true) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'element_not_editable',
+        );
+      }
+    }
+  }
+
+  /// Polls `provider.inspectActiveWindow` up to 4 times to verify post-action
+  /// [waitFor] or [waitForGone] conditions (`role:<r>`, `name:<n>`,
+  /// `window:<title>`, `surface:<kind>`, or text substring).
+  Future<({ActiveWindowObservation window, bool satisfied})>
+  _pollPostActionWaitCondition({
+    String? waitFor,
+    String? waitForGone,
+  }) async {
+    const maxAttempts = 4;
+    late ActiveWindowObservation latestWindow;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      latestWindow = await provider.inspectActiveWindow(maxNodes: 300);
+      if (waitFor != null && waitFor.isNotEmpty) {
+        if (_matchesWaitSelector(latestWindow, waitFor)) {
+          return (window: latestWindow, satisfied: true);
+        }
+      } else if (waitForGone != null && waitForGone.isNotEmpty) {
+        if (!_matchesWaitSelector(latestWindow, waitForGone)) {
+          return (window: latestWindow, satisfied: true);
+        }
+      }
+    }
+    return (window: latestWindow, satisfied: false);
+  }
+
+  bool _matchesWaitSelector(ActiveWindowObservation window, String selector) {
+    final trimmed = selector.trim();
+    final lower = trimmed.toLowerCase();
+    if (lower.startsWith('window:')) {
+      final needle = lower.substring('window:'.length).trim();
+      return window.windowTitle.toLowerCase().contains(needle);
+    }
+    if (lower.startsWith('surface:')) {
+      final needle = lower.substring('surface:'.length).trim();
+      final surfaces = extractOverlaySurfaces(window.nodes);
+      return surfaces.any(
+        (s) =>
+            '${s['kind']}'.toLowerCase().contains(needle) ||
+            '${s['title']}'.toLowerCase().contains(needle),
+      );
+    }
+    if (lower.startsWith('role:')) {
+      final needle = lower.substring('role:'.length).trim();
+      return window.nodes.any(
+        (n) => ((n['role'] as String?) ?? '').toLowerCase() == needle,
+      );
+    }
+    if (lower.startsWith('name:')) {
+      final needle = lower.substring('name:'.length).trim();
+      return window.nodes.any(
+        (n) => ((n['name'] as String?) ?? '').toLowerCase().contains(needle),
+      );
+    }
+    if (window.windowTitle.toLowerCase().contains(lower)) {
+      return true;
+    }
+    for (final node in window.nodes) {
+      final id = ((node['id'] as String?) ?? '').toLowerCase();
+      final ref = ((node['ref'] as String?) ?? '').toLowerCase();
+      final name = ((node['name'] as String?) ?? '').toLowerCase();
+      final val = ((node['value'] as String?) ?? '').toLowerCase();
+      if (id == lower ||
+          ref == lower ||
+          name.contains(lower) ||
+          val.contains(lower)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   ComputerUseSessionState _requireActiveSession({DateTime? nowUtc}) {
@@ -931,7 +1690,18 @@ class UiInspectTool extends HostToolHandler {
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final maxNodes = context.arguments['maxNodes'] as int;
-    final result = await manager.inspectWindow(maxNodes: maxNodes);
+    final skeleton = context.arguments['skeleton'] == true;
+    final interactiveOnly = context.arguments['interactiveOnly'] == true;
+    final rootElementId = context.arguments['rootElementId'] as String?;
+    final collapseWebWrappers =
+        context.arguments['collapseWebWrappers'] == true;
+    final result = await manager.inspectWindow(
+      maxNodes: maxNodes,
+      skeleton: skeleton,
+      interactiveOnly: interactiveOnly,
+      rootElementId: rootElementId,
+      collapseWebWrappers: collapseWebWrappers,
+    );
     return ToolHandlerOutput(
       text: 'Đã đọc cây giao diện (${result['appId']}).',
       structuredContent: result,

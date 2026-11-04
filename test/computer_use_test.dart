@@ -624,4 +624,463 @@ void main() {
       },
     );
   });
+
+  group('S8.3 — agent-desktop architectural upgrades (MCP driver, @s<id>:e<N> refs, actionability, progressive inspect)', () {
+    test('AgentDesktopDriverMap & AgentDesktopComputerUseProvider map all 8 tools and unwrap envelopes/errors', () async {
+      expect(AgentDesktopDriverMap.driverLicense, equals('Apache-2.0'));
+      expect(
+        AgentDesktopDriverMap.toAgentDesktopTool(
+          xunaToolName: 'cu.session_start',
+        ),
+        equals('desktop_session_start'),
+      );
+      expect(
+        AgentDesktopDriverMap.toAgentDesktopTool(
+          xunaToolName: 'ui.inspect',
+        ),
+        equals('desktop_snapshot'),
+      );
+      expect(
+        AgentDesktopDriverMap.toAgentDesktopTool(
+          xunaToolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': '@s00000001:e1'},
+        ),
+        equals('desktop_click'),
+      );
+      expect(
+        AgentDesktopDriverMap.toAgentDesktopTool(
+          xunaToolName: 'input.click',
+          arguments: const <String, Object?>{'x': 120, 'y': 240},
+        ),
+        equals('desktop_mouse_click'),
+      );
+      expect(
+        AgentDesktopDriverMap.toAgentDesktopTool(
+          xunaToolName: 'input.type_text',
+          arguments: const <String, Object?>{
+            'elementId': '@s00000001:e2',
+            'text': 'Xin chào',
+          },
+        ),
+        equals('desktop_set_value'),
+      );
+      expect(
+        AgentDesktopDriverMap.toAgentDesktopTool(
+          xunaToolName: 'input.type_text',
+          arguments: const <String, Object?>{
+            'elementId': '@s00000001:e2',
+            'text': 'Xin chào',
+            'headed': true,
+          },
+        ),
+        equals('desktop_type'),
+      );
+      expect(
+        AgentDesktopDriverMap.normalizeKeyCombo('⌘S'),
+        equals('cmd+s'),
+      );
+
+      final stdoutController = StreamController<String>();
+      final calledTools = <String>[];
+      final calledArgs = <Map<String, Object?>>[];
+      var returnStaleRef = false;
+
+      final client = McpStdioClient.fromStreams(
+        stdoutLines: stdoutController.stream,
+        writeStdinLine: (line) {
+          final req = (jsonDecode(line) as Map).cast<String, Object?>();
+          final id = req['id'] as int;
+          final params = (req['params'] as Map).cast<String, Object?>();
+          final toolName = params['name'] as String;
+          final toolArgs =
+              (params['arguments'] as Map?)?.cast<String, Object?>() ??
+              const <String, Object?>{};
+          calledTools.add(toolName);
+          calledArgs.add(toolArgs);
+
+          if (returnStaleRef) {
+            stdoutController.add(
+              jsonEncode(<String, Object?>{
+                'jsonrpc': '2.0',
+                'id': id,
+                'result': <String, Object?>{
+                  'isError': true,
+                  'structuredContent': <String, Object?>{
+                    'version': '1.0',
+                    'ok': false,
+                    'command': toolName,
+                    'error': <String, Object?>{
+                      'code': 'STALE_REF',
+                      'message': 'Element @s00000001:e1 is no longer valid.',
+                    },
+                  },
+                },
+              }),
+            );
+            return;
+          }
+
+          if (toolName == 'desktop_snapshot') {
+            stdoutController.add(
+              jsonEncode(<String, Object?>{
+                'jsonrpc': '2.0',
+                'id': id,
+                'result': <String, Object?>{
+                  'structuredContent': <String, Object?>{
+                    'version': '1.0',
+                    'ok': true,
+                    'command': 'snapshot',
+                    'data': <String, Object?>{
+                      'snapshot_id': 's8f3k2p9',
+                      'window': <String, Object?>{
+                        'app': 'explorer',
+                        'title': 'Reports',
+                        'pid': 4200,
+                      },
+                      'nodes': <Map<String, Object?>>[
+                        <String, Object?>{
+                          'ref_id': '@s8f3k2p9:e1',
+                          'role': 'textfield',
+                          'name': 'Ô tìm kiếm',
+                          'enabled': true,
+                          'editable': true,
+                        },
+                      ],
+                    },
+                  },
+                },
+              }),
+            );
+          } else {
+            stdoutController.add(
+              jsonEncode(<String, Object?>{
+                'jsonrpc': '2.0',
+                'id': id,
+                'result': <String, Object?>{
+                  'structuredContent': <String, Object?>{
+                    'version': '1.0',
+                    'ok': true,
+                    'command': toolName,
+                    'data': <String, Object?>{'delivered': true},
+                  },
+                },
+              }),
+            );
+          }
+        },
+      );
+
+      final provider = AgentDesktopComputerUseProvider(
+        clientFactory: (_) async => client,
+      );
+      await provider.startSession(
+        sessionId: 'ad-1',
+        capabilityManifestYaml: 'version: 3',
+      );
+      final win = await provider.inspectActiveWindow(maxNodes: 50);
+      expect(win.appId, equals('explorer'));
+      expect(win.nodes.single['ref'], equals('@s8f3k2p9:e1'));
+
+      // Headless semantic set_value vs headed physical typing
+      await provider.performTypeText(
+        window: win,
+        elementId: '@s8f3k2p9:e1',
+        text: 'BaoCao',
+        headed: false,
+      );
+      expect(calledTools.last, equals('desktop_set_value'));
+      expect(calledArgs.last['value'], equals('BaoCao'));
+
+      await provider.performTypeText(
+        window: win,
+        elementId: '@s8f3k2p9:e1',
+        text: 'BaoCao',
+        headed: true,
+      );
+      expect(calledTools.last, equals('desktop_type'));
+      expect(calledArgs.last['text'], equals('BaoCao'));
+
+      // STALE_REF envelope maps to XunaHostChannelException(errorCode: 'stale_ref')
+      returnStaleRef = true;
+      await expectLater(
+        () => provider.performClick(
+          window: win,
+          elementId: '@s8f3k2p9:e1',
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'stale_ref',
+          ),
+        ),
+      );
+
+      returnStaleRef = false;
+      await provider.endSession(sessionId: 'ad-1');
+      await stdoutController.close();
+    });
+
+    test('enforces strict @s<id>:e<N> ref resolution (stale_ref & ambiguous_target), actionability battery, modal occlusion, and waitFor/waitForGone', () async {
+      final stopController = EmergencyStopController(
+        logger: ContentFreeLogger(),
+      );
+      final fallback = FallbackUiaAxComputerUseProvider(
+        initialWindow: const ActiveWindowObservation(
+          appId: 'explorer',
+          processName: 'explorer.exe',
+          windowTitle: 'Reports',
+          nodes: <Map<String, Object?>>[
+            <String, Object?>{
+              'id': 'wrap_root',
+              'role': 'group',
+              'name': '',
+              'depth': 0,
+            },
+            <String, Object?>{
+              'id': 'btn_open',
+              'role': 'button',
+              'name': 'Mở báo cáo',
+              'enabled': true,
+              'depth': 1,
+            },
+            <String, Object?>{
+              'id': 'btn_disabled',
+              'role': 'button',
+              'name': 'Nút bị khóa',
+              'enabled': false,
+              'depth': 1,
+            },
+            <String, Object?>{
+              'id': 'btn_hidden',
+              'role': 'button',
+              'name': 'Nút ẩn',
+              'enabled': true,
+              'visible': false,
+              'depth': 1,
+            },
+            <String, Object?>{
+              'id': 'txt_readonly',
+              'role': 'textfield',
+              'name': 'Mã hồ sơ',
+              'enabled': true,
+              'editable': false,
+              'depth': 1,
+            },
+          ],
+        ),
+      );
+      final manager = ComputerUseSessionManager(
+        provider: fallback,
+        stopController: stopController,
+      );
+      final policy = _buildCuTestPolicy();
+      await manager.startSession(
+        goal: 'Kiểm tra Strict Ref, Actionability và Wait',
+        apps: const <String>['explorer'],
+        domains: const <String>[],
+        maxSteps: 15,
+        maxMinutes: 5,
+        policy: policy,
+      );
+
+      // 1. Progressive inspect with collapseWebWrappers drops unnamed group wrapper
+      final inspectRes = await manager.inspectWindow(
+        maxNodes: 50,
+        collapseWebWrappers: true,
+      );
+      expect(inspectRes['snapshotId'], equals('s00000001'));
+      expect(inspectRes['collapsedWrappersCount'], equals(1));
+      final inspectedNodes =
+          (inspectRes['nodes'] as List).cast<Map<String, Object?>>();
+      expect(inspectedNodes.first['id'], equals('btn_open'));
+      expect(inspectedNodes.first['ref'], equals('@s00000001:e1'));
+
+      // 2. Actionability battery rejects disabled, hidden, and non-editable elements
+      await expectLater(
+        () => manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': 'btn_disabled'},
+          hasR3Approval: false,
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'element_not_enabled',
+          ),
+        ),
+      );
+
+      await expectLater(
+        () => manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': 'btn_hidden'},
+          hasR3Approval: false,
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'element_not_visible',
+          ),
+        ),
+      );
+
+      await expectLater(
+        () => manager.executeInputAction(
+          toolName: 'input.type_text',
+          arguments: const <String, Object?>{
+            'elementId': 'txt_readonly',
+            'text': 'Hồ sơ mới',
+          },
+          hasR3Approval: true,
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'element_not_editable',
+          ),
+        ),
+      );
+
+      // 3. Valid click by @s00000001:e1 returns disposition + semantic_headless route + waitFor
+      final clickOk = await manager.executeInputAction(
+        toolName: 'input.click',
+        arguments: const <String, Object?>{
+          'elementId': '@s00000001:e1',
+          'waitFor': 'window:Reports [1]',
+        },
+        hasR3Approval: false,
+      );
+      expect(clickOk['effect'], equals('changed'));
+      expect(clickOk['route'], equals('semantic_headless'));
+      expect(clickOk['waitSatisfied'], isTrue);
+      final disposition = clickOk['disposition'] as Map<String, Object?>;
+      expect(disposition['delivery'], equals('delivered_verified'));
+      expect(disposition['retry'], equals('unsafe'));
+
+      // 4. Stale ref detection: mutate 'btn_open' into a completely different control
+      fallback.currentWindow = const ActiveWindowObservation(
+        appId: 'explorer',
+        processName: 'explorer.exe',
+        windowTitle: 'Reports [1]',
+        nodes: <Map<String, Object?>>[
+          <String, Object?>{
+            'id': 'btn_open',
+            'role': 'checkbox',
+            'name': 'Tùy chọn khác',
+            'enabled': true,
+          },
+        ],
+      );
+      await expectLater(
+        () => manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': '@s00000001:e1'},
+          hasR3Approval: false,
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'stale_ref',
+          ),
+        ),
+      );
+
+      // 5. Ambiguous target detection: two identical (role, name) controls without nativeId
+      fallback.currentWindow = const ActiveWindowObservation(
+        appId: 'explorer',
+        processName: 'explorer.exe',
+        windowTitle: 'Reports [1]',
+        nodes: <Map<String, Object?>>[
+          <String, Object?>{
+            'id': 'dup_1',
+            'role': 'button',
+            'name': 'Chi tiết',
+            'enabled': true,
+          },
+          <String, Object?>{
+            'id': 'dup_2',
+            'role': 'button',
+            'name': 'Chi tiết',
+            'enabled': true,
+          },
+        ],
+      );
+      final snap2 = await manager.inspectWindow(maxNodes: 50);
+      expect(snap2['snapshotId'], equals('s00000002'));
+      await expectLater(
+        () => manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': '@s00000002:e1'},
+          hasR3Approval: false,
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'ambiguous_target',
+          ),
+        ),
+      );
+
+      // 6. Modal surface occlusion: clicking background button while modal dialog is open fails with element_occluded
+      fallback.currentWindow = const ActiveWindowObservation(
+        appId: 'explorer',
+        processName: 'explorer.exe',
+        windowTitle: 'Reports [1]',
+        nodes: <Map<String, Object?>>[
+          <String, Object?>{
+            'id': 'modal_dlg',
+            'role': 'dialog',
+            'name': 'Cảnh báo hệ thống',
+            'modal': true,
+            'enabled': true,
+          },
+          <String, Object?>{
+            'id': 'bg_btn',
+            'role': 'button',
+            'name': 'Nút nền phía sau',
+            'parentSurfaceId': 'main_window',
+            'enabled': true,
+          },
+          <String, Object?>{
+            'id': 'modal_ok',
+            'role': 'button',
+            'name': 'Đã hiểu',
+            'parentSurfaceId': 'modal_dlg',
+            'enabled': true,
+          },
+        ],
+      );
+      await expectLater(
+        () => manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': 'bg_btn'},
+          hasR3Approval: false,
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'element_occluded',
+          ),
+        ),
+      );
+
+      // Clicking the button inside the modal succeeds and reports active surfaces
+      final modalClick = await manager.executeInputAction(
+        toolName: 'input.click',
+        arguments: const <String, Object?>{'elementId': 'modal_ok'},
+        hasR3Approval: false,
+      );
+      expect(modalClick['effect'], equals('changed'));
+      expect(modalClick['surfaces'], isA<List>());
+
+      manager.dispose();
+    });
+  });
 }
