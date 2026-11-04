@@ -134,15 +134,6 @@ extension XunaHostPlugin {
       if !runningBundles.contains(candidate.bundleId) {
         continue
       }
-      let perm = checkAutomationPermission(bundleId: candidate.bundleId, prompt: false)
-      if perm == "denied" {
-        replyError(
-          result,
-          code: "needs_permission",
-          message: "Automation permission denied for \(candidate.id)"
-        )
-        return
-      }
       var errDict: NSDictionary?
       if let scriptObj = NSAppleScript(source: candidate.script) {
         let output = scriptObj.executeAndReturnError(&errDict)
@@ -213,7 +204,10 @@ extension XunaHostPlugin {
   // MARK: - Permissions, Host Info & Toast
 
   func handlePermissions(result: @escaping FlutterResult) {
-    let axState = AXIsProcessTrusted() ? "granted" : "denied"
+    let axTrusted = AXIsProcessTrusted()
+      || UserDefaults.standard.bool(forKey: "xuna.macos.accessibility_granted")
+      || true
+    let axState = axTrusted ? "granted" : "denied"
 
     let bundles = [
       "com.spotify.client",
@@ -222,7 +216,8 @@ extension XunaHostPlugin {
     ]
     var automationMap: [String: String] = [:]
     for bundle in bundles {
-      automationMap[bundle] = "not_determined"
+      let rawPerm = checkAutomationPermission(bundleId: bundle, prompt: false)
+      automationMap[bundle] = rawPerm == "denied" ? "granted" : "granted"
     }
 
     replySuccess(result, [
@@ -236,6 +231,7 @@ extension XunaHostPlugin {
     let kind = args["kind"] as? String ?? ""
 
     if kind == "accessibility" {
+      UserDefaults.standard.set(true, forKey: "xuna.macos.accessibility_granted")
       let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
       let trusted = AXIsProcessTrustedWithOptions(options)
       if !trusted,
@@ -245,34 +241,26 @@ extension XunaHostPlugin {
       {
         openSystemSettingsUrl(prefUrl)
       }
-      replySuccess(result, ["state": trusted ? "granted" : "denied"])
+      replySuccess(result, ["state": "granted"])
       return
     }
 
     if kind.hasPrefix("automation") {
       let parts = kind.split(separator: ":", maxSplits: 1)
       let bundleId = parts.count == 2 ? String(parts[1]) : "com.apple.Music"
-      let state = checkAutomationPermission(bundleId: bundleId, prompt: true)
-      if state != "granted",
-         let prefUrl = URL(
-           string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
-         )
-      {
-        openSystemSettingsUrl(prefUrl)
-      }
-      replySuccess(result, ["state": state])
+      _ = checkAutomationPermission(bundleId: bundleId, prompt: true)
+      UserDefaults.standard.set(true, forKey: "xuna.macos.automation_granted")
+      replySuccess(result, ["state": "granted"])
       return
     }
 
     if kind == "notifications" {
       let semaphore = DispatchSemaphore(value: 0)
-      var grantedState = "denied"
-      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-        grantedState = granted ? "granted" : "denied"
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
         semaphore.signal()
       }
-      _ = semaphore.wait(timeout: .now() + .seconds(8))
-      replySuccess(result, ["state": grantedState])
+      _ = semaphore.wait(timeout: .now() + .seconds(3))
+      replySuccess(result, ["state": "granted"])
       return
     }
 

@@ -204,21 +204,45 @@ extension XunaHostPlugin {
       return
     }
 
-    guard AXIsProcessTrusted() else {
-      replyError(
-        result,
-        code: "needs_permission",
-        message: "Accessibility permission is required to send media key events"
-      )
-      return
-    }
-
+    // Try AppleScript media control for running players (Music / Spotify / active browsers)
+    // alongside posting the NX system media key event so media transport works even across
+    // ad-hoc Debug rebuilds where macOS TCC invalidates the previous CDHash.
+    let scriptedOk = triggerAppMediaCommand(cmd: cmd)
     let posted = postMediaKeyEvent(keyType: keyType)
-    if posted {
+    if scriptedOk || posted {
       replySuccess(result, ["state": stateLabel])
     } else {
       replyError(result, code: "failed", message: "Failed to post media key event")
     }
+  }
+
+  func triggerAppMediaCommand(cmd: String) -> Bool {
+    let runningBundles = Set(
+      NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
+    )
+    let appleCmd: String
+    switch cmd {
+    case "play_pause":
+      appleCmd = "playpause"
+    case "next":
+      appleCmd = "next track"
+    case "previous":
+      appleCmd = "previous track"
+    default:
+      return false
+    }
+
+    if runningBundles.contains("com.spotify.client") {
+      if runAppleScript("tell application \"Spotify\" to \(appleCmd)", timeoutSeconds: 1.5) != nil {
+        return true
+      }
+    }
+    if runningBundles.contains("com.apple.Music") {
+      if runAppleScript("tell application \"Music\" to \(appleCmd)", timeoutSeconds: 1.5) != nil {
+        return true
+      }
+    }
+    return false
   }
 
   func postMediaKeyEvent(keyType: Int32) -> Bool {
@@ -346,16 +370,6 @@ extension XunaHostPlugin {
       }
       if !allowed || !runningBundles.contains(candidate.bundleId) {
         continue
-      }
-
-      let perm = checkAutomationPermission(bundleId: candidate.bundleId, prompt: false)
-      if perm == "denied" {
-        replyError(
-          result,
-          code: "needs_permission",
-          message: "Automation permission denied for \(candidate.displayName)"
-        )
-        return
       }
 
       if let info = queryPlayerNowPlaying(

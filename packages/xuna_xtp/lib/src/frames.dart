@@ -4,8 +4,8 @@ import 'dart:typed_data';
 import 'crypto.dart';
 import 'schemas.dart';
 
-/// Maximum WebSocket text frame size in UTF-8 bytes (`64 KiB`).
-const int maxXtpFrameBytes = 65536;
+/// Maximum WebSocket text frame size in UTF-8 bytes (`128 KiB`).
+const int maxXtpFrameBytes = 131072;
 
 /// Maximum `structuredContent` size in UTF-8 bytes (`16 KiB`).
 const int maxStructuredContentBytes = 16384;

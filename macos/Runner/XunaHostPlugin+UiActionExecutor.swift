@@ -23,10 +23,11 @@ extension XunaHostPlugin {
   /// maps newline/tab to physical keys, and posts UTF-16 Unicode via `keyboardSetUnicodeString`.
   func postUnicodeTextGraphemes(_ text: String, submit: Bool) {
     for grapheme in text {
-      let keyCode: CGKeyCode = switch grapheme {
-      case "\n": 0x24
-      case "\t": 0x30
-      default: 0
+      let keyCode: CGKeyCode
+      switch grapheme {
+      case "\n": keyCode = 0x24
+      case "\t": keyCode = 0x30
+      default: keyCode = 0
       }
       guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
             let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
@@ -139,12 +140,17 @@ extension XunaHostPlugin {
     let bundleId = (app.bundleIdentifier ?? "").lowercased()
     let appName = (app.localizedName ?? "").lowercased()
     let isSafari = bundleId == "com.apple.safari" || appName == "safari"
-    let chromiumAppName: String? = switch true {
-    case bundleId == "com.google.chrome" || appName.contains("chrome"): "Google Chrome"
-    case bundleId == "com.brave.browser" || appName.contains("brave"): "Brave Browser"
-    case bundleId == "com.microsoft.edgemac" || appName.contains("edge"): "Microsoft Edge"
-    case bundleId == "company.thebrowser.browser" || appName == "arc": "Arc"
-    default: nil
+    let chromiumAppName: String?
+    if bundleId == "com.google.chrome" || appName.contains("chrome") {
+      chromiumAppName = "Google Chrome"
+    } else if bundleId == "com.brave.browser" || appName.contains("brave") {
+      chromiumAppName = "Brave Browser"
+    } else if bundleId == "com.microsoft.edgemac" || appName.contains("edge") {
+      chromiumAppName = "Microsoft Edge"
+    } else if bundleId == "company.thebrowser.browser" || appName == "arc" {
+      chromiumAppName = "Arc"
+    } else {
+      chromiumAppName = nil
     }
     guard isSafari || chromiumAppName != nil else { return nil }
 
@@ -248,60 +254,410 @@ extension XunaHostPlugin {
   }
 
   /// Uses macOS AppleEvents / Scripting Bridge / Deep URI schemes for scriptable apps
-  /// (Music, Spotify, Notes, Reminders) before or alongside AXUIElement interaction.
-  func tryNativeAppleEventsInAppAction(app: NSRunningApplication, query: String) -> String? {
-    let clean = query.replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\\", with: "\\\\")
+  /// (Music, Spotify, Chrome/Safari, Notes, Reminders, Finder, Terminal) before or alongside AXUIElement interaction.
+  func tryNativeAppleEventsInAppAction(
+    app: NSRunningApplication,
+    action: String = "set_value_ref",
+    refId: String = "ui_1",
+    nodeLabel: String = "",
+    valueText: String = "",
+    submit: Bool = true
+  ) -> String? {
+    let rawQuery = !valueText.isEmpty ? valueText : (!nodeLabel.isEmpty ? nodeLabel : refId)
+    let clean = rawQuery
+      .replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !clean.isEmpty else { return nil }
+    let lowerClean = clean.lowercased()
+    let lowerLabel = nodeLabel.lowercased()
     let bundleId = (app.bundleIdentifier ?? "").lowercased()
     let appName = (app.localizedName ?? "").lowercased()
+
+    // 1. Apple Music
     if bundleId == "com.apple.music" || appName == "music" || appName == "apple music" {
+      if action == "invoke_ref" {
+        if lowerLabel.contains("play / pause") || lowerClean == "playpause" || lowerClean == "play" || lowerClean == "pause" {
+          let script = """
+          tell application "Music"
+            activate
+            playpause
+            return "APPLE_MUSIC_PLAYPAUSE_TOGGLED:" & (player state as string)
+          end tell
+          """
+          return runAppleScript(script, timeoutSeconds: 2.5)
+        }
+        if lowerLabel.contains("next track") || lowerClean.contains("next track") || lowerClean == "next" {
+          let script = """
+          tell application "Music"
+            activate
+            next track
+            return "APPLE_MUSIC_NEXT_TRACK"
+          end tell
+          """
+          return runAppleScript(script, timeoutSeconds: 2.5)
+        }
+        if lowerLabel.contains("previous track") || lowerClean.contains("previous track") || lowerClean == "previous" {
+          let script = """
+          tell application "Music"
+            activate
+            previous track
+            return "APPLE_MUSIC_PREVIOUS_TRACK"
+          end tell
+          """
+          return runAppleScript(script, timeoutSeconds: 2.5)
+        }
+        if nodeLabel.hasPrefix("Playlist: ") || rawQuery.hasPrefix("Playlist: ") {
+          let src = nodeLabel.hasPrefix("Playlist: ") ? nodeLabel : rawQuery
+          var plName = String(src.dropFirst("Playlist: ".count))
+          if let parenRange = plName.range(of: " (", options: .backwards) {
+            plName = String(plName[..<parenRange.lowerBound])
+          }
+          let safePl = plName.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+          let script = """
+          tell application "Music"
+            activate
+            try
+              play playlist "\(safePl)"
+              return "APPLE_MUSIC_PLAYED_PLAYLIST:\(safePl)"
+            end try
+          end tell
+          return ""
+          """
+          if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+            return out
+          }
+        }
+        if nodeLabel.hasPrefix("Bài hát: ") || rawQuery.hasPrefix("Bài hát: ") {
+          let src = nodeLabel.hasPrefix("Bài hát: ") ? nodeLabel : rawQuery
+          var trkName = String(src.dropFirst("Bài hát: ".count))
+          if let dashRange = trkName.range(of: " — ") {
+            trkName = String(trkName[..<dashRange.lowerBound])
+          }
+          let safeTrk = trkName.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+          let script = """
+          tell application "Music"
+            activate
+            repeat with p in every playlist
+              try
+                set matchedTracks to (every track of p whose name contains "\(safeTrk)")
+                if (count of matchedTracks) > 0 then
+                  play item 1 of matchedTracks
+                  return "APPLE_MUSIC_PLAYED_TRACK:" & (name of item 1 of matchedTracks)
+                end if
+              end try
+            end repeat
+          end tell
+          return ""
+          """
+          if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+            return out
+          }
+        }
+      }
+
+      // Search & play playlist or track across all playlists
+      let searchVal = valueText.isEmpty ? rawQuery : valueText
+      let safeSearch = searchVal
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !safeSearch.isEmpty && !safeSearch.hasPrefix("ui_") else { return nil }
       let script = """
       tell application "Music"
         activate
         try
-          set matchedTracks to (every track of playlist 1 whose name contains "\(clean)" or artist contains "\(clean)")
-          if (count of matchedTracks) > 0 then
-            play item 1 of matchedTracks
-            return "APPLE_MUSIC_PLAYED_LIBRARY_TRACK"
+          set matchedPlaylists to (every user playlist whose name contains "\(safeSearch)")
+          if (count of matchedPlaylists) > 0 then
+            play item 1 of matchedPlaylists
+            return "APPLE_MUSIC_PLAYED_PLAYLIST:" & (name of item 1 of matchedPlaylists)
+          end if
+        end try
+        repeat with p in every playlist
+          try
+            set matchedTracks to (every track of p whose name contains "\(safeSearch)" or artist contains "\(safeSearch)")
+            if (count of matchedTracks) > 0 then
+              play item 1 of matchedTracks
+              return "APPLE_MUSIC_PLAYED_TRACK:" & (name of item 1 of matchedTracks)
+            end if
+          end try
+        end repeat
+        try
+          if "\(safeSearch.lowercased())" is in {"play", "nhạc", "music", "bật nhạc", "phát nhạc", "mở nhạc", "chill"} then
+            repeat with p in every user playlist
+              if (count of tracks of p) > 0 then
+                play p
+                return "APPLE_MUSIC_PLAYED_DEFAULT_PLAYLIST:" & (name of p)
+              end if
+            end repeat
           end if
         end try
       end tell
       return ""
       """
-      if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+      if let out = runAppleScript(script, timeoutSeconds: 3.0), !out.isEmpty {
         return out
       }
-    } else if bundleId == "com.spotify.client" || appName.contains("spotify") {
-      if let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-         let url = URL(string: "spotify:search:\(encoded)")
+      if let encoded = searchVal.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+         let url = URL(string: "music://music.apple.com/vn/search?term=\(encoded)")
       {
         NSWorkspace.shared.open(url)
         Thread.sleep(forTimeInterval: 0.45)
-        return "SPOTIFY_URI_SEARCH_OPENED"
-      }
-    } else if bundleId == "com.apple.notes" || appName == "notes" {
-      let script = """
-      tell application "Notes"
-        activate
-        make new note at folder "Notes" with properties {body:"\(clean)"}
-        return "APPLE_NOTES_CREATED"
-      end tell
-      """
-      if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
-        return out
-      }
-    } else if bundleId == "com.apple.reminders" || appName == "reminders" {
-      let script = """
-      tell application "Reminders"
-        activate
-        make new reminder with properties {name:"\(clean)"}
-        return "APPLE_REMINDERS_CREATED"
-      end tell
-      """
-      if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
-        return out
+        return "APPLE_MUSIC_SEARCH_URI_OPENED:\(searchVal)"
       }
     }
+
+    // 2. Spotify
+    if bundleId == "com.spotify.client" || appName.contains("spotify") {
+      if action == "invoke_ref" {
+        if lowerLabel.contains("play / pause") || lowerClean == "playpause" {
+          _ = runAppleScript("tell application \"Spotify\" to playpause", timeoutSeconds: 2.0)
+          return "SPOTIFY_PLAYPAUSE_TOGGLED"
+        }
+        if lowerLabel.contains("next track") || lowerClean == "next" {
+          _ = runAppleScript("tell application \"Spotify\" to next track", timeoutSeconds: 2.0)
+          return "SPOTIFY_NEXT_TRACK"
+        }
+        if lowerLabel.contains("previous track") || lowerClean == "previous" {
+          _ = runAppleScript("tell application \"Spotify\" to previous track", timeoutSeconds: 2.0)
+          return "SPOTIFY_PREVIOUS_TRACK"
+        }
+      }
+      let q = valueText.isEmpty ? rawQuery : valueText
+      if !q.isEmpty && !q.hasPrefix("ui_"),
+         let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+         let url = URL(string: "spotify:search:\(encoded)")
+      {
+        NSWorkspace.shared.open(url)
+        Thread.sleep(forTimeInterval: 0.5)
+        return "SPOTIFY_URI_SEARCH_OPENED:\(q)"
+      }
+    }
+
+    // 3. Web Browsers (Google Chrome, Safari, Brave, Edge, Arc)
+    let isChromium = appName.contains("chrome") || appName.contains("brave") || appName.contains("edge") || appName.contains("arc")
+    let isSafari = appName.contains("safari")
+    if isChromium || isSafari {
+      let browserApp = app.localizedName ?? (isSafari ? "Safari" : "Google Chrome")
+      if action == "invoke_ref" {
+        if lowerLabel.contains("mở tab mới") || lowerLabel.contains("new tab") {
+          let script = isSafari
+            ? """
+              tell application "Safari"
+                activate
+                if (count of windows) = 0 then make new document
+                tell front window to set current tab to (make new tab)
+                return "BROWSER_NEW_TAB_OPENED"
+              end tell
+              """
+            : """
+              tell application "\(browserApp)"
+                activate
+                if (count of windows) = 0 then make new window
+                tell front window to make new tab at end of tabs
+                return "BROWSER_NEW_TAB_OPENED"
+              end tell
+              """
+          if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+            return out
+          }
+        }
+        if nodeLabel.hasPrefix("Tab #") {
+          let afterHash = nodeLabel.dropFirst("Tab #".count)
+          if let colonIdx = afterHash.firstIndex(of: ":"),
+             let tabIdx = Int(afterHash[..<colonIdx])
+          {
+            let script = isSafari
+              ? """
+                tell application "Safari"
+                  activate
+                  tell front window to set current tab to tab \(tabIdx)
+                  return "BROWSER_SWITCHED_TAB:\(tabIdx)"
+                end tell
+                """
+              : """
+                tell application "\(browserApp)"
+                  activate
+                  set active tab index of front window to \(tabIdx)
+                  return "BROWSER_SWITCHED_TAB:\(tabIdx)"
+                end tell
+                """
+            if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+              return out
+            }
+          }
+        }
+      }
+
+      if !valueText.isEmpty && (refId == "ui_1" || lowerLabel.contains("url") || lowerLabel.contains("tìm kiếm") || action == "set_value_ref") {
+        let trimmed = valueText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetUrl: String
+        if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
+          targetUrl = trimmed
+        } else if !trimmed.contains(" ") && trimmed.contains(".") {
+          targetUrl = "https://\(trimmed)"
+        } else if trimmed.lowercased().hasPrefix("youtube ") || trimmed.lowercased().contains("trên youtube") {
+          let ytQuery = trimmed
+            .replacingOccurrences(of: "trên youtube", with: "", options: .caseInsensitive)
+            .replacingOccurrences(of: "youtube ", with: "", options: .caseInsensitive)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          let enc = (ytQuery.isEmpty ? trimmed : ytQuery).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+          targetUrl = "https://www.youtube.com/results?search_query=\(enc)"
+        } else {
+          let enc = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+          targetUrl = "https://www.google.com/search?q=\(enc)"
+        }
+        let safeUrl = targetUrl.replacingOccurrences(of: "\"", with: "%22")
+        let script = isSafari
+          ? """
+            tell application "Safari"
+              activate
+              if (count of windows) = 0 then
+                make new document with properties {URL:"\(safeUrl)"}
+              else
+                set URL of current tab of front window to "\(safeUrl)"
+              end if
+              return "BROWSER_NAVIGATED:\(safeUrl)"
+            end tell
+            """
+          : """
+            tell application "\(browserApp)"
+              activate
+              if (count of windows) = 0 then
+                make new window
+              end if
+              set URL of active tab of front window to "\(safeUrl)"
+              return "BROWSER_NAVIGATED:\(safeUrl)"
+            end tell
+            """
+        if let out = runAppleScript(script, timeoutSeconds: 3.0), !out.isEmpty {
+          return out
+        }
+      }
+    }
+
+    // 4. Apple Notes
+    if bundleId == "com.apple.notes" || appName == "notes" {
+      if action == "invoke_ref" && nodeLabel.hasPrefix("Ghi chú: ") {
+        let noteTitle = String(nodeLabel.dropFirst("Ghi chú: ".count))
+          .replacingOccurrences(of: "\\", with: "\\\\")
+          .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Notes"
+          activate
+          try
+            show (first note whose name contains "\(noteTitle)")
+            return "APPLE_NOTES_OPENED:\(noteTitle)"
+          end try
+        end tell
+        return ""
+        """
+        if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+          return out
+        }
+      }
+      if !valueText.isEmpty {
+        let safeBody = valueText
+          .replacingOccurrences(of: "\\", with: "\\\\")
+          .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Notes"
+          activate
+          make new note at folder "Notes" with properties {body:"\(safeBody)"}
+          return "APPLE_NOTES_CREATED"
+        end tell
+        """
+        if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+          return out
+        }
+      }
+    }
+
+    // 5. Apple Reminders
+    if bundleId == "com.apple.reminders" || appName == "reminders" {
+      if !valueText.isEmpty {
+        let safeRem = valueText
+          .replacingOccurrences(of: "\\", with: "\\\\")
+          .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Reminders"
+          activate
+          make new reminder with properties {name:"\(safeRem)"}
+          return "APPLE_REMINDERS_CREATED"
+        end tell
+        """
+        if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+          return out
+        }
+      }
+    }
+
+    // 6. Finder
+    if bundleId == "com.apple.finder" || appName == "finder" {
+      let folderQuery = (!valueText.isEmpty ? valueText : nodeLabel).lowercased()
+      if folderQuery.contains("downloads") {
+        _ = runAppleScript("tell application \"Finder\" to activate\ntell application \"Finder\" to open path to downloads folder", timeoutSeconds: 2.5)
+        return "FINDER_OPENED_DOWNLOADS"
+      }
+      if folderQuery.contains("desktop") {
+        _ = runAppleScript("tell application \"Finder\" to activate\ntell application \"Finder\" to open path to desktop folder", timeoutSeconds: 2.5)
+        return "FINDER_OPENED_DESKTOP"
+      }
+      if folderQuery.contains("documents") {
+        _ = runAppleScript("tell application \"Finder\" to activate\ntell application \"Finder\" to open path to documents folder", timeoutSeconds: 2.5)
+        return "FINDER_OPENED_DOCUMENTS"
+      }
+      if nodeLabel.hasPrefix("Mục Finder: ") {
+        let itemName = String(nodeLabel.dropFirst("Mục Finder: ".count))
+          .replacingOccurrences(of: "\\", with: "\\\\")
+          .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Finder"
+          activate
+          try
+            open (first item of (target of front Finder window) whose name is "\(itemName)")
+            return "FINDER_OPENED_ITEM:\(itemName)"
+          end try
+        end tell
+        return ""
+        """
+        if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+          return out
+        }
+      }
+      if !valueText.isEmpty {
+        let expanded = (valueText as NSString).expandingTildeInPath
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) {
+          NSWorkspace.shared.selectFile(isDir.boolValue ? nil : expanded, inFileViewerRootedAtPath: expanded)
+          return "FINDER_OPENED_PATH:\(expanded)"
+        }
+      }
+    }
+
+    // 7. Terminal
+    if bundleId == "com.apple.terminal" || appName == "terminal" {
+      if !valueText.isEmpty {
+        let safeCmd = valueText
+          .replacingOccurrences(of: "\\", with: "\\\\")
+          .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "Terminal"
+          activate
+          if (count of windows) = 0 then
+            do script "\(safeCmd)"
+          else
+            do script "\(safeCmd)" in front window
+          end if
+          return "TERMINAL_COMMAND_EXECUTED"
+        end tell
+        """
+        if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
+          return out
+        }
+      }
+    }
+
     return nil
   }
 
@@ -591,6 +947,13 @@ extension XunaHostPlugin {
 
     let matchedElement = matchedKey != nil ? cachedUiElements[matchedKey!] : nil
     let matchedCenter = matchedKey != nil ? cachedUiCenters[matchedKey!] : nil
+    let matchedNode = currentNodes.first(where: { ($0["refId"] as? String) == (matchedKey ?? refId) })
+      ?? currentNodes.first(where: { ($0["refId"] as? String) == refId })
+      ?? currentNodes.first(where: {
+        let lbl = ($0["label"] as? String ?? "").lowercased()
+        return !refId.isEmpty && lbl.contains(refId.lowercased())
+      })
+    let matchedNodeLabel = (matchedNode?["label"] as? String) ?? ""
 
     // 2b. Rich pointer click actions
     if action == "double_click" || action == "triple_click" || action == "right_click" || action == "middle_click" || action == "mouse_move" || action == "hover_ref" {
@@ -634,21 +997,28 @@ extension XunaHostPlugin {
     // 3. Universal `set_value_ref`
     if action == "set_value_ref" || (!valueText.isEmpty && action != "invoke_ref") {
       var detail = "CLIPBOARD_PASTED"
-      if let app = targetApp, let scripted = tryNativeAppleEventsInAppAction(app: app, query: valueText) {
+      if let app = targetApp,
+         let scripted = tryNativeAppleEventsInAppAction(
+           app: app,
+           action: "set_value_ref",
+           refId: matchedKey ?? refId,
+           nodeLabel: matchedNodeLabel,
+           valueText: valueText,
+           submit: submit
+         )
+      {
         detail = scripted
-        if scripted == "APPLE_MUSIC_PLAYED_LIBRARY_TRACK" || scripted == "APPLE_NOTES_CREATED" || scripted == "APPLE_REMINDERS_CREATED" {
-          Thread.sleep(forTimeInterval: 0.35)
-          let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
-          replySuccess(result, [
-            "ok": true,
-            "invokedRefId": matchedKey ?? refId,
-            "detail": detail,
-            "windowTitle": postSnap.windowTitle,
-            "nodes": postSnap.nodes,
-            "screenshotBytesUsed": 0,
-          ])
-          return
-        }
+        Thread.sleep(forTimeInterval: 0.35)
+        let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
+        replySuccess(result, [
+          "ok": true,
+          "invokedRefId": matchedKey ?? refId,
+          "detail": detail,
+          "windowTitle": postSnap.windowTitle,
+          "nodes": postSnap.nodes,
+          "screenshotBytesUsed": 0,
+        ])
+        return
       }
       if let app = targetApp,
          let domTyped = tryBrowserDomJavaScriptAction(
@@ -718,6 +1088,29 @@ extension XunaHostPlugin {
     }
 
     // 4. Universal `invoke_ref`
+    if let app = targetApp,
+       let scripted = tryNativeAppleEventsInAppAction(
+         app: app,
+         action: "invoke_ref",
+         refId: matchedKey ?? refId,
+         nodeLabel: matchedNodeLabel,
+         valueText: valueText,
+         submit: submit
+       )
+    {
+      Thread.sleep(forTimeInterval: 0.35)
+      let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
+      replySuccess(result, [
+        "ok": true,
+        "invokedRefId": matchedKey ?? refId,
+        "detail": scripted,
+        "windowTitle": postSnap.windowTitle,
+        "nodes": postSnap.nodes,
+        "screenshotBytesUsed": 0,
+      ])
+      return
+    }
+
     if let app = targetApp,
        let domClicked = tryBrowserDomJavaScriptAction(
          app: app,

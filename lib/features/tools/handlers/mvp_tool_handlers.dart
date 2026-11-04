@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -133,6 +135,44 @@ class AppLaunchTool extends HostToolHandler {
   @override
   String get name => 'app.launch';
 
+  Future<Map<String, Object?>> _buildLaunchStructuredContent(
+    ToolExecutionContext context, {
+    required String appId,
+    required String appName,
+  }) async {
+    final payload = <String, Object?>{'id': appId};
+    if (Platform.environment.containsKey('FLUTTER_TEST')) {
+      return payload;
+    }
+    try {
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+      final snap = await context.channel.inspectWindowUiTree(
+        windowTitle: appName,
+        maxNodes: 25,
+      );
+      if (snap.nodes.isNotEmpty) {
+        context.symbioticService.uiAccessibility.applyNativeWindowUiTree(
+          windowTitle: snap.windowTitle,
+          nodes: snap.nodes,
+        );
+        final treeRes = context.symbioticService.uiAccessibility
+            .executeUiAccessibilityTree(
+              action: 'inspect_window',
+              windowTitle: snap.windowTitle,
+              maxNodes: 25,
+              preserveNativeNodes: true,
+            );
+        payload['windowTitle'] = treeRes.windowTitle;
+        payload['compactUiTree'] = treeRes.compactUiTree;
+        payload['nextStepHint'] =
+            'Gọi ui__accessibility_tree (action="set_value_ref" hoặc "invoke_ref") với refId trong compactUiTree nếu cần thao tác tiếp bên trong $appName.';
+      }
+    } catch (_) {
+      // Best-effort initial UI inspection on app launch
+    }
+    return payload;
+  }
+
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final configured = context.evaluation.app;
@@ -141,9 +181,14 @@ class AppLaunchTool extends HostToolHandler {
         kind: configured.kind,
         target: configured.target,
       );
+      final structured = await _buildLaunchStructuredContent(
+        context,
+        appId: configured.id,
+        appName: configured.name,
+      );
       return ToolHandlerOutput(
         text: 'Đã mở ${configured.name}.',
-        structuredContent: <String, Object?>{'id': configured.id},
+        structuredContent: structured,
         toastBody: 'đã mở ${configured.name}',
       );
     }
@@ -160,9 +205,14 @@ class AppLaunchTool extends HostToolHandler {
       kind: discovered.kind,
       target: discovered.target,
     );
+    final structured = await _buildLaunchStructuredContent(
+      context,
+      appId: discovered.id,
+      appName: discovered.name,
+    );
     return ToolHandlerOutput(
       text: 'Đã mở ${discovered.name}.',
-      structuredContent: <String, Object?>{'id': discovered.id},
+      structuredContent: structured,
       toastBody: 'đã mở ${discovered.name}',
     );
   }

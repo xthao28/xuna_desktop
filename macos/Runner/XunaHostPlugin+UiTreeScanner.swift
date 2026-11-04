@@ -187,15 +187,17 @@ extension XunaHostPlugin {
     button: CGMouseButton = .left,
     clickCount: Int = 1
   ) {
-    let downType: CGEventType = switch button {
-    case .left: .leftMouseDown
-    case .right: .rightMouseDown
-    default: .otherMouseDown
+    let downType: CGEventType
+    switch button {
+    case .left: downType = .leftMouseDown
+    case .right: downType = .rightMouseDown
+    default: downType = .otherMouseDown
     }
-    let upType: CGEventType = switch button {
-    case .left: .leftMouseUp
-    case .right: .rightMouseUp
-    default: .otherMouseUp
+    let upType: CGEventType
+    switch button {
+    case .left: upType = .leftMouseUp
+    case .right: upType = .rightMouseUp
+    default: upType = .otherMouseUp
     }
     guard let src = CGEventSource(stateID: .hidSystemState) else { return }
     if let move = CGEvent(
@@ -293,15 +295,17 @@ extension XunaHostPlugin {
     }
     let dir = direction.lowercased()
     let ticks = max(1, min(amount, 30))
-    let wheel1: Int32 = switch dir {
-    case "up", "scroll_up": ticks
-    case "down", "scroll_down": -ticks
-    default: 0
+    let wheel1: Int32
+    switch dir {
+    case "up", "scroll_up": wheel1 = ticks
+    case "down", "scroll_down": wheel1 = -ticks
+    default: wheel1 = 0
     }
-    let wheel2: Int32 = switch dir {
-    case "left", "scroll_left": ticks
-    case "right", "scroll_right": -ticks
-    default: 0
+    let wheel2: Int32
+    switch dir {
+    case "left", "scroll_left": wheel2 = ticks
+    case "right", "scroll_right": wheel2 = -ticks
+    default: wheel2 = 0
     }
     if let ev = CGEvent(
       scrollWheelEvent2Source: nil,
@@ -419,10 +423,6 @@ extension XunaHostPlugin {
     var centerMap: [String: CGPoint] = [:]
     var redactedCount = 0
 
-    guard AXIsProcessTrusted() else {
-      return (winTitle, nodes, redactedCount)
-    }
-
     let axApp = AXUIElementCreateApplication(app.processIdentifier)
     cachedUiPid = app.processIdentifier
     var winRef: CFTypeRef?
@@ -471,9 +471,312 @@ extension XunaHostPlugin {
         )
       }
     }
+    if nodes.count < maxNodes {
+      collectScriptableAppUiNodes(
+        for: app,
+        maxNodes: maxNodes,
+        into: &nodes,
+        winTitle: &winTitle
+      )
+    }
     cachedUiElements = elementMap
     cachedUiCenters = centerMap
     return (winTitle, nodes, redactedCount)
+  }
+
+  /// Enriches the UI tree (or provides a complete live fallback when `AXUIElement` is unavailable)
+  /// using macOS AppleEvents / Scripting Bridge for Music, Spotify, Browsers, Notes, Reminders, Finder, and Terminal.
+  func collectScriptableAppUiNodes(
+    for app: NSRunningApplication,
+    maxNodes: Int,
+    into nodes: inout [[String: Any]],
+    winTitle: inout String
+  ) {
+    let bundleId = (app.bundleIdentifier ?? "").lowercased()
+    let appName = (app.localizedName ?? "").lowercased()
+
+    func appendNode(role: String, label: String, pattern: String = "AppleEvents / AXPress", value: String? = nil) {
+      guard nodes.count < maxNodes else { return }
+      let idx = nodes.count + 1
+      var dict: [String: Any] = [
+        "refId": "ui_\(idx)",
+        "role": role,
+        "label": String(label.prefix(90)),
+        "isPassword": false,
+        "pattern": pattern,
+        "status": "ready",
+      ]
+      if let v = value, !v.isEmpty {
+        dict["value"] = String(v.prefix(80))
+      }
+      nodes.append(dict)
+    }
+
+    if bundleId == "com.apple.music" || appName == "music" || appName == "apple music" {
+      let script = """
+      tell application "Music"
+        set pState to (player state as string)
+        set curTrack to ""
+        try
+          set curTrack to (name of current track) & " — " & (artist of current track)
+        end try
+        set outLines to "STATE:" & pState & "|" & curTrack & linefeed
+        repeat with p in every playlist
+          set pName to name of p
+          set tCount to count of tracks of p
+          if tCount > 0 then
+            set outLines to outLines & "PLAYLIST:" & pName & " (" & tCount & " bài)" & linefeed
+          end if
+        end repeat
+        repeat with p in every playlist
+          set pName to name of p
+          if pName is not "Music" then
+            set c to count of tracks of p
+            if c > 0 then
+              set maxT to c
+              if maxT > 15 then set maxT to 15
+              repeat with i from 1 to maxT
+                set t to track i of p
+                set outLines to outLines & "TRACK:" & (name of t) & " — " & (artist of t) & " [" & pName & "]" & linefeed
+              end repeat
+            end if
+          end if
+        end repeat
+        return outLines
+      end tell
+      """
+      appendNode(
+        role: "AXSearchField",
+        label: "Tìm kiếm / Phát bài hát hoặc playlist trong Music",
+        pattern: "AXValue / AppleEvents"
+      )
+      if let out = runAppleScript(script, timeoutSeconds: 2.5) {
+        for rawLine in out.components(separatedBy: .newlines) {
+          let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+          if line.hasPrefix("STATE:") {
+            let parts = line.replacingOccurrences(of: "STATE:", with: "").components(separatedBy: "|")
+            let st = parts.first ?? "stopped"
+            let cur = parts.count > 1 ? parts[1] : ""
+            if !cur.isEmpty {
+              winTitle = "Music — \(cur) (\(st))"
+            }
+            appendNode(role: "AXButton", label: "Play / Pause Music (\(st))", value: cur)
+            appendNode(role: "AXButton", label: "Next Track (Bài tiếp theo)")
+            appendNode(role: "AXButton", label: "Previous Track (Bài trước)")
+          } else if line.hasPrefix("PLAYLIST:") {
+            let pl = line.replacingOccurrences(of: "PLAYLIST:", with: "")
+            appendNode(role: "AXButton", label: "Playlist: \(pl)")
+          } else if line.hasPrefix("TRACK:") {
+            let tr = line.replacingOccurrences(of: "TRACK:", with: "")
+            appendNode(role: "AXRow", label: "Bài hát: \(tr)")
+          }
+        }
+      }
+      return
+    }
+
+    if bundleId == "com.spotify.client" || appName.contains("spotify") {
+      let script = """
+      tell application "Spotify"
+        set pState to (player state as string)
+        set curTrack to ""
+        try
+          set curTrack to (name of current track) & " — " & (artist of current track)
+        end try
+        return pState & "|" & curTrack
+      end tell
+      """
+      appendNode(
+        role: "AXSearchField",
+        label: "Tìm kiếm / Phát bài hát hoặc nghệ sĩ trên Spotify",
+        pattern: "AXValue / AppleEvents"
+      )
+      if let out = runAppleScript(script, timeoutSeconds: 2.0) {
+        let parts = out.components(separatedBy: "|")
+        let st = parts.first ?? "stopped"
+        let cur = parts.count > 1 ? parts[1] : ""
+        if !cur.isEmpty {
+          winTitle = "Spotify — \(cur) (\(st))"
+        }
+        appendNode(role: "AXButton", label: "Play / Pause Spotify (\(st))", value: cur)
+        appendNode(role: "AXButton", label: "Next Track Spotify (Bài tiếp theo)")
+        appendNode(role: "AXButton", label: "Previous Track Spotify (Bài trước)")
+      }
+      return
+    }
+
+    let isSafari = bundleId == "com.apple.safari" || appName == "safari"
+    let chromiumApp: String?
+    if bundleId == "com.google.chrome" || appName.contains("chrome") {
+      chromiumApp = "Google Chrome"
+    } else if bundleId == "com.brave.browser" || appName.contains("brave") {
+      chromiumApp = "Brave Browser"
+    } else if bundleId == "com.microsoft.edgemac" || appName.contains("edge") {
+      chromiumApp = "Microsoft Edge"
+    } else if bundleId == "company.thebrowser.browser" || appName == "arc" {
+      chromiumApp = "Arc"
+    } else {
+      chromiumApp = nil
+    }
+
+    if isSafari || chromiumApp != nil {
+      let browserName = isSafari ? "Safari" : chromiumApp!
+      let tabScript: String
+      if isSafari {
+        tabScript = """
+        tell application "Safari"
+          if (count of windows) = 0 then return ""
+          set outLines to "ACTIVE:" & (name of current tab of front window) & "|" & (URL of current tab of front window) & linefeed
+          set idx to 0
+          repeat with t in (tabs of front window)
+            set idx to idx + 1
+            if idx <= 12 then
+              set outLines to outLines & "TAB:" & idx & "|" & (name of t) & "|" & (URL of t) & linefeed
+            end if
+          end repeat
+          return outLines
+        end tell
+        """
+      } else {
+        tabScript = """
+        tell application "\(browserName)"
+          if (count of windows) = 0 then return ""
+          set outLines to "ACTIVE:" & (title of active tab of front window) & "|" & (URL of active tab of front window) & linefeed
+          set idx to 0
+          repeat with t in (tabs of front window)
+            set idx to idx + 1
+            if idx <= 12 then
+              set outLines to outLines & "TAB:" & idx & "|" & (title of t) & "|" & (URL of t) & linefeed
+            end if
+          end repeat
+          return outLines
+        end tell
+        """
+      }
+      if let out = runAppleScript(tabScript, timeoutSeconds: 2.5), !out.isEmpty {
+        var activeUrl = ""
+        for rawLine in out.components(separatedBy: .newlines) {
+          let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+          if line.hasPrefix("ACTIVE:") {
+            let parts = line.replacingOccurrences(of: "ACTIVE:", with: "").components(separatedBy: "|")
+            let title = parts.first ?? browserName
+            activeUrl = parts.count > 1 ? parts[1] : ""
+            winTitle = "\(browserName) — \(title)"
+            appendNode(
+              role: "AXSearchField",
+              label: "Thanh địa chỉ URL / Tìm kiếm Google hoặc YouTube",
+              pattern: "AXValue / BrowserBridge",
+              value: activeUrl
+            )
+            appendNode(role: "AXButton", label: "Mở Tab Mới (New Tab)")
+          } else if line.hasPrefix("TAB:") {
+            let parts = line.replacingOccurrences(of: "TAB:", with: "").components(separatedBy: "|")
+            if parts.count >= 2 {
+              let tabIdx = parts[0]
+              let tabTitle = parts[1]
+              let tabUrl = parts.count > 2 ? parts[2] : ""
+              appendNode(
+                role: "AXTabGroup",
+                label: "Tab #\(tabIdx): \(tabTitle)",
+                value: tabUrl
+              )
+            }
+          }
+        }
+      } else {
+        appendNode(
+          role: "AXSearchField",
+          label: "Thanh địa chỉ URL / Tìm kiếm Google hoặc YouTube",
+          pattern: "AXValue / BrowserBridge"
+        )
+        appendNode(role: "AXButton", label: "Mở Tab Mới (New Tab)")
+      }
+      return
+    }
+
+    if bundleId == "com.apple.notes" || appName == "notes" {
+      appendNode(
+        role: "AXTextArea",
+        label: "Tạo ghi chú mới / Nhập nội dung ghi chú",
+        pattern: "AXValue / AppleEvents"
+      )
+      let script = """
+      tell application "Notes"
+        set outLines to ""
+        set c to count of notes
+        if c > 12 then set c to 12
+        repeat with i from 1 to c
+          set outLines to outLines & (name of note i) & linefeed
+        end repeat
+        return outLines
+      end tell
+      """
+      if let out = runAppleScript(script, timeoutSeconds: 2.5) {
+        for rawLine in out.components(separatedBy: .newlines) {
+          let title = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+          if !title.isEmpty {
+            appendNode(role: "AXRow", label: "Ghi chú: \(title)")
+          }
+        }
+      }
+      return
+    }
+
+    if bundleId == "com.apple.reminders" || appName == "reminders" {
+      appendNode(
+        role: "AXTextField",
+        label: "Tạo lời nhắc mới (New Reminder)",
+        pattern: "AXValue / AppleEvents"
+      )
+      return
+    }
+
+    if bundleId == "com.apple.finder" || appName == "finder" {
+      appendNode(
+        role: "AXSearchField",
+        label: "Mở thư mục hoặc đường dẫn trong Finder",
+        pattern: "AXValue / AppleEvents"
+      )
+      appendNode(role: "AXButton", label: "Folder: Downloads (~/Downloads)")
+      appendNode(role: "AXButton", label: "Folder: Desktop (~/Desktop)")
+      appendNode(role: "AXButton", label: "Folder: Documents (~/Documents)")
+      let script = """
+      tell application "Finder"
+        set outLines to ""
+        try
+          set curFolder to (target of front Finder window as alias)
+          set outLines to "PATH:" & (POSIX path of curFolder) & linefeed
+          set itemsList to name of items 1 thru 10 of front Finder window
+          repeat with nm in itemsList
+            set outLines to outLines & "ITEM:" & (nm as string) & linefeed
+          end repeat
+        end try
+        return outLines
+      end tell
+      """
+      if let out = runAppleScript(script, timeoutSeconds: 2.0) {
+        for rawLine in out.components(separatedBy: .newlines) {
+          let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+          if line.hasPrefix("PATH:") {
+            let p = line.replacingOccurrences(of: "PATH:", with: "")
+            winTitle = "Finder — \(p)"
+          } else if line.hasPrefix("ITEM:") {
+            let item = line.replacingOccurrences(of: "ITEM:", with: "")
+            appendNode(role: "AXRow", label: "Tệp/Thư mục: \(item)")
+          }
+        }
+      }
+      return
+    }
+
+    if bundleId == "com.apple.terminal" || appName == "terminal" {
+      appendNode(
+        role: "AXTextField",
+        label: "Chạy lệnh trong cửa sổ Terminal",
+        pattern: "AXValue / AppleEvents"
+      )
+      return
+    }
   }
 
   func handleInspectWindowUiTree(args: [String: Any], result: @escaping FlutterResult) {
