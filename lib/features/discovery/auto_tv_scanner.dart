@@ -134,7 +134,62 @@ class AutoTvScanner {
   /// Discovers Smart TVs on the LAN (`UDC-14` S14.1).
   Future<List<DiscoveredSmartTv>> discoverDevices() async {
     _loadLocalConfigIfPresent();
+    if (_devices.isEmpty && !Platform.environment.containsKey('FLUTTER_TEST')) {
+      await _probeSsdpLanTvs();
+    }
     return _devices.values.toList(growable: false);
+  }
+
+  Future<void> _probeSsdpLanTvs() async {
+    RawDatagramSocket? socket;
+    try {
+      socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      final msearch = utf8.encode(
+        'M-SEARCH * HTTP/1.1\r\n'
+        'HOST: 239.255.255.250:1900\r\n'
+        'MAN: "ssdp:discover"\r\n'
+        'MX: 1\r\n'
+        'ST: urn:dial-multiscreen-org:service:dial:1\r\n\r\n',
+      );
+      socket.send(msearch, InternetAddress('239.255.255.250'), 1900);
+      final sub = socket.listen((event) {
+        if (event != RawSocketEvent.read) return;
+        final dg = socket?.receive();
+        if (dg == null) return;
+        final resp = utf8.decode(dg.data, allowMalformed: true);
+        final ip = dg.address.address;
+        final serverLine = RegExp(
+          r'SERVER:\s*(.+)',
+          caseSensitive: false,
+        ).firstMatch(resp)?.group(1)?.trim() ?? 'Smart TV';
+        final lowerServer = serverLine.toLowerCase();
+        final brand = lowerServer.contains('webos') || lowerServer.contains('lg')
+            ? 'lg'
+            : (lowerServer.contains('tizen') || lowerServer.contains('samsung')
+                  ? 'samsung'
+                  : (lowerServer.contains('bravia') || lowerServer.contains('sony')
+                        ? 'sony'
+                        : 'generic'));
+        final id = 'tv_${ip.replaceAll(".", "_")}';
+        _devices.putIfAbsent(
+          id,
+          () => DiscoveredSmartTv(
+            id: id,
+            name: 'Smart TV ($ip)',
+            brand: brand,
+            protocol: 'dial',
+            hostAddress: ip,
+            port: 8008,
+          ),
+        );
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+      await sub.cancel();
+    } catch (_) {
+      // Best-effort SSDP probe
+    } finally {
+      socket?.close();
+    }
   }
 
   void _loadLocalConfigIfPresent() {

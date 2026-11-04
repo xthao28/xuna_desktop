@@ -1,16 +1,18 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
+import 'package:xuna_desktop/core/controller/desktop_app_automation_runner.dart';
+import 'package:xuna_desktop/core/controller/desktop_skill_runner.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/presentation/controllers/base_getx_controller.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
+import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
@@ -35,7 +37,29 @@ class DesktopAgentController extends BaseGetxController {
     this.lanServer,
     this.computerUseManager,
     this.symbioticService,
-  });
+  }) {
+    _appAutomationRunner = DesktopAppAutomationRunner(
+      channel: channel,
+      appScanner: _appScanner,
+      workspaceIndexer: _workspaceIndexer,
+      getSymbioticService: () => symbioticService,
+      getDiscoveredApps: () => discoveredApps,
+      scanInstalledApps: scanInstalledApps,
+      getDiscoveredWorkspaces: () => discoveredWorkspaces,
+      scanWorkspaces: scanWorkspaces,
+      recordedTrajectorySteps: recordedTrajectorySteps,
+      resolveRealSkillDirectory: resolveRealSkillDirectory,
+      setFrontierStatusSummaryVi: (msg) => frontierStatusSummaryVi.value = msg,
+      refreshSymbioticState: refreshSymbioticState,
+    );
+    _skillRunner = DesktopSkillRunner(
+      channel: channel,
+      appAutomationRunner: _appAutomationRunner,
+      getSymbioticService: () => symbioticService,
+      setFrontierStatusSummaryVi: (msg) => frontierStatusSummaryVi.value = msg,
+      refreshSymbioticState: refreshSymbioticState,
+    );
+  }
 
   final XunaHostChannel channel;
   final EnrollmentStateStore enrollmentStore;
@@ -76,20 +100,19 @@ class DesktopAgentController extends BaseGetxController {
   final activeDevPorts = <DevPortEntry>[].obs;
   final detectedLanIp = ''.obs;
   final discoveredApps = <DiscoveredApp>[].obs;
+  final discoveredWorkspaces = <DiscoveredWorkspace>[].obs;
+  final recordedTrajectorySteps = <Map<String, Object?>>[].obs;
   final learnedAppPlaybooks = <AppPlaybookEntry>[].obs;
   final activeHandover = Rxn<HumanHandoverSnapshot>();
   final activeFocusedAppName = 'Visual Studio Code'.obs;
   final AutoAppScanner _appScanner = AutoAppScanner();
+  final AutoWorkspaceIndexer _workspaceIndexer = AutoWorkspaceIndexer();
+  late final DesktopAppAutomationRunner _appAutomationRunner;
+  late final DesktopSkillRunner _skillRunner;
 
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
 
-  /// Vietnamese status label shown in the system tray and header:
-  /// - `"Cấu hình lỗi"` when `host-policy.json` is invalid/missing (`UDC-3` §5.6.4)
-  /// - `"Đã dừng khẩn cấp"` when e-stop is active
-  /// - `"Đang kết nối"` when `sessionPhase == ready`
-  /// - `"Chờ ghép nối"` when waiting for QR + SAS confirmation
-  /// - `"Mất kết nối"` otherwise
   String get trayStatusLabel {
     if (!isPolicyHealthy.value) {
       return policyBanner.value ?? 'Cấu hình lỗi';
@@ -164,6 +187,8 @@ class DesktopAgentController extends BaseGetxController {
     await policyStore.reload();
     _syncFromStores();
     scanInstalledApps();
+    scanWorkspaces();
+    _skillRunner.loadPersistedForgedSkillsFromDisk();
     if (lanModeEnabled.value && lanServer != null) {
       try {
         await lanServer!.start();
@@ -172,6 +197,18 @@ class DesktopAgentController extends BaseGetxController {
     await refreshPermissions();
     await refreshAudit();
     await sessionClient.connect();
+  }
+
+  List<DiscoveredWorkspace> scanWorkspaces({bool forceRefresh = false}) {
+    try {
+      final list = _workspaceIndexer.discoverWorkspaces(
+        forceRefresh: forceRefresh,
+      );
+      discoveredWorkspaces.assignAll(list);
+      return list;
+    } catch (_) {
+      return const <DiscoveredWorkspace>[];
+    }
   }
 
   Future<void> toggleLanMode(bool enabled) async {
@@ -210,7 +247,6 @@ class DesktopAgentController extends BaseGetxController {
     recentAuditRecords.assignAll(await auditStore.readRecent(limit: 50));
   }
 
-  /// Refreshes the SYM-1 / SYM-2 / OMNIFORGE symbiotic state from [symbioticService] (`SYM-UI` S-UI.2 & `FORGE-3`).
   void refreshSymbioticState() {
     final svc = symbioticService;
     if (svc == null) return;
@@ -230,7 +266,6 @@ class DesktopAgentController extends BaseGetxController {
     selectedColorThemeId.value = svc.activeColorThemeId;
   }
 
-  /// Inspects and learns an application across the 3-tier ladder (`CLAW-APP-ENGINE`).
   AppPlaybookEntry? learnOrInspectAppFromUi(
     String appName, {
     String? customActionVi,
@@ -244,30 +279,26 @@ class DesktopAgentController extends BaseGetxController {
     frontierStatusSummaryVi.value = entry.lastActionSummaryVi;
     refreshSymbioticState();
     if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      unawaited(_launchAppForPlaybookInspection(appName, entry));
+      unawaited(
+        _appAutomationRunner.launchAppForPlaybookInspection(
+          appName,
+          entry,
+          customActionVi: customActionVi,
+        ),
+      );
     }
     return entry;
   }
 
-  Future<void> _launchAppForPlaybookInspection(
-    String rawAppName,
-    AppPlaybookEntry entry,
-  ) async {
-    try {
-      final matched = _findInstalledAppFromText(rawAppName);
-      if (matched != null) {
-        await channel.appLaunch(target: matched.target, kind: matched.kind);
-        frontierStatusSummaryVi.value =
-            '🚀 Đã mở "${matched.name}" & học thao tác (${entry.tierBadgeVi})';
-      }
-      await channel.showToast(
-        title: 'XUNA Học App (${entry.appName})',
-        body: entry.lastActionSummaryVi,
+  Future<Map<String, Object?>> replayRecordedTrajectoryFromUi({
+    int delayMs = 450,
+    bool stopOnError = false,
+  }) =>
+      _appAutomationRunner.replayRecordedTrajectory(
+        delayMs: delayMs,
+        stopOnError: stopOnError,
       );
-    } catch (_) {}
-  }
 
-  /// Removes a learned [AppPlaybookEntry] by [appId] (`CLAW-APP-ENGINE`).
   void removeAppPlaybookFromUi(String appId) {
     final svc = symbioticService;
     if (svc == null) return;
@@ -276,7 +307,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Pauses automation at a sensitive step (Login / 2FA / Captcha / Payment) and waits for the owner (`CLAW-APP-ENGINE`).
   HumanHandoverSnapshot? triggerHumanHandoverFromUi({
     required String appName,
     required String taskTitleVi,
@@ -292,7 +322,6 @@ class DesktopAgentController extends BaseGetxController {
     return snap;
   }
 
-  /// Resumes a paused Human-in-the-Loop Handover session (`CLAW-APP-ENGINE`).
   void resumeHumanHandoverFromUi() {
     final svc = symbioticService;
     if (svc == null) return;
@@ -301,7 +330,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Cancels a paused Human-in-the-Loop Handover session (`CLAW-APP-ENGINE`).
   void cancelHumanHandoverFromUi() {
     final svc = symbioticService;
     if (svc == null) return;
@@ -310,7 +338,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Selects one of the 7 XUNA Color Themes on Desktop and records it in ChronoGraph (`THEME-3`).
   XunaColorThemeData selectColorTheme(String themeId) {
     final resolved = XunaColorThemes.byId(themeId);
     isAutoColorTheme.value = false;
@@ -321,7 +348,6 @@ class DesktopAgentController extends BaseGetxController {
     return resolved;
   }
 
-  /// Toggles Experience-Driven Epigenetic Auto-Theme mode on Desktop (`THEME-3`).
   XunaColorThemeData toggleAutoColorTheme({String? dominantTrait}) {
     final nextAuto = !isAutoColorTheme.value;
     isAutoColorTheme.value = nextAuto;
@@ -338,7 +364,6 @@ class DesktopAgentController extends BaseGetxController {
     return resolved;
   }
 
-  /// Runs a Zero-Token 2-Tier Heartbeat tick from the Desktop UI (`CLAW-2`).
   HeartbeatStatusSnapshot? runZeroTokenHeartbeatFromUi({
     bool simulateDelta = false,
   }) {
@@ -352,11 +377,9 @@ class DesktopAgentController extends BaseGetxController {
     return snap;
   }
 
-  /// Records a self-healing layout correction rule on a skill from the Desktop UI (`CLAW-1`).
   Map<String, Object?>? recordQuickSkillCorrectionFromUi(
     String skillId, {
-    String correctionNote =
-        'Trang thuế mới đổi nút Tải PDF sang góc phải bảng hóa đơn',
+    required String correctionNote,
   }) {
     final svc = symbioticService;
     if (svc == null) return null;
@@ -374,7 +397,6 @@ class DesktopAgentController extends BaseGetxController {
     };
   }
 
-  /// Exports a forged skill as an OpenClaw-compatible `SKILL.md` string (`CLAW-1`).
   String? exportSkillMarkdownFromUi(String skillId) {
     final svc = symbioticService;
     if (svc == null) return null;
@@ -386,26 +408,30 @@ class DesktopAgentController extends BaseGetxController {
     return res.skillMarkdown;
   }
 
-  /// Presents the interactive A2UI Live Canvas surface from the Desktop UI (`CLAW-3`).
-  LiveCanvasSurfaceSnapshot? presentInvoiceLiveCanvasFromUi() {
+  LiveCanvasSurfaceSnapshot? presentLiveCanvasFromUi({
+    String action = 'present_workflow_board',
+    String? title,
+  }) {
     final svc = symbioticService;
     if (svc == null) return null;
-    final snap = svc.presentLiveCanvas(action: 'present_invoice_table');
+    final snap = svc.presentLiveCanvas(action: action, title: title);
     refreshSymbioticState();
     return snap;
   }
 
-  /// Feeds a dropped file into the Living Overlay Drop-Zone and synthesizes a Bio-Acoustic chirp (`FRONTIER-1`, `FRONTIER-2`).
   String? feedOverlayDropAndVocalizeFromUi({
-    String droppedItemName = 'hoa_don_thang_11.csv',
+    required String droppedItemName,
+    String? droppedContent,
     String vocalKind = 'happy_chirp',
   }) {
     final svc = symbioticService;
-    if (svc == null) return null;
+    final cleanItem = droppedItemName.trim();
+    if (svc == null || cleanItem.isEmpty) return null;
     final dropRes = svc.manageOverlayAndDropZone(
       mode: 'feed_drop_item',
-      anchor: 'mac_notch',
-      droppedItemName: droppedItemName,
+      anchor: Platform.isMacOS ? 'mac_notch' : 'win_top_right',
+      droppedItemName: cleanItem,
+      droppedContent: droppedContent,
     );
     final vocalRes = svc.vocalizeAndSenseProsody(
       mode: 'synthesize_vocal',
@@ -419,7 +445,6 @@ class DesktopAgentController extends BaseGetxController {
     return frontierStatusSummaryVi.value;
   }
 
-  /// Updates the Bi-Temporal ChronoGraph and starts a 4-7-8 Mindful Co-Breathing ritual (`FRONTIER-3`, `FRONTIER-4`).
   String? updateChronoGraphAndRitualFromUi({
     String objectVal = 'XUNA Frontier 2026',
   }) {
@@ -440,427 +465,88 @@ class DesktopAgentController extends BaseGetxController {
     return frontierStatusSummaryVi.value;
   }
 
-  /// Runs a Zero-Screenshot Native OS UI Automation inspection and button invoke (`UIA-2`).
   String? runZeroScreenshotUiAutomationFromUi({
-    String windowTitle = 'Excel - Bảng Kê Hóa Đơn',
-    String refId = 'ui_3',
+    String? windowTitle,
+    String refId = 'ui_1',
   }) {
     final svc = symbioticService;
     if (svc == null) return null;
+    final resolvedTitle =
+        (windowTitle != null && windowTitle.trim().isNotEmpty)
+        ? windowTitle.trim()
+        : activeFocusedAppName.value;
     final inspectRes = svc.executeUiAccessibilityTree(
       action: 'inspect_window',
-      windowTitle: windowTitle,
+      windowTitle: resolvedTitle,
     );
     final invokeRes = svc.executeUiAccessibilityTree(
       action: 'invoke_ref',
-      windowTitle: windowTitle,
+      windowTitle: resolvedTitle,
       refId: refId,
     );
     frontierStatusSummaryVi.value =
         '${inspectRes.summaryVi}\n${invokeRes.summaryVi}';
     refreshSymbioticState();
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      unawaited(_runNativeZeroScreenshotUiAutomation(resolvedTitle, refId));
+    }
     return frontierStatusSummaryVi.value;
   }
 
-  /// Resolves a relative skill folder (e.g. `XUNA_HoaDon/Thang_11_2026`) into a real writable path on disk.
-  String resolveRealSkillDirectory(String rawFolder) {
-    final clean = rawFolder.trim();
-    final home =
-        Platform.environment['HOME'] ??
-        Platform.environment['USERPROFILE'] ??
-        Directory.systemTemp.path;
-    if (clean.startsWith('~/')) {
-      return '$home/${clean.substring(2)}';
-    }
-    if (clean.startsWith('/') || RegExp(r'^[A-Za-z]:[\\/]').hasMatch(clean)) {
-      return clean;
-    }
-    final safeSubPath = clean.isEmpty ? 'XUNA_Tools/Output' : clean;
-    return '$home/Documents/XUNA_Workspace/$safeSubPath';
-  }
-
-  /// Scans real files on the user's Mac (`~/Downloads`, `~/Documents`, `~/Desktop`) for a forged skill.
-  List<Map<String, Object?>> _scanRealFilesForSkill(ForgedSkillEntry skill) {
-    final home =
-        Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
-    if (home == null || home.isEmpty) return const <Map<String, Object?>>[];
-    final lowerGoal = skill.goal.toLowerCase();
-    final candidateDirs = <String>[
-      if (lowerGoal.contains('desktop') || lowerGoal.contains('màn hình'))
-        '$home/Desktop',
-      '$home/Downloads',
-      '$home/Documents',
-      if (!lowerGoal.contains('desktop') && !lowerGoal.contains('màn hình'))
-        '$home/Desktop',
-    ];
-    final normalizedExts = skill.fileExtensions
-        .map((e) => e.trim().toLowerCase().replaceFirst(RegExp(r'^\.'), ''))
-        .where((e) => e.isNotEmpty)
-        .toSet();
-    final matchedFiles = <File>[];
-    final fallbackFiles = <File>[];
-
-    for (final dirPath in candidateDirs) {
-      final dir = Directory(dirPath);
-      if (!dir.existsSync()) continue;
-      try {
-        for (final entity in dir.listSync(followLinks: false)) {
-          if (entity is! File) continue;
-          final name = entity.uri.pathSegments.isEmpty
-              ? ''
-              : entity.uri.pathSegments.last;
-          if (name.isEmpty || name.startsWith('.')) continue;
-          if (entity.path.contains('XUNA_Workspace')) continue;
-          final dotIdx = name.lastIndexOf('.');
-          final ext = dotIdx >= 0
-              ? name.substring(dotIdx + 1).toLowerCase()
-              : '';
-          if (normalizedExts.isEmpty || normalizedExts.contains(ext)) {
-            matchedFiles.add(entity);
-            if (matchedFiles.length >= 50) break;
-          } else if (fallbackFiles.length < 25) {
-            fallbackFiles.add(entity);
-          }
-        }
-      } catch (_) {}
-      if (matchedFiles.length >= 50) break;
-    }
-
-    final chosen = matchedFiles.isNotEmpty ? matchedFiles : fallbackFiles;
-    final rows = <Map<String, Object?>>[];
-    for (var i = 0; i < chosen.length; i++) {
-      final f = chosen[i];
-      try {
-        final stat = f.statSync();
-        final name = f.uri.pathSegments.last;
-        final dotIdx = name.lastIndexOf('.');
-        final ext = dotIdx >= 0 ? name.substring(dotIdx + 1).toUpperCase() : '';
-        final sizeKb = (stat.size / 1024).toStringAsFixed(1);
-        final modIso = stat.modified.toLocal().toIso8601String();
-        rows.add(<String, Object?>{
-          'STT': i + 1,
-          'TenTep': name,
-          'DinhDang': ext.isEmpty ? 'FILE' : ext,
-          'DungLuongKB': sizeKb,
-          'CapNhatLuc': modIso.length >= 16 ? modIso.substring(0, 16) : modIso,
-          'DuongDanGoc': f.path,
-        });
-      } catch (_) {}
-    }
-    return rows;
-  }
-
-  /// Finds an installed application mentioned in [rawText] (or slash-separated preset).
-  DiscoveredApp? _findInstalledAppFromText(String rawText) {
-    final text = rawText.trim();
-    if (text.isEmpty) return null;
-    if (discoveredApps.isEmpty) {
-      scanInstalledApps();
-    }
-    for (final part in text.split(RegExp(r'[/,|]'))) {
-      final q = part.trim();
-      if (q.isEmpty) continue;
-      final direct = _appScanner.findApp(q);
-      if (direct != null) return direct;
-    }
-    final lower = text.toLowerCase();
-    const aliasMap = <String, String>{
-      'vscode': 'Visual Studio Code',
-      'vs code': 'Visual Studio Code',
-      'visual studio code': 'Visual Studio Code',
-      'antigravity': 'Antigravity',
-      'safari': 'Safari',
-      'chrome': 'Google Chrome',
-      'google chrome': 'Google Chrome',
-      'brave': 'Brave Browser',
-      'arc': 'Arc',
-      'firefox': 'Firefox',
-      'ghi chú': 'Notes',
-      'apple notes': 'Notes',
-      'notes': 'Notes',
-      'notion': 'Notion',
-      'máy tính': 'Calculator',
-      'calculator': 'Calculator',
-      'lịch': 'Calendar',
-      'calendar': 'Calendar',
-      'nhắc nhở': 'Reminders',
-      'reminders': 'Reminders',
-      'zalo': 'Zalo',
-      'telegram': 'Telegram',
-      'discord': 'Discord',
-      'slack': 'Slack',
-      'spotify': 'Spotify',
-      'nhạc': 'Music',
-      'music': 'Music',
-      'figma': 'Figma',
-      'capcut': 'CapCut',
-      'terminal': 'Terminal',
-      'iterm': 'iTerm',
-      'docker': 'Docker',
-      'postman': 'Postman',
-      'finder': 'Finder',
-      'excel': 'Microsoft Excel',
-      'word': 'Microsoft Word',
-    };
-    for (final entry in aliasMap.entries) {
-      if (lower.contains(entry.key)) {
-        final found = _appScanner.findApp(entry.value);
-        if (found != null) return found;
-      }
-    }
-    for (final app in discoveredApps) {
-      if (app.name.length >= 3 && lower.contains(app.name.toLowerCase())) {
-        return app;
-      }
-    }
-    return null;
-  }
-
-  /// Synthesizes a quick citizen tool (e.g., Invoice Harvester) from Desktop UI (`FORGE-3`).
-  ForgedSkillEntry? forgeQuickInvoiceTool({
-    String goal =
-        'Tự động tải hết hóa đơn PDF/XML và gom bảng kê Excel vào HoaDon_Thang',
-    String? targetFolder,
-  }) {
-    final svc = symbioticService;
-    if (svc == null) return null;
-    var entry = svc.synthesizeSkill(
-      goal: goal,
-      targetFolder: (targetFolder == null || targetFolder.trim().isEmpty)
-          ? null
-          : targetFolder.trim(),
-    );
-    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      try {
-        final realDir = resolveRealSkillDirectory(entry.targetFolder);
-        Directory(realDir).createSync(recursive: true);
-        final realRows = _scanRealFilesForSkill(entry);
-        final mdRes = svc.bridgeSkillMarkdown(
-          action: 'export_skill_md',
-          skillId: entry.skillId,
-        );
-        if (mdRes.skillMarkdown.isNotEmpty) {
-          File('$realDir/SKILL.md').writeAsStringSync(mdRes.skillMarkdown);
-        }
-        File('$realDir/recipe.json').writeAsStringSync(
-          const JsonEncoder.withIndent('  ').convert(entry.toWireJson()),
-        );
-        if (realRows.isNotEmpty) {
-          final firstFile = realRows.first['TenTep'] ?? 'file';
-          final updated = ForgedSkillEntry(
-            skillId: entry.skillId,
-            titleVi: entry.titleVi,
-            category: entry.category,
-            goal: entry.goal,
-            targetFolder: entry.targetFolder,
-            fileExtensions: entry.fileExtensions,
-            detectedItemsCount: realRows.length,
-            dryRunSample:
-                'Quét thật ${realRows.length} tệp trên Mac (mẫu: "$firstFile") → xuất vào "$realDir/BangKe_TongHop.csv"',
-            selfDebugIterations: entry.selfDebugIterations,
-            parameterFields: entry.parameterFields,
-            scriptSteps: entry.scriptSteps,
-            summaryVi: entry.summaryVi,
-            createdAt: entry.createdAt,
-            runCount: entry.runCount,
-            lastRunSummaryVi: 'Thư mục thật trên máy: $realDir',
-            selfHealGeneration: entry.selfHealGeneration,
-            correctionRules: entry.correctionRules,
-            primitives: entry.primitives,
-            canvasSurfaceKind: entry.canvasSurfaceKind,
-            version: entry.version,
-            versionHistory: entry.versionHistory,
-            autoTriggerOnDelta: entry.autoTriggerOnDelta,
-            selfTestPassed: entry.selfTestPassed,
-          );
-          final list = svc.forge.forgedSkillsMutable;
-          final idx = list.indexWhere((s) => s.skillId == entry.skillId);
-          if (idx >= 0) {
-            list[idx] = updated;
-            entry = updated;
-          }
-        }
-        frontierStatusSummaryVi.value =
-            '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.detectedItemsCount} tệp thật trên máy) → $realDir';
-        unawaited(
-          channel.showToast(
-            title: 'XUNA đã tạo Tool mới',
-            body: '${entry.titleVi} — Sẵn sàng chạy với ${entry.detectedItemsCount} tệp thật',
-          ),
-        );
-      } catch (_) {
-        frontierStatusSummaryVi.value =
-            '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.skillId}) — thư mục: ${entry.targetFolder}';
-      }
-    } else {
-      frontierStatusSummaryVi.value =
-          '🛠️ Đã viết xong Tool "${entry.titleVi}" (${entry.skillId}) — thư mục: ${entry.targetFolder}';
-    }
-    refreshSymbioticState();
-    return entry;
-  }
-
-  /// Runs a forged personal skill from Desktop UI (`FORGE-3`) and writes real artifacts to disk.
-  Map<String, Object?>? runForgedSkillFromUi(String skillId) {
-    final svc = symbioticService;
-    if (svc == null) return null;
-    final res = svc.runForgedSkill(skillId: skillId);
-    var processedCount = res.processedCount;
-    var outputDirectory = res.outputDirectory;
-    var exportedCsvFile = res.exportedCsvFile;
-    var summaryVi = res.summaryVi;
-
-    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      try {
-        final list = svc.forge.forgedSkillsMutable;
-        final idx = list.indexWhere((s) => s.skillId == res.skillId);
-        final entry = idx >= 0
-            ? list[idx]
-            : (list.isNotEmpty ? list.first : null);
-        if (entry != null) {
-          final realDir = resolveRealSkillDirectory(entry.targetFolder);
-          Directory(realDir).createSync(recursive: true);
-          final realRows = _scanRealFilesForSkill(entry);
-          final rowsToWrite = realRows.isNotEmpty
-              ? realRows
-              : <Map<String, Object?>>[
-                  for (var i = 0; i < entry.scriptSteps.length; i++)
-                    <String, Object?>{
-                      'Buoc': i + 1,
-                      'MoTaThaoTac': entry.scriptSteps[i],
-                      'MucTieu': entry.goal,
-                      'ThoiGianChay': DateTime.now().toLocal().toIso8601String(),
-                    },
-                ];
-          final csvFilePath = svc.pipeline.exportUniversalArtifactToDisk(
-            filePath: '$realDir/BangKe_TongHop.csv',
-            format: 'csv',
-            titleVi: entry.titleVi,
-            rows: rowsToWrite,
-          );
-          final mdFilePath = svc.pipeline.exportUniversalArtifactToDisk(
-            filePath: '$realDir/BaoCao_KetQua.md',
-            format: 'md',
-            titleVi: '${entry.titleVi} — Báo cáo kết quả thực thi',
-            rows: rowsToWrite,
-          );
-          final mdBridge = svc.bridgeSkillMarkdown(
-            action: 'export_skill_md',
-            skillId: entry.skillId,
-          );
-          if (mdBridge.skillMarkdown.isNotEmpty) {
-            File('$realDir/SKILL.md').writeAsStringSync(mdBridge.skillMarkdown);
-          }
-          File('$realDir/recipe.json').writeAsStringSync(
-            const JsonEncoder.withIndent('  ').convert(entry.toWireJson()),
-          );
-
-          processedCount = rowsToWrite.length;
-          outputDirectory = realDir;
-          exportedCsvFile = csvFilePath;
-          summaryVi =
-              'Đã chạy thật "${entry.titleVi}": xử lý $processedCount mục và xuất file thật tại "$exportedCsvFile" (+ "$mdFilePath")';
-
-          if (idx >= 0) {
-            list[idx] = ForgedSkillEntry(
-              skillId: entry.skillId,
-              titleVi: entry.titleVi,
-              category: entry.category,
-              goal: entry.goal,
-              targetFolder: entry.targetFolder,
-              fileExtensions: entry.fileExtensions,
-              detectedItemsCount: processedCount,
-              dryRunSample: entry.dryRunSample,
-              selfDebugIterations: entry.selfDebugIterations,
-              parameterFields: entry.parameterFields,
-              scriptSteps: entry.scriptSteps,
-              summaryVi: entry.summaryVi,
-              createdAt: entry.createdAt,
-              runCount: entry.runCount,
-              lastRunSummaryVi: summaryVi,
-              selfHealGeneration: entry.selfHealGeneration,
-              correctionRules: entry.correctionRules,
-              primitives: entry.primitives,
-              canvasSurfaceKind: entry.canvasSurfaceKind,
-              version: entry.version,
-              versionHistory: entry.versionHistory,
-              autoTriggerOnDelta: entry.autoTriggerOnDelta,
-              selfTestPassed: entry.selfTestPassed,
-            );
-          }
-          unawaited(_triggerSideEffectsForSkillRun(entry, exportedCsvFile));
-        }
-      } catch (_) {}
-    }
-
-    frontierStatusSummaryVi.value = '▶ $summaryVi';
-    refreshSymbioticState();
-    return <String, Object?>{
-      'skillId': res.skillId,
-      'processedCount': processedCount,
-      'outputDirectory': outputDirectory,
-      'exportedCsvFile': exportedCsvFile,
-      'selfHealedSelectors': res.selfHealedSelectors,
-      'undoSnapshotId': res.undoSnapshotId,
-      'summaryVi': summaryVi,
-    };
-  }
-
-  Future<void> _triggerSideEffectsForSkillRun(
-    ForgedSkillEntry entry,
-    String exportedCsvFile,
+  Future<void> _runNativeZeroScreenshotUiAutomation(
+    String windowTitle,
+    String refId,
   ) async {
     try {
-      final urlMatch = RegExp(r'https://[^\s"<>]+').firstMatch(entry.goal);
-      if (urlMatch != null) {
-        await channel.urlOpen(urlMatch.group(0)!);
-      }
-      final matchedApp = _findInstalledAppFromText(entry.goal);
-      if (matchedApp != null) {
-        await channel.appLaunch(
-          target: matchedApp.target,
-          kind: matchedApp.kind,
+      final snap = await channel.inspectWindowUiTree(
+        windowTitle: windowTitle,
+        maxNodes: 30,
+      );
+      if (snap.nodes.isNotEmpty) {
+        symbioticService?.uiAccessibility.applyNativeWindowUiTree(
+          windowTitle: snap.windowTitle.isNotEmpty
+              ? snap.windowTitle
+              : windowTitle,
+          nodes: snap.nodes,
         );
       }
-      if (Platform.isMacOS && File(exportedCsvFile).existsSync()) {
-        await Process.run('/usr/bin/open', <String>['-R', exportedCsvFile]);
-      } else if (Platform.isWindows && File(exportedCsvFile).existsSync()) {
-        await Process.run('explorer.exe', <String>[
-          '/select,${exportedCsvFile.replaceAll('/', '\\')}',
-        ]);
-      }
-      await channel.showToast(
-        title: 'Đã chạy xong: ${entry.titleVi}',
-        body: 'Đã xuất kết quả thật tại $exportedCsvFile',
+      final actRes = await channel.invokeWindowUiControl(
+        action: 'invoke_ref',
+        windowTitle: windowTitle,
+        refId: refId,
       );
-    } catch (_) {}
-  }
-
-  /// Opens the real output directory of a forged skill in macOS Finder / Windows Explorer.
-  Future<void> openForgedSkillOutputFolderFromUi(String skillId) async {
-    final svc = symbioticService;
-    if (svc == null) return;
-    final list = svc.listForgedSkillEntries();
-    final idx = list.indexWhere((s) => s.skillId == skillId);
-    final entry = idx >= 0 ? list[idx] : (list.isNotEmpty ? list.first : null);
-    if (entry == null) return;
-    final realDir = resolveRealSkillDirectory(entry.targetFolder);
-    try {
-      Directory(realDir).createSync(recursive: true);
-      if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-        if (Platform.isMacOS) {
-          await Process.run('/usr/bin/open', <String>[realDir]);
-        } else if (Platform.isWindows) {
-          await Process.run('explorer.exe', <String>[
-            realDir.replaceAll('/', '\\'),
-          ]);
-        }
+      if (actRes.nodes.isNotEmpty) {
+        symbioticService?.uiAccessibility.applyNativeWindowUiTree(
+          windowTitle: actRes.windowTitle.isNotEmpty
+              ? actRes.windowTitle
+              : windowTitle,
+          nodes: actRes.nodes,
+        );
       }
-      frontierStatusSummaryVi.value = '📂 Đã mở thư mục kết quả: $realDir';
+      refreshSymbioticState();
     } catch (_) {}
   }
 
-  /// Deletes a forged personal skill from Desktop UI.
+  String resolveRealSkillDirectory(String rawFolder) =>
+      DesktopSkillRunner.resolveRealSkillDirectoryStatic(rawFolder);
+
+  ForgedSkillEntry? forgeSkillFromUi({
+    required String goal,
+    String? targetFolder,
+    List<String>? fileExtensions,
+  }) =>
+      _skillRunner.forgeSkill(
+        goal: goal,
+        targetFolder: targetFolder,
+        fileExtensions: fileExtensions,
+      );
+
+  Map<String, Object?>? runForgedSkillFromUi(String skillId) =>
+      _skillRunner.runForgedSkill(skillId);
+
+  Future<void> openForgedSkillOutputFolderFromUi(String skillId) =>
+      _skillRunner.openForgedSkillOutputFolder(skillId);
+
   void removeForgedSkillFromUi(String skillId) {
     final svc = symbioticService;
     if (svc == null) return;
@@ -869,14 +555,12 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Exports a forged skill as OpenClaw `SKILL.md` and copies it to the PC Clipboard.
   Future<void> copySkillMarkdownToClipboard(String skillId) async {
     final md = exportSkillMarkdownFromUi(skillId);
     if (md == null || md.isEmpty) return;
     await copyTextToSystemClipboard(md, labelVi: 'tài liệu SKILL.md');
   }
 
-  /// Adds a demonstrated action step during an active `Show-Me-Once` session on Desktop.
   void addTeachStepFromUi(String stepText) {
     final svc = symbioticService;
     final clean = stepText.trim();
@@ -896,33 +580,39 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Toggles `Show-Me-Once` demonstration recording and compiles a skill when stopped (`FORGE-3`).
   Map<String, Object?>? toggleTeachModeFromUi({String? customTitle}) {
     final svc = symbioticService;
     if (svc == null) return null;
     if (!svc.isTeachRecordingActive) {
+      final activeApp = activeFocusedAppName.value.trim().isEmpty
+          ? 'Ứng dụng đang mở'
+          : activeFocusedAppName.value.trim();
+      final initialTitle =
+          (customTitle != null && customTitle.trim().isNotEmpty)
+          ? customTitle.trim()
+          : 'Tự động hóa thao tác trên $activeApp';
       svc.handleTeachSession(
         mode: 'start',
-        skillTitle: 'Tải hóa đơn mẫu và lưu vào thư mục HoaDon_Thang',
+        skillTitle: initialTitle,
       );
-      svc.handleTeachSession(
-        mode: 'record_action',
-        demonstratedAction: 'Click tải hóa đơn PDF mẫu #1',
-        selectorOrPattern: 'a.btn-download-invoice',
-      );
-      teachRecordedSteps.assignAll(<String>[
-        'Bước 1: Chọn dòng đầu tiên trong danh sách dữ liệu',
-        'Bước 2: Bấm tải tệp & chuẩn hóa tên theo ngày tháng',
-      ]);
+      teachRecordedSteps.clear();
+      if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+        unawaited(_captureLiveContextForTeachSession(activeApp));
+      }
       frontierStatusSummaryVi.value =
-          '🎥 Đang ở chế độ Làm mẫu 1 lần (Show-Me-Once) — hãy thêm bước hoặc bấm Đóng gói thành Tool!';
+          '🎥 Đang ở chế độ Làm mẫu 1 lần (Show-Me-Once) trên $activeApp — hãy thực hiện hoặc thêm bước thao tác rồi bấm Đóng gói thành Tool!';
       refreshSymbioticState();
       return null;
     } else {
+      final activeApp = activeFocusedAppName.value.trim().isEmpty
+          ? 'Máy tính'
+          : activeFocusedAppName.value.trim();
       final resolvedTitle =
           (customTitle != null && customTitle.trim().isNotEmpty)
           ? customTitle.trim()
-          : 'Tải hóa đơn mẫu và lặp lại cho toàn bộ danh sách';
+          : (teachRecordedSteps.isNotEmpty
+                ? 'Quy trình tự động trên $activeApp (${teachRecordedSteps.first})'
+                : 'Quy trình tự động học từ thao tác mẫu trên $activeApp');
       final res = svc.handleTeachSession(
         mode: 'stop_and_compile',
         skillTitle: resolvedTitle,
@@ -939,7 +629,38 @@ class DesktopAgentController extends BaseGetxController {
     }
   }
 
-  /// Clears all active watchdogs in [symbioticService] and refreshes (`SYM-UI` S-UI.2).
+  Future<void> _captureLiveContextForTeachSession(String fallbackApp) async {
+    final svc = symbioticService;
+    if (svc == null || !svc.isTeachRecordingActive) return;
+    try {
+      final ctx = await channel.readActiveWindowContext();
+      final appName = ctx.appName.trim().isNotEmpty
+          ? ctx.appName.trim()
+          : fallbackApp;
+      final winTitle = ctx.windowTitle.trim().isNotEmpty
+          ? ctx.windowTitle.trim()
+          : appName;
+      final snap = await channel.inspectWindowUiTree(
+        windowTitle: winTitle,
+        maxNodes: 15,
+      );
+      final stepDesc = snap.nodes.isNotEmpty
+          ? 'Quét cửa sổ "$winTitle" ($appName): ghi nhận ${snap.nodes.length} thành phần tương tác'
+          : 'Ghi nhận ngữ cảnh cửa sổ đang mở: "$winTitle" ($appName)';
+      if (svc.isTeachRecordingActive) {
+        svc.handleTeachSession(
+          mode: 'record_action',
+          demonstratedAction: stepDesc,
+          selectorOrPattern: snap.nodes.isNotEmpty
+              ? (snap.nodes.first['refId']?.toString() ?? 'ui_1')
+              : 'window:$appName',
+        );
+        teachRecordedSteps.add(stepDesc);
+        refreshSymbioticState();
+      }
+    } catch (_) {}
+  }
+
   void clearAllWatchdogs() {
     final svc = symbioticService;
     if (svc == null) return;
@@ -947,7 +668,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Captures a quick Workspace Time-Capsule from the Desktop UI (`SYM-LIVE` S-LIVE.2).
   WorkspaceCapsuleEntry? captureQuickWorkspaceCapsule({
     String project = 'xuna_pet',
     String branch = 'dev',
@@ -966,7 +686,6 @@ class DesktopAgentController extends BaseGetxController {
     return entry;
   }
 
-  /// Pushes a quick snippet into XUNA Universal Pocket from the Desktop UI (`SYM-LIVE` S-LIVE.2).
   UniversalPocketItem? pushQuickPocketSnippet(String rawText, {String? label}) {
     final svc = symbioticService;
     if (svc == null) return null;
@@ -983,7 +702,6 @@ class DesktopAgentController extends BaseGetxController {
     return item;
   }
 
-  /// Reads the PC/Mac system Clipboard and pushes it into XUNA Universal Pocket.
   Future<UniversalPocketItem?> pasteSystemClipboardToPocket() async {
     String clipText = '';
     try {
@@ -1001,7 +719,6 @@ class DesktopAgentController extends BaseGetxController {
     return pushQuickPocketSnippet(clipText, label: 'Từ Clipboard PC');
   }
 
-  /// Copies [text] to the system Clipboard and updates the status banner.
   Future<void> copyTextToSystemClipboard(
     String text, {
     String labelVi = 'nội dung',
@@ -1018,7 +735,6 @@ class DesktopAgentController extends BaseGetxController {
     frontierStatusSummaryVi.value = '📋 Đã sao chép $labelVi vào Clipboard PC!';
   }
 
-  /// Removes a saved Workspace Capsule by [capsuleId].
   void removeWorkspaceCapsule(String capsuleId) {
     final svc = symbioticService;
     if (svc == null) return;
@@ -1027,7 +743,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Removes a Pocket item by [itemId].
   void removePocketItem(String itemId) {
     final svc = symbioticService;
     if (svc == null) return;
@@ -1036,7 +751,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Transforms a Pocket item (format JSON, extract tasks, or summarize) and saves the result.
   UniversalPocketItem? transformPocketItemFromUi(UniversalPocketItem item) {
     final svc = symbioticService;
     if (svc == null) return null;
@@ -1062,7 +776,6 @@ class DesktopAgentController extends BaseGetxController {
     return created;
   }
 
-  /// Registers a background port or process watchdog from the Desktop UI.
   Future<void> watchDevPortFromUi(
     int port, {
     String? label,
@@ -1078,7 +791,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Registers a custom process or port watchdog from the Desktop UI.
   Future<void> watchCustomTargetFromUi({
     required String targetKind,
     int? port,
@@ -1097,7 +809,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Scans real-time PC system vitals (Battery, RAM, Disk) and active localhost dev ports.
   Future<void> scanSystemVitalsAndPorts() async {
     final svc = symbioticService;
     if (svc == null) return;
@@ -1111,7 +822,6 @@ class DesktopAgentController extends BaseGetxController {
     refreshSymbioticState();
   }
 
-  /// Clears all capsules, pocket items, and watchdogs on Desktop.
   void clearAllSymbioticDataFromUi() {
     final svc = symbioticService;
     if (svc == null) return;
@@ -1149,7 +859,6 @@ class DesktopAgentController extends BaseGetxController {
     await policyStore.savePolicy(updated);
   }
 
-  /// Scans installed applications on macOS (`/Applications`) or Windows (Start Menu) (`UDC-11`).
   List<DiscoveredApp> scanInstalledApps({
     bool forceRefresh = false,
   }) {
@@ -1162,7 +871,6 @@ class DesktopAgentController extends BaseGetxController {
     }
   }
 
-  /// Adds a custom application entry to `host-policy.json` (`apps`).
   Future<bool> addAllowedAppToPolicy({
     required String name,
     required String target,
@@ -1180,7 +888,11 @@ class DesktopAgentController extends BaseGetxController {
     final validId = isValidShortId(normalizedId)
         ? normalizedId
         : 'app_${DateTime.now().millisecondsSinceEpoch % 100000}';
-    final kind = Platform.isMacOS ? AppLaunchKind.bundle : AppLaunchKind.exe;
+    final kind = Platform.isMacOS
+        ? AppLaunchKind.bundle
+        : (cleanTarget.contains('!')
+              ? AppLaunchKind.aumid
+              : AppLaunchKind.exe);
     try {
       final entry = AllowedAppConfig(
         id: validId,
@@ -1208,7 +920,6 @@ class DesktopAgentController extends BaseGetxController {
     }
   }
 
-  /// Removes a custom application entry from `host-policy.json` by [appId].
   Future<void> removeAllowedAppFromPolicy(String appId) async {
     final current = activePolicy.value;
     if (current == null) return;
@@ -1224,7 +935,6 @@ class DesktopAgentController extends BaseGetxController {
     await policyStore.savePolicy(updated);
   }
 
-  /// Adds an HTTPS domain to `host-policy.json` (`urlDomains`).
   Future<bool> addAllowedDomainToPolicy(String rawDomain) async {
     final current = activePolicy.value;
     if (current == null) return false;
@@ -1252,7 +962,6 @@ class DesktopAgentController extends BaseGetxController {
     }
   }
 
-  /// Removes an HTTPS domain from `host-policy.json` (`urlDomains`).
   Future<void> removeAllowedDomainFromPolicy(String domain) async {
     final current = activePolicy.value;
     if (current == null) return;

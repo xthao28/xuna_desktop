@@ -75,6 +75,7 @@ class CodingAgentLaunchPlan {
     required this.workingDirectory,
     required this.resumed,
     required this.promptSent,
+    this.promptText = '',
   });
 
   final String workspace;
@@ -84,6 +85,7 @@ class CodingAgentLaunchPlan {
   final String workingDirectory;
   final bool resumed;
   final bool promptSent;
+  final String promptText;
 }
 
 typedef GitProcessRunner = Future<ProcessResult> Function(
@@ -139,6 +141,39 @@ class AutoWorkspaceIndexer {
     ).timeout(const Duration(seconds: 3));
   }
 
+  static String _shellSingleQuote(String value) {
+    return "'${value.replaceAll("'", r"'\''")}'";
+  }
+
+  static String _appleScriptEscape(String value) {
+    return value
+        .replaceAll(r'\', r'\\')
+        .replaceAll('"', r'\"')
+        .replaceAll('\n', ' ')
+        .replaceAll('\r', ' ');
+  }
+
+  static Future<void> _copyTextToSystemClipboard(String text) async {
+    if (text.isEmpty) return;
+    try {
+      if (Platform.isMacOS) {
+        final proc = await Process.start('/usr/bin/pbcopy', const <String>[]);
+        proc.stdin.write(text);
+        await proc.stdin.close();
+        await proc.exitCode.timeout(const Duration(seconds: 2));
+      } else if (Platform.isWindows) {
+        final proc = await Process.start(
+          'clip',
+          const <String>[],
+          runInShell: true,
+        );
+        proc.stdin.write(text);
+        await proc.stdin.close();
+        await proc.exitCode.timeout(const Duration(seconds: 2));
+      }
+    } catch (_) {}
+  }
+
   static Future<void> _defaultAgentLauncher(CodingAgentLaunchPlan plan) async {
     final cleanEnv = Map<String, String>.from(Platform.environment)
       ..removeWhere(
@@ -147,15 +182,190 @@ class AutoWorkspaceIndexer {
             key.startsWith('VSCODE_') ||
             key.startsWith('ANTIGRAVITY_'),
       );
+
+    final promptToDeliver = plan.promptText.trim();
+
+    // 1. CLI Coding Agents (`claude_code`, `codex`): must run in an interactive Terminal TTY
+    // so they don't hang or exit silently in background detached mode.
+    if (plan.agent == 'claude_code' || plan.agent == 'codex') {
+      if (Platform.isMacOS) {
+        final quotedDir = _shellSingleQuote(plan.workingDirectory);
+        final quotedExe = _shellSingleQuote(plan.executable);
+        final quotedArgs = plan.arguments.map(_shellSingleQuote).join(' ');
+        final fallbackCmd = plan.agent == 'claude_code' ? 'claude' : 'codex';
+        // Fallback to non-continue invocation if `--continue` fails when no prior session exists
+        final nonContinueArgs = plan.arguments
+            .where((a) => a != '--continue')
+            .map(_shellSingleQuote)
+            .join(' ');
+        final shellLine = plan.arguments.contains('--continue')
+            ? 'cd $quotedDir && ($quotedExe $quotedArgs || $quotedExe $nonContinueArgs || $fallbackCmd $nonContinueArgs)'
+            : 'cd $quotedDir && ($quotedExe $quotedArgs || $fallbackCmd $quotedArgs)';
+        final escapedShellLine = _appleScriptEscape(shellLine);
+        final appleScript = '''
+tell application "Terminal"
+  activate
+  do script "$escapedShellLine"
+end tell
+''';
+        await Process.run('/usr/bin/osascript', <String>['-e', appleScript]);
+        return;
+      } else if (Platform.isWindows) {
+        if (promptToDeliver.isNotEmpty) {
+          await _copyTextToSystemClipboard(promptToDeliver);
+        }
+        final fallbackCmd = plan.agent == 'claude_code' ? 'claude' : 'codex';
+        String quoteCmdArg(String val) =>
+            '"${val.replaceAll('"', r'\"')}"';
+        final quotedExe = quoteCmdArg(plan.executable);
+        final quotedArgs = plan.arguments.map(quoteCmdArg).join(' ');
+        final nonContinueArgs = plan.arguments
+            .where((a) => a != '--continue')
+            .map(quoteCmdArg)
+            .join(' ');
+        final cmdChain = plan.arguments.contains('--continue')
+            ? '$quotedExe $quotedArgs || $quotedExe $nonContinueArgs || $fallbackCmd $nonContinueArgs'
+            : '$quotedExe $quotedArgs || $fallbackCmd $quotedArgs';
+        await Process.start(
+          'cmd.exe',
+          <String>[
+            '/c',
+            'start',
+            'XUNA Coding Agent',
+            '/D',
+            plan.workingDirectory,
+            'cmd.exe',
+            '/k',
+            cmdChain,
+          ],
+          workingDirectory: plan.workingDirectory,
+          environment: cleanEnv,
+          runInShell: false,
+          mode: ProcessStartMode.detached,
+        );
+        return;
+      }
+    }
+
+    // 2. IDE Agents (`antigravity`, `cursor`, `vscode`, or any discovered IDE):
+    // Step A: Open the exact workspace folder in the target IDE.
+    final ideDisplayNames = <String, String>{
+      'antigravity': 'Antigravity',
+      'cursor': 'Cursor',
+      'vscode': 'Visual Studio Code',
+    };
+    final ideLabel = ideDisplayNames[plan.agent] ?? plan.agent;
+    if (Platform.isMacOS) {
+      var opened = false;
+      if (plan.executable.endsWith('.app')) {
+        final res = await Process.run(
+          '/usr/bin/open',
+          <String>['-a', plan.executable, plan.workingDirectory],
+          environment: cleanEnv,
+        );
+        opened = res.exitCode == 0;
+      } else {
+        try {
+          final res = await Process.run(
+            plan.executable,
+            plan.arguments,
+            workingDirectory: plan.workingDirectory,
+            environment: cleanEnv,
+          ).timeout(const Duration(seconds: 4));
+          opened = res.exitCode == 0;
+        } catch (_) {
+          opened = false;
+        }
+      }
+      if (!opened) {
+        await Process.run(
+          '/usr/bin/open',
+          <String>['-a', ideLabel, plan.workingDirectory],
+          environment: cleanEnv,
+        );
+      }
+
+      if (plan.promptSent && promptToDeliver.isNotEmpty) {
+        await _copyTextToSystemClipboard(promptToDeliver);
+        final focusAndSubmitScript = '''
+delay 1.2
+tell application "${_appleScriptEscape(ideLabel)}" to activate
+delay 0.4
+tell application "System Events"
+  keystroke "l" using {command down}
+  delay 0.35
+  keystroke "v" using {command down}
+  delay 0.25
+  key code 36
+end tell
+''';
+        try {
+          await Process.start(
+            '/usr/bin/osascript',
+            <String>['-e', focusAndSubmitScript],
+            mode: ProcessStartMode.detached,
+          );
+        } catch (_) {}
+      }
+      return;
+    }
+
+    // Windows / Linux IDE launch
+    final lowerExe = plan.executable.toLowerCase();
+    final needsShell =
+        Platform.isWindows &&
+        (lowerExe.endsWith('.cmd') ||
+            lowerExe.endsWith('.bat') ||
+            lowerExe.endsWith('.lnk'));
     await Process.start(
       plan.executable,
       plan.arguments,
       workingDirectory: plan.workingDirectory,
       environment: cleanEnv,
       includeParentEnvironment: false,
-      runInShell: false,
+      runInShell: needsShell,
       mode: ProcessStartMode.detached,
     );
+
+    if (Platform.isWindows && plan.promptSent && promptToDeliver.isNotEmpty) {
+      await _copyTextToSystemClipboard(promptToDeliver);
+      final wsFolder = plan.workingDirectory
+          .split(RegExp(r'[/\\]'))
+          .where((s) => s.isNotEmpty)
+          .lastOrNull ??
+          plan.workspace;
+      final safeWsFolder = wsFolder.replaceAll("'", "''");
+      final safeIdeLabel = ideLabel.replaceAll("'", "''");
+      final psScript =
+          "\$ws = New-Object -ComObject WScript.Shell; "
+          "\$activated = \$false; "
+          "for (\$i = 0; \$i -lt 10; \$i++) { "
+          "  Start-Sleep -Milliseconds 400; "
+          "  if (\$ws.AppActivate('$safeWsFolder') -or \$ws.AppActivate('$safeIdeLabel')) { "
+          "    \$activated = \$true; break; "
+          "  } "
+          "} "
+          "Start-Sleep -Milliseconds 350; "
+          "\$ws.SendKeys('^l'); "
+          "Start-Sleep -Milliseconds 350; "
+          "\$ws.SendKeys('^v'); "
+          "Start-Sleep -Milliseconds 250; "
+          "\$ws.SendKeys('{ENTER}');";
+      try {
+        await Process.start(
+          'powershell.exe',
+          <String>[
+            '-NoProfile',
+            '-NonInteractive',
+            '-WindowStyle',
+            'Hidden',
+            '-Command',
+            psScript,
+          ],
+          mode: ProcessStartMode.detached,
+        );
+      } catch (_) {}
+    }
   }
 
   static String sanitizeAlias(String rawName) {
@@ -233,7 +443,21 @@ class AutoWorkspaceIndexer {
       return null;
     }
     final clean = query.trim().toLowerCase();
-    final workspaces = discoverWorkspaces();
+    final match = _matchWorkspaceInList(clean, discoverWorkspaces());
+    if (match != null) return match;
+    if (_scanDefaultLocations || _customScanRoots.isNotEmpty) {
+      return _matchWorkspaceInList(
+        clean,
+        discoverWorkspaces(forceRefresh: true),
+      );
+    }
+    return null;
+  }
+
+  DiscoveredWorkspace? _matchWorkspaceInList(
+    String clean,
+    List<DiscoveredWorkspace> workspaces,
+  ) {
     if (workspaces.isEmpty) return null;
     if (clean == 'recent' || clean == 'latest') {
       return workspaces.first;
@@ -246,13 +470,31 @@ class AutoWorkspaceIndexer {
     for (final ws in workspaces) {
       final aliasLower = ws.alias.toLowerCase();
       final normAlias = aliasLower.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+      final pathSegments = ws.path
+          .split(RegExp(r'[\\/]'))
+          .where((s) => s.isNotEmpty)
+          .map((s) => s.toLowerCase())
+          .toList();
+      final combinedTail = pathSegments.length >= 2
+          ? '${pathSegments[pathSegments.length - 2]}_${pathSegments.last}'
+          : aliasLower;
+      final normCombinedTail = combinedTail.replaceAll(
+        RegExp(r'[^a-z0-9]+'),
+        '',
+      );
       var score = -1;
-      if (aliasLower == clean || normAlias == normQuery) {
+      if (aliasLower == clean ||
+          normAlias == normQuery ||
+          combinedTail == clean ||
+          normCombinedTail == normQuery) {
         score = 100;
       } else if (aliasLower.startsWith(clean) ||
-          normAlias.startsWith(normQuery)) {
+          normAlias.startsWith(normQuery) ||
+          normCombinedTail.endsWith(normQuery)) {
         score = 80;
-      } else if (aliasLower.contains(clean) || normAlias.contains(normQuery)) {
+      } else if (aliasLower.contains(clean) ||
+          normAlias.contains(normQuery) ||
+          normCombinedTail.contains(normQuery)) {
         score = 60;
       } else {
         final queryTokens = clean
@@ -260,7 +502,9 @@ class AutoWorkspaceIndexer {
             .where((t) => t.isNotEmpty)
             .toList();
         if (queryTokens.isNotEmpty &&
-            queryTokens.every((t) => aliasLower.contains(t))) {
+            queryTokens.every(
+              (t) => aliasLower.contains(t) || combinedTail.contains(t),
+            )) {
           score = 50;
         }
       }
@@ -423,6 +667,7 @@ class AutoWorkspaceIndexer {
       workingDirectory: workspace.path,
       resumed: resumeLast,
       promptSent: hasPrompt,
+      promptText: cleanPrompt,
     );
     await _agentLauncher(plan);
     return plan;
@@ -519,6 +764,34 @@ class AutoWorkspaceIndexer {
           File('${dir.path}${sep}CLAUDE.md').existsSync();
       if (depth > 0 && (hasGit || hasAgentDoc)) {
         registerPath(dir.path, source: 'git_scan');
+        // Also scan 1 level inside monorepos/superprojects for subprojects or submodules
+        if (depth < maxDepth) {
+          for (final sub in dir.listSync(followLinks: false)) {
+            if (sub is Directory) {
+              final subName = sub.uri.pathSegments
+                  .where((s) => s.isNotEmpty)
+                  .lastOrNull;
+              if (subName == null ||
+                  subName.startsWith('.') ||
+                  subName == 'node_modules' ||
+                  subName == 'build' ||
+                  subName == 'docs') {
+                continue;
+              }
+              final isSubProject =
+                  Directory('${sub.path}$sep.git').existsSync() ||
+                  File('${sub.path}$sep.git').existsSync() ||
+                  File('${sub.path}${sep}pubspec.yaml').existsSync() ||
+                  File('${sub.path}${sep}pyproject.toml').existsSync() ||
+                  File('${sub.path}${sep}package.json').existsSync() ||
+                  File('${sub.path}${sep}platformio.ini').existsSync() ||
+                  File('${sub.path}${sep}Cargo.toml').existsSync();
+              if (isSubProject) {
+                registerPath(sub.path, source: 'git_subproject');
+              }
+            }
+          }
+        }
         return;
       }
       if (depth == maxDepth) return;
@@ -588,8 +861,15 @@ class AutoWorkspaceIndexer {
       '$home${sep}Projects',
       '$home${sep}Developer',
       '$home${sep}Repos',
+      '$home${sep}source${sep}repos',
       '$home${sep}Desktop',
       '$home${sep}work',
+      if (Platform.isWindows) ...<String>[
+        r'C:\Projects',
+        r'C:\dev',
+        r'D:\Projects',
+        r'D:\work',
+      ],
     ];
   }
 }

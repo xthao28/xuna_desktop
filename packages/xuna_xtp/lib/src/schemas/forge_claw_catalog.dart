@@ -1433,7 +1433,7 @@ List<ToolDescriptor> buildClawPulseTools({
     ToolDescriptor(
       name: 'ui.accessibility_tree',
       description:
-          'Zero-Screenshot Native OS UI Automation (Windows IUIAutomation / Win32 EnumChildWindows & macOS AXUIElement): inspect desktop app controls into [ref=ui_1]..[ref=ui_N] and invoke or set values without screenshots or mouse hijacking.',
+          'Universal Native OS UI Automation (Observe -> Act -> Verify): inspect any app window & menu bar into [ref=ui_1]..[ref=ui_N] (inspect_window), click controls or send shortcuts (invoke_ref), or type/submit text (set_value_ref).',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -1443,6 +1443,21 @@ List<ToolDescriptor> buildClawPulseTools({
               'inspect_window',
               'invoke_ref',
               'set_value_ref',
+              'double_click',
+              'triple_click',
+              'right_click',
+              'middle_click',
+              'drag',
+              'scroll_up',
+              'scroll_down',
+              'scroll_left',
+              'scroll_right',
+              'invoke_menu',
+              'browser_click',
+              'browser_type',
+              'shortcut',
+              'bring_to_front',
+              'close_window',
             ],
           },
           'windowTitle': <String, Object?>{

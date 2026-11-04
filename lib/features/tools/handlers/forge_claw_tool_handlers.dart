@@ -109,8 +109,68 @@ class ForgeRunSkillTool extends HostToolHandler {
         final entry = idx >= 0
             ? list[idx]
             : (list.isNotEmpty ? list.first : null);
+        final home =
+            Platform.environment['HOME'] ??
+            Platform.environment['USERPROFILE'] ??
+            Directory.systemTemp.path;
+        final scanDirCandidates = <String>[
+          realDir,
+          '$home/Downloads',
+          '$home/Documents',
+        ];
+        final discoveredFiles = <FileSystemEntity>[];
+        for (final cand in scanDirCandidates) {
+          final d = Directory(cand);
+          if (d.existsSync()) {
+            try {
+              final items = d
+                  .listSync(followLinks: false)
+                  .whereType<File>()
+                  .take(50)
+                  .toList();
+              if (items.isNotEmpty) {
+                discoveredFiles.addAll(items);
+                break;
+              }
+            } catch (_) {}
+          }
+        }
         final rows = <Map<String, Object?>>[
-          if (entry != null)
+          if (discoveredFiles.isNotEmpty)
+            for (var i = 0; i < discoveredFiles.length; i++)
+              () {
+                final f = discoveredFiles[i] as File;
+                final name = f.uri.pathSegments.last;
+                var preview = '';
+                try {
+                  final raw = context.symbioticService.pipeline
+                      .extractTextFromFileSync(f);
+                  if (raw.isNotEmpty) {
+                    final parsed = context.symbioticService.pipeline
+                        .parseUniversalContent(raw, sourceName: name);
+                    if (parsed.isNotEmpty) {
+                      preview = parsed.first.entries
+                          .take(4)
+                          .map((e) => '${e.key}: ${e.value}')
+                          .join(' | ');
+                    } else {
+                      preview = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+                      if (preview.length > 140) {
+                        preview = '${preview.substring(0, 140)}...';
+                      }
+                    }
+                  }
+                } catch (_) {}
+                return <String, Object?>{
+                  'STT': i + 1,
+                  'TenTep': name,
+                  'DuongDan': f.path,
+                  'KichThuocBytes': f.lengthSync(),
+                  if (preview.isNotEmpty) 'NoiDungTrichXuat': preview,
+                  'NgayCapNhat': f.lastModifiedSync().toIso8601String(),
+                };
+              }()
+          else if (entry != null)
             for (var i = 0; i < entry.scriptSteps.length; i++)
               <String, Object?>{
                 'Buoc': i + 1,
@@ -133,6 +193,10 @@ class ForgeRunSkillTool extends HostToolHandler {
             );
         if (Platform.isMacOS && File(csvPath).existsSync()) {
           await Process.run('/usr/bin/open', <String>['-R', csvPath]);
+        } else if (Platform.isWindows && File(csvPath).existsSync()) {
+          await Process.run('explorer.exe', <String>[
+            '/select,${csvPath.replaceAll('/', '\\')}',
+          ]);
         }
       } catch (_) {}
     }
@@ -895,13 +959,62 @@ class UiAccessibilityTreeTool implements HostToolHandler {
     final valueText = context.arguments['valueText'] as String?;
     final maxNodes = (context.arguments['maxNodes'] as int?) ?? 30;
 
-    final res = context.symbioticService.executeUiAccessibilityTree(
-      action: action,
-      windowTitle: windowTitle,
-      refId: refId,
-      valueText: valueText,
-      maxNodes: maxNodes,
-    );
+    var hasNativeSnapshot = false;
+    var effectiveWindowTitle = windowTitle;
+    String? nativeDetail;
+
+    try {
+      List<Map<String, Object?>> postActionNodes = const <Map<String, Object?>>[];
+      if (action != 'inspect_window') {
+        final actRes = await context.channel.invokeWindowUiControl(
+          action: action,
+          refId: refId ?? (action == 'set_value_ref' ? 'ui_1' : 'ui_3'),
+          windowTitle: windowTitle,
+          valueText: valueText,
+          submit: true,
+        );
+        nativeDetail = actRes.detail;
+        postActionNodes = actRes.nodes;
+        if (actRes.windowTitle.trim().isNotEmpty &&
+            (effectiveWindowTitle == null ||
+                effectiveWindowTitle.trim().isEmpty)) {
+          effectiveWindowTitle = actRes.windowTitle;
+        }
+      }
+      if (postActionNodes.isNotEmpty) {
+        context.symbioticService.uiAccessibility.applyNativeWindowUiTree(
+          windowTitle: effectiveWindowTitle ?? 'Active Window',
+          nodes: postActionNodes,
+        );
+        hasNativeSnapshot = true;
+      } else {
+        final nativeSnap = await context.channel.inspectWindowUiTree(
+          windowTitle: effectiveWindowTitle,
+          maxNodes: maxNodes,
+        );
+        if (nativeSnap.nodes.isNotEmpty) {
+          context.symbioticService.uiAccessibility.applyNativeWindowUiTree(
+            windowTitle: nativeSnap.windowTitle,
+            nodes: nativeSnap.nodes,
+          );
+          effectiveWindowTitle = nativeSnap.windowTitle;
+          hasNativeSnapshot = true;
+        }
+      }
+    } catch (_) {
+      // Fall back to symbiotic in-memory UI tree if native channel is unavailable
+    }
+
+    final res = context.symbioticService.uiAccessibility
+        .executeUiAccessibilityTree(
+          action: action,
+          windowTitle: effectiveWindowTitle,
+          refId: refId,
+          valueText: valueText,
+          maxNodes: maxNodes,
+          preserveNativeNodes: hasNativeSnapshot,
+          nativeActionDetail: nativeDetail,
+        );
 
     if (action == 'invoke_ref' || action == 'set_value_ref') {
       context.actionLedger.pushEntry(

@@ -210,6 +210,72 @@ class FakeXunaHostChannel implements XunaHostChannel {
   }
 
   @override
+  Future<WindowUiTreeSnapshot> inspectWindowUiTree({
+    String? windowTitle,
+    int maxNodes = 35,
+  }) async {
+    invokedMethods.add('inspectWindowUiTree:${windowTitle ?? 'active'}:$maxNodes');
+    await _delayAndThrowIfConfigured();
+    return WindowUiTreeSnapshot(
+      windowTitle: windowTitle ?? activeWindowContextResult.windowTitle,
+      appName: activeWindowContextResult.appName,
+      nodes: const <Map<String, Object?>>[
+        <String, Object?>{
+          'refId': 'ui_1',
+          'role': 'AXSearchField',
+          'label': 'Tìm kiếm / Nhập lệnh',
+          'pattern': 'AXValue / Keyboard',
+          'isPassword': false,
+          'status': 'ready',
+        },
+        <String, Object?>{
+          'refId': 'ui_2',
+          'role': 'AXButton',
+          'label': 'Phát / Thực thi (Play)',
+          'pattern': 'AXPress',
+          'isPassword': false,
+          'status': 'ready',
+        },
+        <String, Object?>{
+          'refId': 'ui_3',
+          'role': 'AXButton',
+          'label': 'Lưu & Xuất Bảng Kê',
+          'pattern': 'InvokePattern / AXPress',
+          'isPassword': false,
+          'status': 'ready',
+        },
+        <String, Object?>{
+          'refId': 'ui_4',
+          'role': 'AXSecureTextField',
+          'label': '[REDACTED_PASSWORD_CONTROL]',
+          'pattern': 'ValuePattern / AXValue',
+          'isPassword': true,
+          'status': 'redacted',
+        },
+      ],
+      redactedControlsCount: 1,
+    );
+  }
+
+  @override
+  Future<WindowUiControlActionResult> invokeWindowUiControl({
+    required String action,
+    required String refId,
+    String? windowTitle,
+    String? valueText,
+    bool submit = true,
+  }) async {
+    invokedMethods.add('invokeWindowUiControl:$action:$refId');
+    await _delayAndThrowIfConfigured();
+    return WindowUiControlActionResult(
+      ok: true,
+      invokedRefId: refId,
+      detail: action == 'set_value_ref' ? 'AX_VALUE_SET' : 'AX_PRESSED',
+      windowTitle: windowTitle ?? activeWindowContextResult.windowTitle,
+    );
+  }
+
+  @override
   Future<HostPermissionSnapshot> permissions() async {
     invokedMethods.add('permissions');
     _throwIfConfigured();

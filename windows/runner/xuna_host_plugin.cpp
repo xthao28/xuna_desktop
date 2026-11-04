@@ -1,691 +1,13 @@
 #include "xuna_host_plugin.h"
 
-#include <windows.h>
-#include <bcrypt.h>
-#include <endpointvolume.h>
-#include <mmdeviceapi.h>
-#include <ncrypt.h>
-#include <shellapi.h>
-#include <shobjidl.h>
-#include <uiautomation.h>
-#include <wincrypt.h>
-
-#if __has_include(<winrt/Windows.Foundation.h>) && \
-    __has_include(<winrt/Windows.Foundation.Collections.h>) && \
-    __has_include(<winrt/Windows.Media.Control.h>)
-#define XUNA_HAS_CPPWINRT_GSMTC 1
-#include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Media.Control.h>
-#else
-#define XUNA_HAS_CPPWINRT_GSMTC 0
-#endif
-
-#if __has_include(<winrt/Windows.Data.Xml.Dom.h>) && \
-    __has_include(<winrt/Windows.UI.Notifications.h>)
-#define XUNA_HAS_CPPWINRT_TOAST 1
-#include <winrt/Windows.Data.Xml.Dom.h>
-#include <winrt/Windows.UI.Notifications.h>
-#else
-#define XUNA_HAS_CPPWINRT_TOAST 0
-#endif
-
-#include <flutter/method_channel.h>
-#include <flutter/method_result_functions.h>
-#include <flutter/standard_method_codec.h>
-
-#include <algorithm>
-#include <cctype>
-#include <cstdint>
-#include <cstring>
-#include <deque>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <thread>
-#include <vector>
+#include "xuna_win_apps_browser.h"
+#include "xuna_win_common.h"
+#include "xuna_win_crypto_media.h"
+#include "xuna_win_uia_engine.h"
 
 namespace {
 
-constexpr wchar_t kXunaKeyName[] = L"XunaHostIdentityP256_v1";
-
-using NTSTATUS_T = LONG;
-using RtlGetVersionFn = NTSTATUS_T(WINAPI*)(PRTL_OSVERSIONINFOW);
-
-std::wstring Utf8ToWide(const std::string& str) {
-  if (str.empty()) return std::wstring();
-  int size_needed = MultiByteToWideChar(
-      CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
-  if (size_needed <= 0) return std::wstring();
-  std::wstring out(static_cast<size_t>(size_needed), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()),
-                      out.data(), size_needed);
-  return out;
-}
-
-std::string WideToUtf8(const std::wstring& wstr) {
-  if (wstr.empty()) return std::string();
-  int size_needed =
-      WideCharToMultiByte(CP_UTF8, 0, wstr.data(),
-                          static_cast<int>(wstr.size()), nullptr, 0,
-                          nullptr, nullptr);
-  if (size_needed <= 0) return std::string();
-  std::string out(static_cast<size_t>(size_needed), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()),
-                      out.data(), size_needed, nullptr, nullptr);
-  return out;
-}
-
-std::string Base64Encode(const std::vector<uint8_t>& bytes) {
-  if (bytes.empty()) return std::string();
-  DWORD out_len = 0;
-  if (!CryptBinaryToStringA(bytes.data(), static_cast<DWORD>(bytes.size()),
-                            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr,
-                            &out_len) ||
-      out_len == 0) {
-    return std::string();
-  }
-  std::string out(static_cast<size_t>(out_len), '\0');
-  if (!CryptBinaryToStringA(bytes.data(), static_cast<DWORD>(bytes.size()),
-                            CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
-                            out.data(), &out_len)) {
-    return std::string();
-  }
-  while (!out.empty() && (out.back() == '\0' || out.back() == '\r' ||
-                          out.back() == '\n')) {
-    out.pop_back();
-  }
-  return out;
-}
-
-bool Base64Decode(const std::string& input, std::vector<uint8_t>* out) {
-  if (input.empty()) {
-    out->clear();
-    return true;
-  }
-  DWORD bin_len = 0;
-  if (!CryptStringToBinaryA(input.data(), static_cast<DWORD>(input.size()),
-                            CRYPT_STRING_BASE64_ANY, nullptr, &bin_len, nullptr,
-                            nullptr)) {
-    return false;
-  }
-  out->resize(static_cast<size_t>(bin_len));
-  if (!CryptStringToBinaryA(input.data(), static_cast<DWORD>(input.size()),
-                            CRYPT_STRING_BASE64_ANY, out->data(), &bin_len,
-                            nullptr, nullptr)) {
-    return false;
-  }
-  out->resize(static_cast<size_t>(bin_len));
-  return true;
-}
-
-std::string ToLowerAscii(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return s;
-}
-
-std::string TruncateUtf8(const std::string& s, size_t max_chars) {
-  if (s.size() <= max_chars) return s;
-  return s.substr(0, max_chars);
-}
-
-// Opens or creates a non-exportable P-256 key in CNG (preferring TPM
-// MS_PLATFORM_CRYPTO_PROVIDER, falling back to MS_KEY_STORAGE_PROVIDER).
-bool OpenOrCreateCngP256Key(NCRYPT_PROV_HANDLE* out_prov,
-                            NCRYPT_KEY_HANDLE* out_key) {
-  *out_prov = 0;
-  *out_key = 0;
-
-  const wchar_t* providers[] = {MS_PLATFORM_CRYPTO_PROVIDER,
-                                MS_KEY_STORAGE_PROVIDER};
-
-  for (const wchar_t* prov_name : providers) {
-    NCRYPT_PROV_HANDLE prov = 0;
-    if (NCryptOpenStorageProvider(&prov, prov_name, 0) != ERROR_SUCCESS) {
-      continue;
-    }
-
-    NCRYPT_KEY_HANDLE key = 0;
-    SECURITY_STATUS status =
-        NCryptOpenKey(prov, &key, kXunaKeyName, 0, NCRYPT_SILENT_FLAG);
-    if (status == ERROR_SUCCESS) {
-      *out_prov = prov;
-      *out_key = key;
-      return true;
-    }
-
-    status = NCryptCreatePersistedKey(prov, &key, NCRYPT_ECDSA_P256_ALGORITHM,
-                                      kXunaKeyName, 0, 0);
-    if (status != ERROR_SUCCESS) {
-      NCryptFreeObject(prov);
-      continue;
-    }
-
-    DWORD export_policy = 0;  // Non-exportable private key.
-    NCryptSetProperty(key, NCRYPT_EXPORT_POLICY_PROPERTY,
-                      reinterpret_cast<PBYTE>(&export_policy),
-                      sizeof(export_policy), NCRYPT_PERSIST_FLAG);
-
-    status = NCryptFinalizeKey(key, NCRYPT_SILENT_FLAG);
-    if (status == ERROR_SUCCESS) {
-      *out_prov = prov;
-      *out_key = key;
-      return true;
-    }
-
-    NCryptFreeObject(key);
-    NCryptFreeObject(prov);
-  }
-  return false;
-}
-
-bool ExportUncompressedPublicKey65(NCRYPT_KEY_HANDLE key,
-                                   std::vector<uint8_t>* out_pub65) {
-  DWORD blob_size = 0;
-  if (NCryptExportKey(key, 0, BCRYPT_ECCPUBLIC_BLOB, nullptr, nullptr, 0,
-                      &blob_size, 0) != ERROR_SUCCESS ||
-      blob_size < sizeof(BCRYPT_ECCKEY_BLOB) + 64) {
-    return false;
-  }
-  std::vector<uint8_t> blob(static_cast<size_t>(blob_size));
-  if (NCryptExportKey(key, 0, BCRYPT_ECCPUBLIC_BLOB, nullptr, blob.data(),
-                      blob_size, &blob_size, 0) != ERROR_SUCCESS) {
-    return false;
-  }
-  const auto* header = reinterpret_cast<const BCRYPT_ECCKEY_BLOB*>(blob.data());
-  if (header->cbKey != 32 ||
-      blob.size() < sizeof(BCRYPT_ECCKEY_BLOB) + 64) {
-    return false;
-  }
-  out_pub65->resize(65);
-  (*out_pub65)[0] = 0x04;
-  std::copy(blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB),
-            blob.begin() + sizeof(BCRYPT_ECCKEY_BLOB) + 64,
-            out_pub65->begin() + 1);
-  return true;
-}
-
-bool ComputeSha256(const std::vector<uint8_t>& message,
-                   std::vector<uint8_t>* out_digest32) {
-  BCRYPT_ALG_HANDLE alg = nullptr;
-  if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) !=
-      0) {
-    return false;
-  }
-  out_digest32->resize(32);
-  NTSTATUS status = BCryptHash(
-      alg, nullptr, 0, const_cast<PUCHAR>(message.data()),
-      static_cast<ULONG>(message.size()), out_digest32->data(), 32);
-  BCryptCloseAlgorithmProvider(alg, 0);
-  return status == 0;
-}
-
-bool SignMessageCngP256(const std::vector<uint8_t>& message,
-                        std::vector<uint8_t>* out_sig64) {
-  std::vector<uint8_t> digest;
-  if (!ComputeSha256(message, &digest)) {
-    return false;
-  }
-  NCRYPT_PROV_HANDLE prov = 0;
-  NCRYPT_KEY_HANDLE key = 0;
-  if (!OpenOrCreateCngP256Key(&prov, &key)) {
-    return false;
-  }
-
-  DWORD sig_len = 0;
-  SECURITY_STATUS status = NCryptSignHash(
-      key, nullptr, digest.data(), static_cast<DWORD>(digest.size()), nullptr,
-      0, &sig_len, NCRYPT_SILENT_FLAG);
-  if (status != ERROR_SUCCESS || sig_len != 64) {
-    NCryptFreeObject(key);
-    NCryptFreeObject(prov);
-    return false;
-  }
-
-  out_sig64->resize(64);
-  status = NCryptSignHash(key, nullptr, digest.data(),
-                          static_cast<DWORD>(digest.size()), out_sig64->data(),
-                          64, &sig_len, NCRYPT_SILENT_FLAG);
-  NCryptFreeObject(key);
-  NCryptFreeObject(prov);
-  return status == ERROR_SUCCESS && sig_len == 64;
-}
-
-void SendMediaVirtualKey(WORD vk) {
-  INPUT inputs[2] = {};
-  inputs[0].type = INPUT_KEYBOARD;
-  inputs[0].ki.wVk = vk;
-  inputs[1].type = INPUT_KEYBOARD;
-  inputs[1].ki.wVk = vk;
-  inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-  SendInput(2, inputs, sizeof(INPUT));
-}
-
-bool HandleMediaCommand(const std::string& cmd, std::string* out_state) {
-  *out_state = "unknown";
-#if XUNA_HAS_CPPWINRT_GSMTC
-  try {
-    using winrt::Windows::Media::Control::
-        GlobalSystemMediaTransportControlsSessionManager;
-    using winrt::Windows::Media::Control::
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus;
-
-    auto manager =
-        GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
-    auto session = manager ? manager.GetCurrentSession() : nullptr;
-    if (session != nullptr) {
-      bool ok = false;
-      if (cmd == "play_pause") {
-        auto info = session.GetPlaybackInfo();
-        auto status = info.PlaybackStatus();
-        ok = session.TryTogglePlayPauseAsync().get();
-        if (ok) {
-          *out_state =
-              (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::
-                             Playing)
-                  ? "paused"
-                  : "playing";
-        }
-      } else if (cmd == "next") {
-        ok = session.TrySkipNextAsync().get();
-        *out_state = "playing";
-      } else if (cmd == "previous") {
-        ok = session.TrySkipPreviousAsync().get();
-        *out_state = "playing";
-      }
-      if (ok) {
-        return true;
-      }
-    }
-  } catch (...) {
-    // Fall back to virtual media keys below.
-  }
-#endif
-
-  if (cmd == "play_pause") {
-    SendMediaVirtualKey(VK_MEDIA_PLAY_PAUSE);
-    *out_state = "unknown";
-    return true;
-  }
-  if (cmd == "next") {
-    SendMediaVirtualKey(VK_MEDIA_NEXT_TRACK);
-    *out_state = "unknown";
-    return true;
-  }
-  if (cmd == "previous") {
-    SendMediaVirtualKey(VK_MEDIA_PREV_TRACK);
-    *out_state = "unknown";
-    return true;
-  }
-  return false;
-}
-
-bool HandleNowPlaying(const std::vector<std::string>& allowed_players,
-                      flutter::EncodableMap* out_map) {
-  (*out_map)[flutter::EncodableValue("state")] =
-      flutter::EncodableValue("unknown");
-  if (allowed_players.empty()) {
-    return true;
-  }
-#if XUNA_HAS_CPPWINRT_GSMTC
-  try {
-    using winrt::Windows::Media::Control::
-        GlobalSystemMediaTransportControlsSessionManager;
-    using winrt::Windows::Media::Control::
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus;
-
-    auto manager =
-        GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
-    auto session = manager ? manager.GetCurrentSession() : nullptr;
-    if (session == nullptr) {
-      (*out_map)[flutter::EncodableValue("state")] =
-          flutter::EncodableValue("stopped");
-      return true;
-    }
-
-    std::string source_id =
-        WideToUtf8(std::wstring(session.SourceAppUserModelId().c_str()));
-    std::string lower_source = ToLowerAscii(source_id);
-    std::string matched_player;
-    for (const auto& allowed : allowed_players) {
-      std::string needle = ToLowerAscii(allowed);
-      if (!needle.empty() && lower_source.find(needle) != std::string::npos) {
-        matched_player = allowed;
-        break;
-      }
-    }
-    if (matched_player.empty()) {
-      (*out_map)[flutter::EncodableValue("state")] =
-          flutter::EncodableValue("unknown");
-      return true;
-    }
-
-    auto info = session.GetPlaybackInfo();
-    std::string state_str = "unknown";
-    switch (info.PlaybackStatus()) {
-      case GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing:
-        state_str = "playing";
-        break;
-      case GlobalSystemMediaTransportControlsSessionPlaybackStatus::Paused:
-        state_str = "paused";
-        break;
-      case GlobalSystemMediaTransportControlsSessionPlaybackStatus::Stopped:
-      case GlobalSystemMediaTransportControlsSessionPlaybackStatus::Closed:
-        state_str = "stopped";
-        break;
-      default:
-        state_str = "unknown";
-        break;
-    }
-    (*out_map)[flutter::EncodableValue("state")] =
-        flutter::EncodableValue(state_str);
-    (*out_map)[flutter::EncodableValue("app")] =
-        flutter::EncodableValue(TruncateUtf8(matched_player, 120));
-
-    auto props = session.TryGetMediaPropertiesAsync().get();
-    if (props != nullptr) {
-      std::string title =
-          TruncateUtf8(WideToUtf8(std::wstring(props.Title().c_str())), 120);
-      std::string artist =
-          TruncateUtf8(WideToUtf8(std::wstring(props.Artist().c_str())), 120);
-      if (!title.empty()) {
-        (*out_map)[flutter::EncodableValue("title")] =
-            flutter::EncodableValue(title);
-      }
-      if (!artist.empty()) {
-        (*out_map)[flutter::EncodableValue("artist")] =
-            flutter::EncodableValue(artist);
-      }
-    }
-    return true;
-  } catch (...) {
-    return true;
-  }
-#else
-  return true;
-#endif
-}
-
-bool SetMasterVolumeScalar(int level) {
-  int clamped = std::max(0, std::min(100, level));
-  float scalar = static_cast<float>(clamped) / 100.0f;
-
-  IMMDeviceEnumerator* enumerator = nullptr;
-  HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
-                                CLSCTX_INPROC_SERVER,
-                                __uuidof(IMMDeviceEnumerator),
-                                reinterpret_cast<void**>(&enumerator));
-  if (FAILED(hr) || enumerator == nullptr) {
-    return false;
-  }
-
-  IMMDevice* device = nullptr;
-  hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-  if (FAILED(hr) || device == nullptr) {
-    enumerator->Release();
-    return false;
-  }
-
-  IAudioEndpointVolume* endpoint_volume = nullptr;
-  hr = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_INPROC_SERVER,
-                        nullptr, reinterpret_cast<void**>(&endpoint_volume));
-  if (FAILED(hr) || endpoint_volume == nullptr) {
-    device->Release();
-    enumerator->Release();
-    return false;
-  }
-
-  hr = endpoint_volume->SetMasterVolumeLevelScalar(scalar, nullptr);
-  endpoint_volume->Release();
-  device->Release();
-  enumerator->Release();
-  return SUCCEEDED(hr);
-}
-
-bool LaunchAppOrWorkflow(const std::string& kind, const std::string& target) {
-  std::wstring wtarget = Utf8ToWide(target);
-  if (wtarget.empty()) return false;
-
-  if (kind == "aumid") {
-    IApplicationActivationManager* mgr = nullptr;
-    HRESULT hr = CoCreateInstance(
-        CLSID_ApplicationActivationManager, nullptr, CLSCTX_LOCAL_SERVER,
-        IID_PPV_ARGS(&mgr));
-    if (SUCCEEDED(hr) && mgr != nullptr) {
-      DWORD pid = 0;
-      hr = mgr->ActivateApplication(wtarget.c_str(), nullptr, AO_NONE, &pid);
-      mgr->Release();
-      if (SUCCEEDED(hr)) return true;
-    }
-    std::wstring explorer_arg = L"shell:AppsFolder\\" + wtarget;
-    SHELLEXECUTEINFOW sei = {sizeof(sei)};
-    sei.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
-    sei.lpVerb = L"open";
-    sei.lpFile = explorer_arg.c_str();
-    sei.nShow = SW_SHOWNORMAL;
-    return ShellExecuteExW(&sei) == TRUE;
-  }
-
-  // "exe" or "lnk": launch with no command-line arguments (UDC-3 §5.3).
-  SHELLEXECUTEINFOW sei = {sizeof(sei)};
-  sei.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
-  sei.lpVerb = L"open";
-  sei.lpFile = wtarget.c_str();
-  sei.lpParameters = nullptr;
-  sei.nShow = SW_SHOWNORMAL;
-  return ShellExecuteExW(&sei) == TRUE;
-}
-
-bool OpenHttpsUrl(const std::string& url) {
-  if (url.rfind("https://", 0) != 0 && url.rfind("HTTPS://", 0) != 0) {
-    return false;
-  }
-  std::wstring wurl = Utf8ToWide(url);
-  if (wurl.empty()) return false;
-  SHELLEXECUTEINFOW sei = {sizeof(sei)};
-  sei.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
-  sei.lpVerb = L"open";
-  sei.lpFile = wurl.c_str();
-  sei.nShow = SW_SHOWNORMAL;
-  return ShellExecuteExW(&sei) == TRUE;
-}
-
-bool QueryBrowserCurrentUrlUia(const std::string& requested_browser,
-                               std::string* out_url,
-                               std::string* out_browser) {
-  IUIAutomation* uia = nullptr;
-  HRESULT hr = CoCreateInstance(__uuidof(CUIAutomation), nullptr,
-                                CLSCTX_INPROC_SERVER,
-                                __uuidof(IUIAutomation),
-                                reinterpret_cast<void**>(&uia));
-  if (FAILED(hr) || uia == nullptr) {
-    return false;
-  }
-
-  HWND hwnd = GetForegroundWindow();
-  wchar_t class_name[128] = {};
-  if (hwnd != nullptr) {
-    GetClassNameW(hwnd, class_name, 128);
-  }
-  if (wcscmp(class_name, L"Chrome_WidgetWin_1") != 0) {
-    hwnd = FindWindowW(L"Chrome_WidgetWin_1", nullptr);
-  }
-  if (hwnd == nullptr) {
-    uia->Release();
-    return false;
-  }
-
-  wchar_t title_buf[512] = {};
-  GetWindowTextW(hwnd, title_buf, 512);
-  std::string win_title = ToLowerAscii(WideToUtf8(std::wstring(title_buf)));
-  std::string detected_browser =
-      win_title.find("edge") != std::string::npos ? "edge" : "chrome";
-  if (requested_browser != "auto" && !requested_browser.empty() &&
-      requested_browser != detected_browser) {
-    detected_browser = requested_browser;
-  }
-
-  IUIAutomationElement* root = nullptr;
-  hr = uia->ElementFromHandle(hwnd, &root);
-  if (FAILED(hr) || root == nullptr) {
-    uia->Release();
-    return false;
-  }
-
-  VARIANT var_prop;
-  VariantInit(&var_prop);
-  var_prop.vt = VT_I4;
-  var_prop.lVal = UIA_EditControlTypeId;
-  IUIAutomationCondition* edit_cond = nullptr;
-  hr = uia->CreatePropertyCondition(UIA_ControlTypePropertyId, var_prop,
-                                    &edit_cond);
-  if (FAILED(hr) || edit_cond == nullptr) {
-    root->Release();
-    uia->Release();
-    return false;
-  }
-
-  IUIAutomationElementArray* edits = nullptr;
-  hr = root->FindAll(TreeScope_Descendants, edit_cond, &edits);
-  edit_cond->Release();
-  root->Release();
-  if (FAILED(hr) || edits == nullptr) {
-    uia->Release();
-    return false;
-  }
-
-  int length = 0;
-  edits->get_Length(&length);
-  bool found = false;
-  for (int i = 0; i < length; ++i) {
-    IUIAutomationElement* elem = nullptr;
-    if (FAILED(edits->GetElement(i, &elem)) || elem == nullptr) continue;
-    IUIAutomationValuePattern* val_pat = nullptr;
-    if (SUCCEEDED(elem->GetCurrentPatternAs(
-            UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern),
-            reinterpret_cast<void**>(&val_pat))) &&
-        val_pat != nullptr) {
-      BSTR bval = nullptr;
-      if (SUCCEEDED(val_pat->get_CurrentValue(&bval)) && bval != nullptr) {
-        std::string candidate = WideToUtf8(std::wstring(bval, SysStringLen(bval)));
-        SysFreeString(bval);
-        if (candidate.rfind("https://", 0) == 0 ||
-            candidate.rfind("HTTPS://", 0) == 0) {
-          *out_url = candidate;
-          *out_browser = detected_browser;
-          found = true;
-        }
-      }
-      val_pat->Release();
-    }
-    elem->Release();
-    if (found) break;
-  }
-
-  edits->Release();
-  uia->Release();
-  return found;
-}
-
-std::string QueryWindowsOsVersion() {
-  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-  if (ntdll != nullptr) {
-    auto fn = reinterpret_cast<RtlGetVersionFn>(
-        GetProcAddress(ntdll, "RtlGetVersion"));
-    if (fn != nullptr) {
-      RTL_OSVERSIONINFOW rovi = {};
-      rovi.dwOSVersionInfoSize = sizeof(rovi);
-      if (fn(&rovi) == 0) {
-        return std::to_string(rovi.dwMajorVersion) + "." +
-               std::to_string(rovi.dwMinorVersion) + "." +
-               std::to_string(rovi.dwBuildNumber);
-      }
-    }
-  }
-  return "10.0.0";
-}
-
-std::string QueryHostname() {
-  wchar_t buf[MAX_COMPUTERNAME_LENGTH + 1] = {};
-  DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
-  if (GetComputerNameW(buf, &size) && size > 0) {
-    return TruncateUtf8(WideToUtf8(std::wstring(buf, size)), 32);
-  }
-  return "XUNA-PC";
-}
-
-const flutter::EncodableValue* FindKey(const flutter::EncodableMap& map,
-                                       const char* key) {
-  auto it = map.find(flutter::EncodableValue(key));
-  if (it == map.end()) return nullptr;
-  return &it->second;
-}
-
-struct ScopedComInitializer {
-  HRESULT hr;
-  ScopedComInitializer()
-      : hr(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
-  ~ScopedComInitializer() {
-    if (SUCCEEDED(hr)) {
-      CoUninitialize();
-    }
-  }
-  ScopedComInitializer(const ScopedComInitializer&) = delete;
-  ScopedComInitializer& operator=(const ScopedComInitializer&) = delete;
-};
-
-void ShowWindowsToast(const std::string& title, const std::string& body) {
-  std::wstring wtitle = Utf8ToWide(TruncateUtf8(title, 63));
-  std::wstring wbody = Utf8ToWide(TruncateUtf8(body, 240));
-  if (wtitle.empty()) wtitle = L"XUNA";
-  if (wbody.empty()) return;
-
-#if XUNA_HAS_CPPWINRT_TOAST
-  try {
-    using winrt::Windows::Data::Xml::Dom::XmlDocument;
-    using winrt::Windows::UI::Notifications::ToastNotification;
-    using winrt::Windows::UI::Notifications::ToastNotificationManager;
-    using winrt::Windows::UI::Notifications::ToastTemplateType;
-
-    XmlDocument xml = ToastNotificationManager::GetTemplateContent(
-        ToastTemplateType::ToastText02);
-    auto text_nodes = xml.GetElementsByTagName(L"text");
-    if (text_nodes.Length() >= 2) {
-      text_nodes.Item(0).AppendChild(xml.CreateTextNode(wtitle));
-      text_nodes.Item(1).AppendChild(xml.CreateTextNode(wbody));
-      ToastNotification toast(xml);
-      ToastNotificationManager::CreateToastNotifier(L"Xuna.Desktop")
-          .Show(toast);
-      return;
-    }
-  } catch (...) {
-    // Unpackaged desktop runners without a registered Start Menu AUMID throw
-    // in CreateToastNotifier; fall back to Win32 Shell_NotifyIconW balloon.
-  }
-#endif
-
-  HWND hwnd = FindWindowW(L"FLUTTER_RUNNER_WIN32_WINDOW", nullptr);
-  if (hwnd == nullptr) {
-    return;
-  }
-
-  NOTIFYICONDATAW nid = {};
-  nid.cbSize = sizeof(nid);
-  nid.hWnd = hwnd;
-  nid.uID = 0x58554E41;  // 'XUNA'
-  nid.uFlags = NIF_ICON | NIF_TIP | NIF_INFO;
-  nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
-  nid.hIcon = LoadIconW(nullptr, IDI_INFORMATION);
-  wcsncpy_s(nid.szTip, L"XUNA Desktop Companion", _TRUNCATE);
-  wcsncpy_s(nid.szInfoTitle, wtitle.c_str(), _TRUNCATE);
-  wcsncpy_s(nid.szInfo, wbody.c_str(), _TRUNCATE);
-
-  if (!Shell_NotifyIconW(NIM_MODIFY, &nid)) {
-    Shell_NotifyIconW(NIM_ADD, &nid);
-  }
-}
+using namespace xuna_win;
 
 void HandleMethodCallOnWorker(
     std::string method, flutter::EncodableMap args,
@@ -1070,45 +392,8 @@ void HandleMethodCallOnWorker(
         TruncateUtf8(WideToUtf8(std::wstring(title_buf)), 160);
 
     flutter::EncodableList headings;
-    if (!page_title.empty()) {
-      headings.push_back(flutter::EncodableValue(page_title));
-    }
     flutter::EncodableList actions;
-    flutter::EncodableMap out;
-    out[flutter::EncodableValue("url")] = flutter::EncodableValue(active_url);
-    out[flutter::EncodableValue("browser")] =
-        flutter::EncodableValue(resolved_browser);
-    out[flutter::EncodableValue("title")] = flutter::EncodableValue(page_title);
-    out[flutter::EncodableValue("headings")] =
-        flutter::EncodableValue(headings);
-    out[flutter::EncodableValue("actions")] = flutter::EncodableValue(actions);
-    out[flutter::EncodableValue("excerpt")] =
-        flutter::EncodableValue(TruncateUtf8(page_title, max_chars));
-    result->Success(flutter::EncodableValue(out));
-    return;
-  }
-
-  if (method == "inspectWindowUiTree") {
-    int max_nodes = 30;
-    if (const auto* mn_val = FindKey(args, "maxNodes")) {
-      if (const auto* i32 = std::get_if<int32_t>(mn_val)) max_nodes = *i32;
-      if (const auto* i64 = std::get_if<int64_t>(mn_val))
-        max_nodes = static_cast<int>(*i64);
-    }
-    if (max_nodes < 1) max_nodes = 1;
-    if (max_nodes > 80) max_nodes = 80;
-
-    HWND hwnd = GetForegroundWindow();
-    wchar_t title_buf[512] = {};
-    if (hwnd != nullptr) {
-      GetWindowTextW(hwnd, title_buf, 512);
-    }
-    std::string win_title =
-        TruncateUtf8(WideToUtf8(std::wstring(title_buf)), 120);
-
-    flutter::EncodableList nodes;
-    int redacted_count = 0;
-
+    std::string excerpt_accum;
     IUIAutomation* uia = nullptr;
     if (hwnd != nullptr &&
         SUCCEEDED(CoCreateInstance(__uuidof(CUIAutomation), nullptr,
@@ -1126,46 +411,35 @@ void HandleMethodCallOnWorker(
               arr != nullptr) {
             int len = 0;
             arr->get_Length(&len);
-            int added = 0;
-            for (int i = 0; i < len && added < max_nodes; ++i) {
+            for (int i = 0; i < len && i < 200; ++i) {
               IUIAutomationElement* el = nullptr;
               if (SUCCEEDED(arr->GetElement(i, &el)) && el != nullptr) {
-                BOOL is_pwd = FALSE;
-                el->get_CurrentIsPassword(&is_pwd);
+                CONTROLTYPEID ctrl_type = 0;
+                el->get_CurrentControlType(&ctrl_type);
                 BSTR name_bstr = nullptr;
-                std::string label;
+                std::string text;
                 if (SUCCEEDED(el->get_CurrentName(&name_bstr)) &&
                     name_bstr != nullptr) {
-                  label = TruncateUtf8(
-                      WideToUtf8(std::wstring(name_bstr, SysStringLen(name_bstr))),
-                      80);
+                  text =
+                      WideToUtf8(std::wstring(name_bstr, SysStringLen(name_bstr)));
                   SysFreeString(name_bstr);
                 }
-                BSTR role_bstr = nullptr;
-                std::string role = "control";
-                if (SUCCEEDED(el->get_CurrentLocalizedControlType(&role_bstr)) &&
-                    role_bstr != nullptr) {
-                  role = TruncateUtf8(
-                      WideToUtf8(std::wstring(role_bstr, SysStringLen(role_bstr))),
-                      32);
-                  SysFreeString(role_bstr);
-                }
-                if (is_pwd) {
-                  label = "[REDACTED_PASSWORD_CONTROL]";
-                  ++redacted_count;
-                }
-                if (!label.empty()) {
-                  ++added;
-                  flutter::EncodableMap node;
-                  node[flutter::EncodableValue("refId")] =
-                      flutter::EncodableValue("ui_" + std::to_string(added));
-                  node[flutter::EncodableValue("role")] =
-                      flutter::EncodableValue(role);
-                  node[flutter::EncodableValue("label")] =
-                      flutter::EncodableValue(label);
-                  node[flutter::EncodableValue("isPassword")] =
-                      flutter::EncodableValue(is_pwd != FALSE);
-                  nodes.push_back(flutter::EncodableValue(node));
+                if (!text.empty()) {
+                  if (ctrl_type == UIA_TextControlTypeId) {
+                    if (headings.size() < 6 && text.size() >= 4 &&
+                        text.size() <= 120) {
+                      headings.push_back(flutter::EncodableValue(text));
+                    }
+                    if (static_cast<int>(excerpt_accum.size()) < max_chars) {
+                      if (!excerpt_accum.empty()) excerpt_accum += "\n";
+                      excerpt_accum += text;
+                    }
+                  } else if ((ctrl_type == UIA_ButtonControlTypeId ||
+                              ctrl_type == UIA_HyperlinkControlTypeId) &&
+                             actions.size() < 8) {
+                    actions.push_back(
+                        flutter::EncodableValue(TruncateUtf8(text, 80)));
+                  }
                 }
                 el->Release();
               }
@@ -1179,9 +453,53 @@ void HandleMethodCallOnWorker(
       uia->Release();
     }
 
+    if (headings.empty() && !page_title.empty()) {
+      headings.push_back(flutter::EncodableValue(page_title));
+    }
+    if (excerpt_accum.empty()) {
+      excerpt_accum = page_title;
+    }
+
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("url")] = flutter::EncodableValue(active_url);
+    out[flutter::EncodableValue("browser")] =
+        flutter::EncodableValue(resolved_browser);
+    out[flutter::EncodableValue("title")] = flutter::EncodableValue(page_title);
+    out[flutter::EncodableValue("headings")] =
+        flutter::EncodableValue(headings);
+    out[flutter::EncodableValue("actions")] = flutter::EncodableValue(actions);
+    out[flutter::EncodableValue("excerpt")] =
+        flutter::EncodableValue(TruncateUtf8(excerpt_accum, max_chars));
+    result->Success(flutter::EncodableValue(out));
+    return;
+  }
+
+  if (method == "inspectWindowUiTree") {
+    int max_nodes = 35;
+    if (const auto* mn_val = FindKey(args, "maxNodes")) {
+      if (const auto* i32 = std::get_if<int32_t>(mn_val)) max_nodes = *i32;
+      if (const auto* i64 = std::get_if<int64_t>(mn_val))
+        max_nodes = static_cast<int>(*i64);
+    }
+    if (max_nodes < 1) max_nodes = 1;
+    if (max_nodes > 80) max_nodes = 80;
+
+    const auto* wt_val = FindKey(args, "windowTitle");
+    const auto* wt_str = wt_val ? std::get_if<std::string>(wt_val) : nullptr;
+    std::string req_win_title = wt_str ? *wt_str : "";
+
+    HWND hwnd = ResolveTargetWindow(req_win_title, !req_win_title.empty());
+    flutter::EncodableList nodes;
+    int redacted_count = 0;
+    std::string win_title;
+    std::string app_name;
+    ScanWindowUiTreeToEncodable(hwnd, max_nodes, &nodes, &redacted_count,
+                                &win_title, &app_name);
+
     flutter::EncodableMap out;
     out[flutter::EncodableValue("windowTitle")] =
         flutter::EncodableValue(win_title);
+    out[flutter::EncodableValue("appName")] = flutter::EncodableValue(app_name);
     out[flutter::EncodableValue("nodes")] = flutter::EncodableValue(nodes);
     out[flutter::EncodableValue("redactedControlsCount")] =
         flutter::EncodableValue(redacted_count);
@@ -1192,16 +510,7 @@ void HandleMethodCallOnWorker(
   }
 
   if (method == "invokeWindowUiControl") {
-    const auto* ref_val = FindKey(args, "refId");
-    const auto* ref_str = ref_val ? std::get_if<std::string>(ref_val) : nullptr;
-    std::string target_ref = ref_str ? *ref_str : "ui_1";
-    flutter::EncodableMap out;
-    out[flutter::EncodableValue("ok")] = flutter::EncodableValue(true);
-    out[flutter::EncodableValue("invokedRefId")] =
-        flutter::EncodableValue(target_ref);
-    out[flutter::EncodableValue("screenshotBytesUsed")] =
-        flutter::EncodableValue(0);
-    result->Success(flutter::EncodableValue(out));
+    ExecuteInvokeWindowUiControl(args, std::move(result));
     return;
   }
 
@@ -1299,4 +608,3 @@ void RegisterXunaHostPlugin(flutter::BinaryMessenger* messenger) {
   static auto* leaked_channel = channel.release();
   (void)leaked_channel;
 }
-

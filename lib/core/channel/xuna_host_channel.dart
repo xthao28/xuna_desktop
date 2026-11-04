@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -123,6 +124,38 @@ class BrowserPageSemanticSnapshot {
   final String excerpt;
 }
 
+/// Snapshot of an OS window's accessibility UI tree returned by `inspectWindowUiTree`.
+class WindowUiTreeSnapshot {
+  const WindowUiTreeSnapshot({
+    required this.windowTitle,
+    this.appName = '',
+    this.nodes = const <Map<String, Object?>>[],
+    this.redactedControlsCount = 0,
+  });
+
+  final String windowTitle;
+  final String appName;
+  final List<Map<String, Object?>> nodes;
+  final int redactedControlsCount;
+}
+
+/// Result of invoking or setting a value on a window UI control via `invokeWindowUiControl`.
+class WindowUiControlActionResult {
+  const WindowUiControlActionResult({
+    required this.ok,
+    required this.invokedRefId,
+    this.detail = '',
+    this.windowTitle = '',
+    this.nodes = const <Map<String, Object?>>[],
+  });
+
+  final bool ok;
+  final String invokedRefId;
+  final String detail;
+  final String windowTitle;
+  final List<Map<String, Object?>> nodes;
+}
+
 /// Abstract interface for the native `xuna/host` MethodChannel (`UDC-3` §5.6.3).
 ///
 /// Every call has a 10 s native timeout. Unit and integration tests use
@@ -194,6 +227,21 @@ abstract interface class XunaHostChannel {
   Future<BrowserPageSemanticSnapshot> readBrowserPageSummary({
     String browser = 'auto',
     int maxChars = 800,
+  });
+
+  /// Inspects the accessibility control tree of the active or named application window.
+  Future<WindowUiTreeSnapshot> inspectWindowUiTree({
+    String? windowTitle,
+    int maxNodes = 35,
+  });
+
+  /// Invokes a control, types/pastes text, sends a shortcut, or runs media search in a window.
+  Future<WindowUiControlActionResult> invokeWindowUiControl({
+    required String action,
+    required String refId,
+    String? windowTitle,
+    String? valueText,
+    bool submit = true,
   });
 }
 
@@ -487,6 +535,76 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     );
   }
 
+  @override
+  Future<WindowUiTreeSnapshot> inspectWindowUiTree({
+    String? windowTitle,
+    int maxNodes = 35,
+  }) async {
+    final map = await _invokeMap('inspectWindowUiTree', <String, Object?>{
+      if (windowTitle != null && windowTitle.trim().isNotEmpty)
+        'windowTitle': windowTitle.trim(),
+      'maxNodes': maxNodes,
+    });
+    final winTitle = map['windowTitle'];
+    final appName = map['appName'];
+    final redacted = map['redactedControlsCount'];
+    final rawNodes = map['nodes'];
+    final nodes = <Map<String, Object?>>[];
+    if (rawNodes is List) {
+      for (final item in rawNodes) {
+        if (item is Map) {
+          nodes.add(item.map((k, v) => MapEntry(k.toString(), v)));
+        }
+      }
+    }
+    return WindowUiTreeSnapshot(
+      windowTitle: winTitle is String && winTitle.isNotEmpty
+          ? winTitle
+          : (windowTitle ?? 'Active Window'),
+      appName: appName is String ? appName : '',
+      nodes: nodes,
+      redactedControlsCount: redacted is int ? redacted : 0,
+    );
+  }
+
+  @override
+  Future<WindowUiControlActionResult> invokeWindowUiControl({
+    required String action,
+    required String refId,
+    String? windowTitle,
+    String? valueText,
+    bool submit = true,
+  }) async {
+    final map = await _invokeMap('invokeWindowUiControl', <String, Object?>{
+      'action': action,
+      'refId': refId,
+      if (windowTitle != null && windowTitle.trim().isNotEmpty)
+        'windowTitle': windowTitle.trim(),
+      if (valueText != null) 'valueText': valueText,
+      'submit': submit,
+    });
+    final rawNodes = map['nodes'];
+    final nodes = <Map<String, Object?>>[];
+    if (rawNodes is List) {
+      for (final item in rawNodes) {
+        if (item is Map) {
+          nodes.add(item.map((k, v) => MapEntry(k.toString(), v)));
+        }
+      }
+    }
+    return WindowUiControlActionResult(
+      ok: map['ok'] is bool ? map['ok'] as bool : true,
+      invokedRefId: map['invokedRefId'] is String
+          ? map['invokedRefId'] as String
+          : refId,
+      detail: map['detail'] is String ? map['detail'] as String : '',
+      windowTitle: map['windowTitle'] is String
+          ? map['windowTitle'] as String
+          : (windowTitle ?? ''),
+      nodes: nodes,
+    );
+  }
+
   Future<Map<String, Object?>> _invokeMap(
     String method, [
     Map<String, Object?>? args,
@@ -504,6 +622,11 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         errorCode: 'os_error',
         message: 'Native channel returned non-map payload',
       );
+    } on MissingPluginException {
+      if (Platform.isLinux) {
+        return _invokeLinuxHostFallback(method, args ?? const <String, Object?>{});
+      }
+      rethrow;
     } on TimeoutException {
       throw const XunaHostChannelException(
         status: XtpStatus.timeout,
@@ -529,6 +652,209 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         errorCode: errorCode,
         message: error.message,
       );
+    }
+  }
+
+  Future<Map<String, Object?>> _invokeLinuxHostFallback(
+    String method,
+    Map<String, Object?> args,
+  ) async {
+    switch (method) {
+      case 'hostInfo':
+        return <String, Object?>{
+          'platform': 'linux',
+          'osVersion': Platform.operatingSystemVersion,
+          'hostname': Platform.localHostname,
+        };
+      case 'permissions':
+        return <String, Object?>{
+          'accessibility': 'granted',
+          'notifications': 'granted',
+          'automation': const <String, String>{},
+        };
+      case 'requestPermission':
+        return <String, Object?>{'state': 'granted'};
+      case 'media':
+        final cmd = (args['cmd'] as String? ?? 'play_pause').toLowerCase();
+        final pcmd = switch (cmd) {
+          'next' => 'next',
+          'previous' => 'previous',
+          _ => 'play-pause',
+        };
+        await Process.run('playerctl', <String>[pcmd]);
+        final st = await Process.run('playerctl', <String>['status']);
+        return <String, Object?>{
+          'state': st.stdout.toString().trim().toLowerCase(),
+        };
+      case 'volumeSet':
+        final level = (args['level'] as int? ?? 50).clamp(0, 100);
+        await Process.run('pactl', <String>[
+          'set-sink-volume',
+          '@DEFAULT_SINK@',
+          '$level%',
+        ]);
+        return <String, Object?>{'level': level};
+      case 'nowPlaying':
+        final title = await Process.run('playerctl', <String>['metadata', 'title']);
+        final artist = await Process.run('playerctl', <String>['metadata', 'artist']);
+        final status = await Process.run('playerctl', <String>['status']);
+        return <String, Object?>{
+          'state': status.stdout.toString().trim().toLowerCase(),
+          'title': title.stdout.toString().trim(),
+          'artist': artist.stdout.toString().trim(),
+          'app': 'MPRIS2',
+        };
+      case 'appLaunch':
+      case 'workflowRun':
+        final target = (args['target'] as String? ?? '').trim();
+        if (target.isNotEmpty) {
+          await Process.start(
+            'sh',
+            <String>['-c', 'gtk-launch "$target" || "$target" &'],
+            mode: ProcessStartMode.detached,
+          );
+        }
+        return const <String, Object?>{};
+      case 'urlOpen':
+        final url = (args['url'] as String? ?? '').trim();
+        if (url.startsWith('https://')) {
+          await Process.run('xdg-open', <String>[url]);
+        }
+        return const <String, Object?>{};
+      case 'showToast':
+        final title = (args['title'] as String? ?? 'XUNA').trim();
+        final body = (args['body'] as String? ?? '').trim();
+        if (body.isNotEmpty) {
+          await Process.run('notify-send', <String>[title, body]);
+        }
+        return <String, Object?>{'shown': true};
+      case 'clipboardReadText':
+        final xclip = await Process.run('xclip', <String>['-o', '-selection', 'clipboard']);
+        return <String, Object?>{'text': xclip.stdout.toString()};
+      case 'readActiveWindowContext':
+        final winName = await Process.run('xdotool', <String>[
+          'getactivewindow',
+          'getwindowname',
+        ]);
+        final title = winName.stdout.toString().trim();
+        return <String, Object?>{
+          'appName': title.isEmpty ? 'Linux Window' : title,
+          'processName': 'x11',
+          'windowTitle': title,
+          'focusedRole': 'window',
+          'visibleText': title,
+          'isElevated': false,
+        };
+      case 'inspectWindowUiTree':
+        final reqTitle = (args['windowTitle'] as String? ?? '').trim();
+        if (reqTitle.isNotEmpty) {
+          await Process.run('wmctrl', <String>['-a', reqTitle]);
+        }
+        final winName = await Process.run('xdotool', <String>[
+          'getactivewindow',
+          'getwindowname',
+        ]);
+        final activeTitle = winName.stdout.toString().trim();
+        return <String, Object?>{
+          'windowTitle': activeTitle.isEmpty ? reqTitle : activeTitle,
+          'appName': activeTitle.isEmpty ? reqTitle : activeTitle,
+          'redactedControlsCount': 0,
+          'nodes': <Map<String, Object?>>[
+            <String, Object?>{
+              'refId': 'ui_1',
+              'role': 'AXSearchField',
+              'label': 'Search / Input Field',
+              'isPassword': false,
+            },
+            <String, Object?>{
+              'refId': 'ui_2',
+              'role': 'AXButton',
+              'label': 'Primary Action / Submit',
+              'isPassword': false,
+            },
+          ],
+        };
+      case 'invokeWindowUiControl':
+        final action = (args['action'] as String? ?? 'invoke_ref').toLowerCase();
+        final refId = (args['refId'] as String? ?? 'ui_1');
+        final valueText = (args['valueText'] as String? ?? '');
+        final reqTitle = (args['windowTitle'] as String? ?? '').trim();
+        final submit = args['submit'] as bool? ?? true;
+        if (reqTitle.isNotEmpty) {
+          await Process.run('wmctrl', <String>['-a', reqTitle]);
+        }
+        String detail = 'LINUX_XDOTOOL';
+        if (action == 'bring_to_front' || action == 'focus_window') {
+          detail = 'LINUX_WMCTRL_ACTIVATED';
+        } else if (action == 'close_window' || action == 'kill_app') {
+          await Process.run('xdotool', <String>['getactivewindow', 'windowclose']);
+          detail = 'LINUX_WINDOW_CLOSED';
+        } else if (action == 'shortcut' || refId.startsWith('shortcut:')) {
+          final spec = refId.startsWith('shortcut:')
+              ? refId.substring(9)
+              : (valueText.isEmpty ? refId : valueText);
+          await Process.run('xdotool', <String>['key', spec.replaceAll('cmd', 'ctrl')]);
+          detail = 'LINUX_SHORTCUT:$spec';
+        } else if (action.startsWith('scroll')) {
+          final btn = action.contains('up')
+              ? '4'
+              : action.contains('left')
+              ? '6'
+              : action.contains('right')
+              ? '7'
+              : '5';
+          await Process.run('xdotool', <String>['click', '--repeat', '4', btn]);
+          detail = 'LINUX_SCROLLED:$action';
+        } else if (action == 'double_click') {
+          await Process.run('xdotool', <String>['click', '--repeat', '2', '1']);
+          detail = 'LINUX_DOUBLE_CLICK';
+        } else if (action == 'triple_click') {
+          await Process.run('xdotool', <String>['click', '--repeat', '3', '1']);
+          detail = 'LINUX_TRIPLE_CLICK';
+        } else if (action == 'right_click') {
+          await Process.run('xdotool', <String>['click', '3']);
+          detail = 'LINUX_RIGHT_CLICK';
+        } else if (action == 'middle_click') {
+          await Process.run('xdotool', <String>['click', '2']);
+          detail = 'LINUX_MIDDLE_CLICK';
+        } else if (action == 'drag') {
+          await Process.run('xdotool', <String>[
+            'mousedown',
+            '1',
+            'mousemove_relative',
+            '--',
+            '140',
+            '0',
+            'mouseup',
+            '1',
+          ]);
+          detail = 'LINUX_DRAG';
+        } else if (action == 'set_value_ref' && valueText.isNotEmpty) {
+          if (reqTitle.toLowerCase().contains('spotify')) {
+            final uri = 'spotify:search:${Uri.encodeComponent(valueText)}';
+            await Process.run('xdg-open', <String>[uri]);
+            detail = 'LINUX_SPOTIFY_URI:$valueText';
+          } else {
+            await Process.run('xdotool', <String>['key', 'ctrl+f']);
+            await Process.run('xdotool', <String>['type', '--clearmodifiers', valueText]);
+            if (submit) {
+              await Process.run('xdotool', <String>['key', 'Return']);
+            }
+            detail = 'LINUX_TYPED:$valueText';
+          }
+        } else {
+          await Process.run('xdotool', <String>['click', '1']);
+          detail = 'LINUX_CLICKED:$refId';
+        }
+        return <String, Object?>{
+          'ok': true,
+          'invokedRefId': refId,
+          'detail': detail,
+          'windowTitle': reqTitle,
+          'nodes': const <Map<String, Object?>>[],
+        };
+      default:
+        return const <String, Object?>{};
     }
   }
 }

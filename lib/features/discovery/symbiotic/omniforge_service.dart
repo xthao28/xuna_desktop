@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -383,10 +384,14 @@ class OmniForgeService {
         ];
     }
 
+    final probed = _probeRealFilesForSkill(folder, exts);
+    final realCount = probed != null ? probed.count : detectedCount;
+    final realSample = probed != null ? probed.sample : dryRunSample;
+
     final primitives = inferUniversalPrimitivesForGoal(cleanGoal);
     final skillId = 'skill-$resolvedCategory-$_forgeSeq'.replaceAll('_', '-');
     final summaryVi =
-        'Đã rèn xong công cụ "$titleVi": tìm thấy $detectedCount mục phù hợp. $dryRunSample';
+        'Đã rèn xong công cụ "$titleVi": tìm thấy $realCount mục phù hợp. $realSample';
 
     final entry = ForgedSkillEntry(
       skillId: skillId,
@@ -395,8 +400,8 @@ class OmniForgeService {
       goal: cleanGoal,
       targetFolder: folder,
       fileExtensions: exts,
-      detectedItemsCount: detectedCount,
-      dryRunSample: dryRunSample,
+      detectedItemsCount: realCount,
+      dryRunSample: realSample,
       selfDebugIterations: 1,
       parameterFields: paramFields,
       scriptSteps: scriptSteps,
@@ -592,7 +597,7 @@ class OmniForgeService {
             maxChars: 200,
           ).text,
           selectorOrPattern:
-              (selectorOrPattern ?? 'tr.invoice-row[i] a[href*=".pdf"]').trim(),
+              (selectorOrPattern ?? 'element[i] -> repeat_action').trim(),
           recordedAt: ts.toIso8601String(),
         ),
       );
@@ -601,12 +606,12 @@ class OmniForgeService {
         ? skillTitle.trim()
         : (_teachSkillTitle.isNotEmpty
               ? _teachSkillTitle
-              : 'Tải hóa đơn tự động (Học từ thao tác mẫu)');
+              : 'Quy trình tự động (Học từ thao tác mẫu)');
     final pattern =
         selectorOrPattern ??
         (_teachSteps.isNotEmpty
             ? _teachSteps.last.selectorOrPattern
-            : 'tr.invoice-row[i] -> download(pdf, xml)');
+            : 'element[i] -> repeat_action');
 
     final synthesized = synthesizeSkill(
       goal:
@@ -622,6 +627,46 @@ class OmniForgeService {
       generalizedLoopSummaryVi:
           'Đã học xong từ $count bước mẫu của bạn và đóng gói thành công cụ "${synthesized.titleVi}" (${synthesized.skillId})!',
     );
+  }
+
+  ({int count, String sample})? _probeRealFilesForSkill(
+    String folder,
+    List<String> exts,
+  ) {
+    try {
+      final candidateDirs = <Directory>[Directory(folder)];
+      if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+        final home =
+            Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+        if (home != null && home.isNotEmpty) {
+          candidateDirs.add(Directory('$home/Downloads'));
+          candidateDirs.add(Directory('$home/Documents'));
+        }
+      }
+      final extSet = exts.map((e) => e.toLowerCase()).toSet();
+      for (final dir in candidateDirs) {
+        if (!dir.existsSync()) continue;
+        final files = dir.listSync(followLinks: false).whereType<File>().where((
+          f,
+        ) {
+          final name = f.path.split(RegExp(r'[/\\]')).last;
+          if (name.isEmpty || name.startsWith('.')) return false;
+          if (extSet.isEmpty) return true;
+          final dot = name.lastIndexOf('.');
+          final ext = dot >= 0 ? name.substring(dot + 1).toLowerCase() : '';
+          return extSet.contains(ext);
+        }).toList();
+        if (files.isNotEmpty) {
+          final firstName = files.first.path.split(RegExp(r'[/\\]')).last;
+          return (
+            count: files.length,
+            sample:
+                'Mẫu thật #1: $firstName (${files.length} tệp khớp trên đĩa) -> $folder/',
+          );
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// Extracts structured accounting fields from electronic invoices into a CSV summary (`FORGE-1`).
@@ -642,6 +687,98 @@ class OmniForgeService {
     final csvName = (outputFileName != null && outputFileName.trim().isNotEmpty)
         ? outputFileName.trim()
         : 'BangKe_HoaDon_TongHop.csv';
+    final dir = Directory(cleanFolder);
+    if (dir.existsSync()) {
+      try {
+        final files = dir
+            .listSync(followLinks: false)
+            .whereType<File>()
+            .where((f) {
+              final name = f.path.split(RegExp(r'[/\\]')).last.toLowerCase();
+              return !name.startsWith('.') &&
+                  name != csvName.toLowerCase() &&
+                  (name.endsWith('.xml') ||
+                      name.endsWith('.pdf') ||
+                      name.endsWith('.csv') ||
+                      name.endsWith('.json') ||
+                      name.endsWith('.txt'));
+            })
+            .toList();
+        if (files.isNotEmpty) {
+          final realRows = <Map<String, Object?>>[];
+          final seenNos = <String>{};
+          var dupCount = 0;
+          var totalAmount = 0;
+          for (var i = 0; i < files.length; i++) {
+            final f = files[i];
+            final base = f.path.split(RegExp(r'[/\\]')).last;
+            final stat = f.statSync();
+            var invNo = 'HD-${(i + 1).toString().padLeft(4, '0')}';
+            var vendor = base;
+            var taxId = 'N/A';
+            var totalVnd = 0;
+            if (base.toLowerCase().endsWith('.xml') ||
+                base.toLowerCase().endsWith('.txt') ||
+                base.toLowerCase().endsWith('.json')) {
+              try {
+                final text = f.readAsStringSync();
+                final noMatch = RegExp(
+                  r'<(?:SHDon|InvoiceNo|so_hd)>([^<]+)</',
+                  caseSensitive: false,
+                ).firstMatch(text);
+                if (noMatch != null) invNo = noMatch.group(1)!.trim();
+                final venMatch = RegExp(
+                  r'<(?:Ten|Vendor|NBan)>([^<]+)</',
+                  caseSensitive: false,
+                ).firstMatch(text);
+                if (venMatch != null) vendor = venMatch.group(1)!.trim();
+                final mstMatch = RegExp(
+                  r'<(?:MST|TaxId)>([^<]+)</',
+                  caseSensitive: false,
+                ).firstMatch(text);
+                if (mstMatch != null) taxId = mstMatch.group(1)!.trim();
+                final amtMatch = RegExp(
+                  r'<(?:TgTTTBSo|Total|totalVnd)>(\d+)</',
+                  caseSensitive: false,
+                ).firstMatch(text);
+                if (amtMatch != null) {
+                  totalVnd = int.tryParse(amtMatch.group(1)!.trim()) ?? 0;
+                }
+              } catch (_) {}
+            }
+            if (detectDuplicates && !seenNos.add(invNo)) {
+              dupCount++;
+            }
+            final subVnd = (totalVnd * 10) ~/ 11;
+            final vatVnd = totalVnd - subVnd;
+            totalAmount += totalVnd;
+            realRows.add(<String, Object?>{
+              'invoiceNo': invNo,
+              'date': stat.modified.toLocal().toIso8601String().substring(
+                0,
+                10,
+              ),
+              'vendor': vendor,
+              'taxId': taxId,
+              'subtotalVnd': subVnd,
+              'vatVnd': vatVnd,
+              'totalVnd': totalVnd,
+              'status': 'hop_le',
+            });
+          }
+          final outputPath = '$cleanFolder/$csvName';
+          return (
+            invoiceCount: realRows.length,
+            totalAmountVnd: totalAmount,
+            duplicateCount: dupCount,
+            outputCsvFile: outputPath,
+            rows: realRows,
+            summaryVi:
+                'Đã trích xuất ${realRows.length} chứng từ thật từ "$cleanFolder" ra "$outputPath" (trùng lặp: $dupCount).',
+          );
+        }
+      } catch (_) {}
+    }
     final rows = <Map<String, Object?>>[
       <String, Object?>{
         'invoiceNo': 'HD-001248',

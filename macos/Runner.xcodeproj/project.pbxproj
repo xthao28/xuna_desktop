@@ -28,6 +28,10 @@
 		33CC10F62044A3C60003C045 /* MainMenu.xib in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F42044A3C60003C045 /* MainMenu.xib */; };
 		33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11122044BFA00003C045 /* MainFlutterWindow.swift */; };
 		33CC11152044BFA00003C045 /* XunaHostPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11142044BFA00003C045 /* XunaHostPlugin.swift */; };
+		33CC11312044BFA00003C045 /* XunaHostPlugin+CryptoAndMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11302044BFA00003C045 /* XunaHostPlugin+CryptoAndMedia.swift */; };
+		33CC11332044BFA00003C045 /* XunaHostPlugin+AppsAndContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11322044BFA00003C045 /* XunaHostPlugin+AppsAndContext.swift */; };
+		33CC11352044BFA00003C045 /* XunaHostPlugin+UiTreeScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11342044BFA00003C045 /* XunaHostPlugin+UiTreeScanner.swift */; };
+		33CC11372044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11362044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift */; };
 		B9DECC2B6D9A09A5F9E1F9C9 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE18EC8A75AB69B6555B3B8E /* Pods_RunnerTests.framework */; };
 		F32C9C50DF777EB1D7A7D541 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB18933E1F6A6CDC371CD0AF /* Pods_Runner.framework */; };
 /* End PBXBuildFile section */
@@ -76,6 +80,10 @@
 		33CC10F72044A3C60003C045 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = Runner/Info.plist; sourceTree = "<group>"; };
 		33CC11122044BFA00003C045 /* MainFlutterWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainFlutterWindow.swift; sourceTree = "<group>"; };
 		33CC11142044BFA00003C045 /* XunaHostPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunaHostPlugin.swift; sourceTree = "<group>"; };
+		33CC11302044BFA00003C045 /* XunaHostPlugin+CryptoAndMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+CryptoAndMedia.swift"; sourceTree = "<group>"; };
+		33CC11322044BFA00003C045 /* XunaHostPlugin+AppsAndContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+AppsAndContext.swift"; sourceTree = "<group>"; };
+		33CC11342044BFA00003C045 /* XunaHostPlugin+UiTreeScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+UiTreeScanner.swift"; sourceTree = "<group>"; };
+		33CC11362044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+UiActionExecutor.swift"; sourceTree = "<group>"; };
 		33CEB47222A05771004F2AC0 /* Flutter-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Debug.xcconfig"; sourceTree = "<group>"; };
 		33CEB47422A05771004F2AC0 /* Flutter-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Release.xcconfig"; sourceTree = "<group>"; };
 		33CEB47722A0578A004F2AC0 /* Flutter-Generated.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = "Flutter-Generated.xcconfig"; path = "ephemeral/Flutter-Generated.xcconfig"; sourceTree = "<group>"; };
@@ -180,6 +188,10 @@
 				33CC10F02044A3C60003C045 /* AppDelegate.swift */,
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
 				33CC11142044BFA00003C045 /* XunaHostPlugin.swift */,
+				33CC11302044BFA00003C045 /* XunaHostPlugin+CryptoAndMedia.swift */,
+				33CC11322044BFA00003C045 /* XunaHostPlugin+AppsAndContext.swift */,
+				33CC11342044BFA00003C045 /* XunaHostPlugin+UiTreeScanner.swift */,
+				33CC11362044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
 				33E51914231749380026EE4D /* Release.entitlements */,
 				33CC11242044D66E0003C045 /* Resources */,
@@ -443,6 +455,10 @@
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
 				33CC11152044BFA00003C045 /* XunaHostPlugin.swift in Sources */,
+				33CC11312044BFA00003C045 /* XunaHostPlugin+CryptoAndMedia.swift in Sources */,
+				33CC11332044BFA00003C045 /* XunaHostPlugin+AppsAndContext.swift in Sources */,
+				33CC11352044BFA00003C045 /* XunaHostPlugin+UiTreeScanner.swift in Sources */,
+				33CC11372044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

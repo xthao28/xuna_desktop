@@ -138,8 +138,98 @@ class AutoMcpBridge {
     final invoker = _invoker;
     final rawSummary = invoker != null
         ? await invoker(server, toolName, payload)
-        : 'Đã gọi ${server.id}.$toolName (${server.transport}).';
+        : await _defaultInvokeMcpTool(server, toolName, payload);
     return redactSensitiveTokens(rawSummary, maxChars: 400);
+  }
+
+  Future<String> _defaultInvokeMcpTool(
+    DiscoveredMcpServer server,
+    String toolName,
+    Map<String, Object?> payload,
+  ) async {
+    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
+      try {
+        if (server.transport == 'http' &&
+            server.url != null &&
+            server.url!.trim().isNotEmpty) {
+          final client = HttpClient()
+            ..connectionTimeout = const Duration(seconds: 3);
+          try {
+            final req = await client.postUrl(Uri.parse(server.url!.trim()));
+            req.headers.contentType = ContentType.json;
+            final body = jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': 1,
+              'method': 'tools/call',
+              'params': <String, Object?>{
+                'name': toolName,
+                'arguments': payload,
+              },
+            });
+            req.add(utf8.encode(body));
+            final resp = await req.close().timeout(const Duration(seconds: 4));
+            final rawResp = await resp.transform(utf8.decoder).join();
+            if (rawResp.trim().isNotEmpty) {
+              return 'Đã gọi ${server.id}.$toolName: ${rawResp.trim()}';
+            }
+          } finally {
+            client.close(force: true);
+          }
+        } else if (server.transport == 'stdio' &&
+            server.command != null &&
+            server.command!.trim().isNotEmpty) {
+          final proc = await Process.start(
+            server.command!.trim(),
+            server.args,
+            runInShell: Platform.isWindows,
+          );
+          try {
+            final initReq = jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': 1,
+              'method': 'initialize',
+              'params': <String, Object?>{
+                'protocolVersion': '2024-11-05',
+                'capabilities': <String, Object?>{},
+                'clientInfo': <String, Object?>{
+                  'name': 'xuna_desktop',
+                  'version': '0.1.0',
+                },
+              },
+            });
+            final callReq = jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': 2,
+              'method': 'tools/call',
+              'params': <String, Object?>{
+                'name': toolName,
+                'arguments': payload,
+              },
+            });
+            proc.stdin.writeln(initReq);
+            proc.stdin.writeln(callReq);
+            await proc.stdin.close();
+            final out = await proc.stdout
+                .transform(utf8.decoder)
+                .join()
+                .timeout(const Duration(seconds: 4), onTimeout: () => '');
+            if (out.trim().isNotEmpty) {
+              final lines = out
+                  .split('\n')
+                  .map((l) => l.trim())
+                  .where((l) => l.isNotEmpty)
+                  .toList();
+              if (lines.isNotEmpty) {
+                return 'Đã gọi ${server.id}.$toolName: ${lines.last}';
+              }
+            }
+          } finally {
+            proc.kill();
+          }
+        }
+      } catch (_) {}
+    }
+    return 'Đã gọi ${server.id}.$toolName (${server.transport}).';
   }
 
   static void _parseMcpConfigFile(
@@ -222,6 +312,11 @@ class AutoMcpBridge {
       out.add((
         path:
             '$home/Library/Application Support/Claude/claude_desktop_config.json',
+        source: 'claude_desktop',
+      ));
+    } else if (Platform.isLinux) {
+      out.add((
+        path: '$home/.config/Claude/claude_desktop_config.json',
         source: 'claude_desktop',
       ));
     }
