@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 import 'heartbeat_canvas_service.dart';
@@ -46,10 +47,65 @@ class UiAccessibilityTreeService {
     if (_activeUiNodes.containsKey(trimmed)) return trimmed;
     final parsed = parseSnapshotElementRef(trimmed);
     if (parsed != null) {
+      final targetSnapRef =
+          '@${parsed.snapshotId}:e${parsed.elementNumber}';
+      for (final node in _activeUiNodes.values) {
+        if (node['snapshotRef'] == targetSnapRef && node['refId'] is String) {
+          return node['refId'] as String;
+        }
+      }
       final candidate = 'ui_${parsed.elementNumber}';
       if (_activeUiNodes.containsKey(candidate)) return candidate;
     }
     return trimmed;
+  }
+
+  /// Validates a `ui_<N>`, `shortcut:...`, or `@s<id>:e<N>` reference before
+  /// dispatching to the native OS channel.
+  ///
+  /// Throws [XunaHostChannelException] with `errorCode: 'stale_ref'` when a
+  /// `@s<id>:e<N>` reference targets a stale snapshot ID or a non-existent
+  /// element in the active snapshot.
+  String validateAndResolveRefKey(
+    String? rawRef, {
+    required String defaultRefId,
+  }) {
+    if (rawRef == null || rawRef.trim().isEmpty) {
+      return defaultRefId;
+    }
+    final trimmed = rawRef.trim();
+    final parsed = parseSnapshotElementRef(trimmed);
+    if (parsed != null) {
+      if (_activeUiNodes.isNotEmpty &&
+          parsed.snapshotId != _activeSnapshotId) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'stale_ref',
+          message:
+              'UI snapshot reference is stale; call inspect_window first.',
+        );
+      }
+      final targetSnapRef =
+          '@${parsed.snapshotId}:e${parsed.elementNumber}';
+      for (final node in _activeUiNodes.values) {
+        if (node['snapshotRef'] == targetSnapRef && node['refId'] is String) {
+          return node['refId'] as String;
+        }
+      }
+      final candidate = 'ui_${parsed.elementNumber}';
+      if (_activeUiNodes.containsKey(candidate)) {
+        return candidate;
+      }
+      if (_activeUiNodes.isNotEmpty) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'stale_ref',
+          message: 'Element reference not found in active UI snapshot.',
+        );
+      }
+      return candidate;
+    }
+    return _resolveCanonicalRefKey(trimmed);
   }
 
   List<AppPlaybookEntry> listAppPlaybooks() =>

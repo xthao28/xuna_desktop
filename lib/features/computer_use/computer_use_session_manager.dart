@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/computer_use/driver_map.dart';
@@ -665,6 +666,347 @@ class AgentDesktopComputerUseProvider implements ComputerUseProvider {
   }
 }
 
+/// Live OS Computer-Use provider bridging [ComputerUseSessionManager] directly
+/// to the native OS [XunaHostChannel] (`Windows IUIAutomation` in
+/// `xuna_win_uia_engine.h`, `macOS AXUIElement` in `XunaMacHostPlugin.swift`,
+/// or Linux X11 fallback), with optional delegation to an external
+/// `agent-desktop` MCP binary when `XUNA_AGENT_DESKTOP_BIN` is configured.
+class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
+  NativeHostChannelComputerUseProvider({
+    required this.channel,
+    this.agentDesktopBinaryPath,
+  });
+
+  final XunaHostChannel channel;
+  final String? agentDesktopBinaryPath;
+  AgentDesktopComputerUseProvider? _externalDelegate;
+
+  static const Set<String> _browserAppIds = <String>{
+    'msedge',
+    'edge',
+    'chrome',
+    'firefox',
+    'brave',
+    'safari',
+    'arc',
+    'browser',
+  };
+
+  @override
+  Future<void> startSession({
+    required String sessionId,
+    required String capabilityManifestYaml,
+  }) async {
+    _externalDelegate = null;
+    final binPath = (agentDesktopBinaryPath ??
+            Platform.environment['XUNA_AGENT_DESKTOP_BIN'] ??
+            '')
+        .trim();
+    if (binPath.isNotEmpty) {
+      try {
+        final delegate = AgentDesktopComputerUseProvider(
+          clientFactory: (_) => McpStdioClient.spawn(
+            executable: binPath,
+            arguments: const <String>['mcp'],
+          ),
+        );
+        await delegate.startSession(
+          sessionId: sessionId,
+          capabilityManifestYaml: capabilityManifestYaml,
+        );
+        _externalDelegate = delegate;
+        return;
+      } catch (_) {
+        _externalDelegate = null;
+      }
+    }
+  }
+
+  @override
+  Future<ActiveWindowObservation> inspectActiveWindow({
+    required int maxNodes,
+  }) async {
+    if (_externalDelegate != null) {
+      return _externalDelegate!.inspectActiveWindow(maxNodes: maxNodes);
+    }
+    final ctx = await channel.readActiveWindowContext(maxChars: 600);
+    final tree = await channel.inspectWindowUiTree(
+      maxNodes: maxNodes.clamp(1, 80),
+    );
+    final rawProc =
+        (ctx.processName.trim().isNotEmpty && ctx.processName != 'unknown')
+            ? ctx.processName.trim()
+            : (tree.appName.trim().isNotEmpty
+                ? tree.appName.trim()
+                : 'explorer.exe');
+    final appId = _normalizeAppIdFromProcess(rawProc);
+    final winTitle = tree.windowTitle.trim().isNotEmpty
+        ? tree.windowTitle.trim()
+        : ctx.windowTitle.trim();
+
+    String? browserUrl;
+    if (_browserAppIds.contains(appId)) {
+      try {
+        final tab = await channel.browserCurrentUrl();
+        if (tab.url.trim().isNotEmpty) {
+          browserUrl = tab.url.trim();
+        }
+      } catch (_) {
+        // Best-effort browser URL lookup.
+      }
+    }
+
+    final mappedNodes = <Map<String, Object?>>[];
+    for (var i = 0; i < tree.nodes.length; i++) {
+      final raw = tree.nodes[i];
+      final refId = (raw['refId'] as String?) ?? 'ui_${i + 1}';
+      final isPwd = raw['isPassword'] == true;
+      final role = isPwd
+          ? 'password'
+          : _normalizeNativeRole((raw['role'] as String?) ?? 'button');
+      final label = (raw['label'] as String?) ?? (raw['name'] as String?) ?? '';
+      final val = raw['value']?.toString();
+      final editable = raw['editable'] is bool
+          ? raw['editable'] as bool
+          : _isEditableRole(role);
+      mappedNodes.add(<String, Object?>{
+        'id': refId,
+        'role': role,
+        'name': label,
+        if (val != null && val.isNotEmpty) 'value': val,
+        'enabled': raw['enabled'] != false,
+        'visible': raw['visible'] != false,
+        'editable': editable,
+        'isPassword': isPwd,
+      });
+    }
+
+    return ActiveWindowObservation(
+      appId: appId,
+      processName: rawProc,
+      windowTitle: winTitle,
+      browserUrl: browserUrl,
+      isElevated: ctx.isElevated,
+      nodes: mappedNodes,
+    );
+  }
+
+  @override
+  Future<ScreenCaptureObservation> captureScreen({
+    required String scope,
+    required int maxEdge,
+  }) async {
+    if (_externalDelegate != null) {
+      return _externalDelegate!.captureScreen(scope: scope, maxEdge: maxEdge);
+    }
+    return ScreenCaptureObservation(
+      width: maxEdge,
+      height: (maxEdge * 9) ~/ 16,
+      dataBase64: '',
+    );
+  }
+
+  @override
+  Future<void> performClick({
+    required ActiveWindowObservation window,
+    String? elementId,
+    int? x,
+    int? y,
+  }) async {
+    if (_externalDelegate != null) {
+      await _externalDelegate!.performClick(
+        window: window,
+        elementId: elementId,
+        x: x,
+        y: y,
+      );
+      return;
+    }
+    final canonicalRef = _toNativeUiRefId(elementId, fallback: 'ui_1');
+    final res = await channel.invokeWindowUiControl(
+      action: 'invoke_ref',
+      refId: canonicalRef,
+      windowTitle: window.windowTitle,
+      submit: false,
+    );
+    _verifyNativeControlResult(res);
+  }
+
+  @override
+  Future<void> performTypeText({
+    required ActiveWindowObservation window,
+    required String elementId,
+    required String text,
+  }) async {
+    if (_externalDelegate != null) {
+      await _externalDelegate!.performTypeText(
+        window: window,
+        elementId: elementId,
+        text: text,
+      );
+      return;
+    }
+    final canonicalRef = _toNativeUiRefId(elementId, fallback: 'ui_1');
+    final res = await channel.invokeWindowUiControl(
+      action: 'set_value_ref',
+      refId: canonicalRef,
+      windowTitle: window.windowTitle,
+      valueText: text,
+      submit: false,
+    );
+    _verifyNativeControlResult(res);
+  }
+
+  @override
+  Future<void> performKey({
+    required ActiveWindowObservation window,
+    required String combo,
+  }) async {
+    if (_externalDelegate != null) {
+      await _externalDelegate!.performKey(window: window, combo: combo);
+      return;
+    }
+    final spec = combo.startsWith('shortcut:') ? combo : 'shortcut:$combo';
+    final res = await channel.invokeWindowUiControl(
+      action: 'shortcut',
+      refId: spec,
+      windowTitle: window.windowTitle,
+      valueText: combo,
+      submit: false,
+    );
+    _verifyNativeControlResult(res);
+  }
+
+  @override
+  Future<void> performScroll({
+    required ActiveWindowObservation window,
+    String? elementId,
+    required String direction,
+    required int amount,
+  }) async {
+    if (_externalDelegate != null) {
+      await _externalDelegate!.performScroll(
+        window: window,
+        elementId: elementId,
+        direction: direction,
+        amount: amount,
+      );
+      return;
+    }
+    final dir = direction.trim().toLowerCase();
+    final canonicalRef = _toNativeUiRefId(elementId, fallback: 'ui_1');
+    final res = await channel.invokeWindowUiControl(
+      action: 'scroll_$dir',
+      refId: canonicalRef,
+      windowTitle: window.windowTitle,
+      valueText: dir,
+      submit: false,
+    );
+    _verifyNativeControlResult(res);
+  }
+
+  @override
+  Future<void> endSession({required String sessionId}) async {
+    final delegate = _externalDelegate;
+    _externalDelegate = null;
+    if (delegate != null) {
+      await delegate.endSession(sessionId: sessionId);
+    }
+  }
+
+  static String _normalizeAppIdFromProcess(String rawProcess) {
+    var lower = rawProcess.trim().toLowerCase();
+    final slashIdx = lower.lastIndexOf(RegExp(r'[\\/]'));
+    if (slashIdx >= 0 && slashIdx + 1 < lower.length) {
+      lower = lower.substring(slashIdx + 1);
+    }
+    if (lower.endsWith('.exe') && lower.length > 4) {
+      lower = lower.substring(0, lower.length - 4);
+    }
+    if (lower.endsWith('.app') && lower.length > 4) {
+      lower = lower.substring(0, lower.length - 4);
+    }
+    final clean = lower
+        .replaceAll(RegExp(r'[^a-z0-9_]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    return clean.isEmpty ? 'explorer' : clean;
+  }
+
+  static String _normalizeNativeRole(String rawRole) {
+    final lower = rawRole.trim().toLowerCase();
+    return switch (lower) {
+      'axbutton' => 'button',
+      'axtextfield' => 'textfield',
+      'axsearchfield' => 'searchfield',
+      'axcombobox' => 'combobox',
+      'axtextarea' => 'textarea',
+      'axcheckbox' => 'checkbox',
+      'axradiobutton' => 'radiobutton',
+      'axmenuitem' => 'menuitem',
+      'axrow' => 'list_item',
+      'axlink' => 'link',
+      _ => lower.isEmpty ? 'button' : lower,
+    };
+  }
+
+  static bool _isEditableRole(String normalizedRole) {
+    return const <String>{
+      'textfield',
+      'axtextfield',
+      'searchbox',
+      'searchfield',
+      'axsearchfield',
+      'combobox',
+      'axcombobox',
+      'textarea',
+      'axtextarea',
+      'edit',
+      'document',
+    }.contains(normalizedRole.toLowerCase());
+  }
+
+  static String _toNativeUiRefId(String? rawElementId, {required String fallback}) {
+    if (rawElementId == null || rawElementId.trim().isEmpty) {
+      return fallback;
+    }
+    final trimmed = rawElementId.trim();
+    if (trimmed.startsWith('ui_') || trimmed.startsWith('shortcut:')) {
+      return trimmed;
+    }
+    final parsed = parseSnapshotElementRef(trimmed);
+    if (parsed != null) {
+      return 'ui_${parsed.elementNumber}';
+    }
+    final trailingDigits = RegExp(r'(\d+)$').firstMatch(trimmed);
+    if (trailingDigits != null) {
+      return 'ui_${trailingDigits.group(1)}';
+    }
+    return trimmed;
+  }
+
+  static void _verifyNativeControlResult(WindowUiControlActionResult res) {
+    if (res.detail == 'REFUSED_PASSWORD_CONTROL') {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'password_field_forbidden',
+      );
+    }
+    if (res.detail == 'HARD_DENIED_OR_ELEVATED_WINDOW') {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'elevated_window_forbidden',
+      );
+    }
+    if (!res.ok) {
+      throw XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: res.detail,
+      );
+    }
+  }
+}
+
 /// Fallback UIA (Windows) / AX + ScreenCaptureKit (macOS) provider skeleton
 /// (`UDC-8` §4.1 & S8.2) used when the Cua Driver binary is unavailable or in
 /// deterministic unit/E2E tests.
@@ -1288,6 +1630,15 @@ class ComputerUseSessionManager {
             : session.snapshotRefMaps['@$trimmed']);
     final parsedRef = parseSnapshotElementRef(trimmed);
     final isExplicitAtRef = trimmed.startsWith('@');
+    if (isExplicitAtRef &&
+        parsedRef != null &&
+        session.latestSnapshotId != null &&
+        parsedRef.snapshotId != session.latestSnapshotId) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'stale_ref',
+      );
+    }
 
     // Find nodes matching by explicit ID or ref in the live window.
     final idMatches = <Map<String, Object?>>[];

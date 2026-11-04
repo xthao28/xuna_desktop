@@ -1082,5 +1082,137 @@ void main() {
 
       manager.dispose();
     });
+
+    test('NativeHostChannelComputerUseProvider & UiAccessibilityTreeTool bridge @s<id>:e<N> to native ui_<N> channel', () async {
+      final channel = FakeXunaHostChannel()
+        ..activeWindowContextResult = const ActiveWindowContextSnapshot(
+          appName: 'File Explorer',
+          processName: 'explorer.exe',
+          windowTitle: 'Reports',
+          focusedRole: 'window',
+          visibleText: 'Reports',
+        );
+      final stopController = EmergencyStopController(
+        logger: ContentFreeLogger(),
+      );
+      final liveProvider = NativeHostChannelComputerUseProvider(
+        channel: channel,
+      );
+      final manager = ComputerUseSessionManager(
+        provider: liveProvider,
+        stopController: stopController,
+      );
+
+      await manager.startSession(
+        goal: 'Thao tác trên cửa sổ thật qua XunaHostChannel',
+        apps: const <String>['explorer'],
+        domains: const <String>[],
+        maxSteps: 8,
+        maxMinutes: 5,
+        policy: _buildCuTestPolicy(),
+      );
+
+      final snap = await manager.inspectWindow(
+        maxNodes: 20,
+        interactiveOnly: true,
+        collapseWebWrappers: true,
+      );
+      expect(snap['snapshotId'], equals('s00000001'));
+      final nodes = (snap['nodes'] as List).cast<Map<String, Object?>>();
+      expect(nodes.first['ref'], equals('@s00000001:e1'));
+
+      // Typing into @s00000001:e1 dispatches invokeWindowUiControl:set_value_ref:ui_1 to native channel
+      await manager.executeInputAction(
+        toolName: 'input.type_text',
+        arguments: const <String, Object?>{
+          'elementId': '@s00000001:e1',
+          'text': 'BaoCao_Q4',
+        },
+        hasR3Approval: false,
+      );
+      expect(
+        channel.invokedMethods,
+        contains('invokeWindowUiControl:set_value_ref:ui_1'),
+      );
+
+      // Clicking @s00000001:e2 dispatches invokeWindowUiControl:invoke_ref:ui_2 to native channel
+      await manager.executeInputAction(
+        toolName: 'input.click',
+        arguments: const <String, Object?>{'elementId': '@s00000001:e2'},
+        hasR3Approval: false,
+      );
+      expect(
+        channel.invokedMethods,
+        contains('invokeWindowUiControl:invoke_ref:ui_2'),
+      );
+
+      // Password field @s00000001:e4 is refused with password_field_forbidden
+      await expectLater(
+        () => manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': '@s00000001:e4'},
+          hasR3Approval: true,
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'password_field_forbidden',
+          ),
+        ),
+      );
+
+      // Verify UiAccessibilityTreeService.validateAndResolveRefKey translates @s<id>:e<N> -> ui_<N> and rejects stale refs
+      final tempDir = await Directory.systemTemp.createTemp('xuna_uia_wire_');
+      final paths = AgentPaths.resolve(overrideRootDir: tempDir);
+      await paths.ensureDirectories();
+      final policyStore = HostPolicyStore(
+        policyFile: paths.policyFile,
+        logger: ContentFreeLogger(),
+      );
+      final dispatcher = HostToolDispatcher(
+        policyStore: policyStore,
+        channel: channel,
+        auditStore: AuditLogStore(auditDir: paths.auditDir),
+        stopController: stopController,
+        logger: ContentFreeLogger(),
+        enrollmentStore: EnrollmentStateStore(
+          stateFile: paths.enrollmentStateFile,
+        ),
+        computerUseManager: manager,
+      );
+
+      final uia = dispatcher.symbioticService.uiAccessibility;
+      final treeSnap = await channel.inspectWindowUiTree(maxNodes: 20);
+      uia.applyNativeWindowUiTree(
+        windowTitle: treeSnap.windowTitle,
+        nodes: treeSnap.nodes,
+      );
+      final activeSnapId = uia.activeSnapshotId;
+      expect(
+        uia.validateAndResolveRefKey(
+          '@$activeSnapId:e3',
+          defaultRefId: 'ui_1',
+        ),
+        equals('ui_3'),
+      );
+      expect(
+        () => uia.validateAndResolveRefKey(
+          '@s00000099:e3',
+          defaultRefId: 'ui_1',
+        ),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'stale_ref',
+          ),
+        ),
+      );
+
+      dispatcher.dispose();
+      manager.dispose();
+      await tempDir.delete(recursive: true);
+    });
   });
 }

@@ -1003,12 +1003,19 @@ class UiAccessibilityTreeTool implements HostToolHandler {
     var effectiveWindowTitle = windowTitle;
     String? nativeDetail;
 
+    final resolvedNativeRefId = action != 'inspect_window'
+        ? context.symbioticService.uiAccessibility.validateAndResolveRefKey(
+            refId,
+            defaultRefId: action == 'set_value_ref' ? 'ui_1' : 'ui_3',
+          )
+        : null;
+
     try {
       List<Map<String, Object?>> postActionNodes = const <Map<String, Object?>>[];
       if (action != 'inspect_window') {
         final actRes = await context.channel.invokeWindowUiControl(
           action: action,
-          refId: refId ?? (action == 'set_value_ref' ? 'ui_1' : 'ui_3'),
+          refId: resolvedNativeRefId!,
           windowTitle: windowTitle,
           valueText: valueText,
           submit: true,
