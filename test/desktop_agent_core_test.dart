@@ -2317,7 +2317,17 @@ void main() {
                 },
           );
 
+          final smartHomeCalls = <String>[];
           final smartHomeBridge = AutoSmartHomeBridge(
+            serviceInvoker: ({
+              required entityId,
+              required domain,
+              required action,
+              value,
+            }) async {
+              smartHomeCalls.add('$entityId:$action:${value ?? ''}');
+              return const <String, Object?>{'ok': true};
+            },
             seedEntities: const <SmartHomeEntity>[
               SmartHomeEntity(
                 entityId: 'light.living_room',
@@ -2495,6 +2505,65 @@ void main() {
             (lockDeniedResp.result['_meta']
                 as Map<String, Object?>)['xuna/errorCode'],
             equals('smarthome_domain_forbidden'),
+          );
+          // The dim really went through the bridge; the denied lock never reached it.
+          expect(smartHomeCalls, equals(<String>['light.living_room:set_brightness:15']));
+        },
+      );
+
+      test(
+        'fails closed (unsupported) instead of faking success when no TV/smart-home bridge is wired',
+        () async {
+          final tv = AutoTvScanner(
+            seedDevices: const <DiscoveredSmartTv>[
+              DiscoveredSmartTv(
+                id: 'tv-no-transport',
+                name: 'TV',
+                brand: 'lg',
+                protocol: 'webos',
+                hostAddress: '192.168.1.90',
+                port: 3000,
+                online: true,
+                volume: 20,
+              ),
+            ],
+          );
+          Matcher unsupported(String code) => throwsA(
+                isA<XunaHostChannelException>()
+                    .having((e) => e.status, 'status', XtpStatus.unsupported)
+                    .having((e) => e.errorCode, 'errorCode', code),
+              );
+          expect(
+            () => tv.executeControl(action: 'volume_up'),
+            unsupported('tv_bridge_not_configured'),
+          );
+          expect(
+            () => tv.launchApp(appId: 'youtube'),
+            unsupported('tv_bridge_not_configured'),
+          );
+          expect(
+            () => tv.castMedia(url: 'https://www.youtube.com/watch?v=x'),
+            unsupported('tv_bridge_not_configured'),
+          );
+          // No MAC address -> Wake-on-LAN cannot be sent either.
+          expect(
+            () => tv.executeControl(action: 'power_wake'),
+            unsupported('wol_unavailable'),
+          );
+
+          final home = AutoSmartHomeBridge(
+            seedEntities: const <SmartHomeEntity>[
+              SmartHomeEntity(
+                entityId: 'light.desk',
+                domain: 'light',
+                name: 'Đèn bàn',
+                state: 'off',
+              ),
+            ],
+          );
+          expect(
+            () => home.controlEntity(entityId: 'light.desk', action: 'turn_on'),
+            unsupported('smarthome_bridge_not_configured'),
           );
         },
       );
@@ -3753,6 +3822,46 @@ void main() {
                     as Map<String, Object?>;
             expect(uiaSetValSc['invokedRefId'], equals('ui_1'));
             expect(uiaSetValSc['screenshotBytesUsed'], equals(0));
+
+            // A native accessibility failure is reported, never replaced by an invented tree.
+            channel.nextException = const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'os_error',
+            );
+            final uiaFailResp = await sym1Dispatcher.dispatch(
+              requestId: 1242,
+              params: const ToolsCallParams(
+                name: 'ui.accessibility_tree',
+                arguments: <String, Object?>{
+                  'action': 'inspect_window',
+                  'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
+                },
+                invocationId: '12420000-0000-4000-8000-000000000042',
+                deadlineMs: 5000,
+              ),
+              nowUtc: now,
+            );
+            final uiaFailMeta =
+                uiaFailResp.result['_meta'] as Map<String, Object?>;
+            expect(uiaFailMeta['xuna/status'], equals('failed'));
+            expect(uiaFailMeta['xuna/errorCode'], equals('os_error'));
+
+            // Without rawHtml the snapshot tool refuses instead of parsing a sample page.
+            final snapNoHtmlResp = await sym1Dispatcher.dispatch(
+              requestId: 1243,
+              params: const ToolsCallParams(
+                name: 'browser.semantic_snapshot',
+                arguments: <String, Object?>{'pageTitle': 'Trang bất kỳ'},
+                invocationId: '12430000-0000-4000-8000-000000000043',
+                deadlineMs: 5000,
+              ),
+              nowUtc: now,
+            );
+            expect(
+              (snapNoHtmlResp.result['_meta']
+                  as Map<String, Object?>)['xuna/errorCode'],
+              equals('raw_html_required'),
+            );
           } finally {
             if (univTempDir.existsSync()) {
               univTempDir.deleteSync(recursive: true);

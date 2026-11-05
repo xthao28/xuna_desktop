@@ -17,6 +17,19 @@
 5. Run the checks in §7 and walk through the Definition of Done (§8).
 6. Report in Vietnamese: files changed, commands and results, what was **not** run, risks, next step. Commit only when asked.
 
+## Honest code (mandatory, owner-approved 2026-11-05)
+
+Full rules, incidents and review scans: parent [docs/architecture/XUNA_HONEST_CODE_RULES.md](../docs/architecture/XUNA_HONEST_CODE_RULES.md). Core rules:
+
+- **H1 Real success only.** Return `ok` only after the real effect happened or the real system accepted it. If the transport, bridge, driver, permission or platform support is missing, fail closed: return `unsupported` / `needs_permission` / `failed` with a stable `errorCode` and a short `message`. Never update in-memory state to fake the outcome.
+- **H2 No fabricated data.** No sample, canned or default-looking data (UI trees, HTML, counts, battery %, screenshots) on any production or tool path. Demo data only behind an explicit, labelled demo/simulator switch that the model's tool path cannot reach.
+- **H3 Never guess targets.** A missing or ambiguous `refId`, host, file or entity returns an error with bounded valid candidates. No "first element", no magic `'ui_1'`.
+- **H4 Errors travel end to end.** Native → channel → handler → XTP (`xuna/status`, `xuna/errorCode`, `message`) → backend → the model's tool result. No `catch`/`except` that turns failure into success. Backend guidance goes in `hint`, never inside host data.
+- **H5 No app or phrase hard-coding in generic layers.** Prompts, catalog, agent loop and routing hold no app names, element IDs or keyword-intent tables. Producers declare capabilities (e.g. `xuna/policy.idempotent`) and consumers read them. App-specific fast paths stay isolated in host adapters.
+- **H6 Names and docs match behaviour.** No unmeasured "native/0.1s/AI/real-time/verified" claims. Docstrings describe current behaviour, and a manifest advertises only what is implemented.
+- **H7 Tests can fail.** Assert behaviour and end state, include the fail-closed case, no placeholder tests, no weakened assertions. Production defaults are never success-reporting fakes.
+- **H8 Honest reports.** State what was run and what was not (simulator, real device, board, real model). Never claim unrun validation. Keep the diff to the task's files.
+
 ## 1. Repository layout
 
 ```text
@@ -109,6 +122,7 @@ xuna_desktop/
 - [ ] Scope matches the requested session; nothing from later sessions.
 - [ ] `packages/xuna_xtp` stays pure Dart; fixtures byte-match `backend/tests/fixtures/xtp/`.
 - [ ] Hard security invariants (§3) enforced and unit-tested (forbidden tools, fail-closed policy, URL validation, approval hash binding, e-stop, content-free logs).
+- [ ] Honest-code rules H1–H8 respected: no fake success, no fabricated data, no guessed targets, errors propagate, no app or phrase hard-coding in generic layers, tests include the fail-closed case.
 - [ ] Analyzer reports 0 issues; all tests pass.
 - [ ] Report in Vietnamese lists files changed, commands run, what was not run, and next steps.
 

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Single Smart Home appliance entity exposed over the local bridge (`UDC-14` S14.4).
@@ -175,14 +176,23 @@ class AutoSmartHomeBridge {
           state: 'off',
         );
 
-    if (_serviceInvoker != null) {
-      await _serviceInvoker(
-        entityId: normId,
-        domain: domain,
-        action: action,
-        value: value,
+    final invoker = _serviceInvoker;
+    if (invoker == null) {
+      // Without a real bridge (e.g. Home Assistant) nothing reaches the device; never
+      // report a state change that did not happen.
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'smarthome_bridge_not_configured',
+        message: 'No smart-home bridge (e.g. Home Assistant) is configured on this '
+            'host, so the device was not controlled.',
       );
     }
+    await invoker(
+      entityId: normId,
+      domain: domain,
+      action: action,
+      value: value,
+    );
 
     final prevState = current.state;
     final prevValue = current.value;

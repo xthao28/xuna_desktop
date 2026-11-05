@@ -338,22 +338,36 @@ class DesktopAppAutomationRunner {
       );
     }
 
+    final firstNodeRef = nodes.isNotEmpty
+        ? (nodes.first['refId']?.toString() ?? 'ui_1')
+        : 'ui_1';
+
+    // Clicks need a named target that matches a live node; never fall back to an
+    // arbitrary first element (it can be the window close button).
     if (lower.contains('click đúp') ||
         lower.contains('nháy đúp') ||
         lower.contains('double click')) {
-      final q = extractInAppQueryFromGoal(text, targetAppName) ?? 'ui_1';
+      final q = extractInAppQueryFromGoal(text, targetAppName);
+      final ref = q == null
+          ? null
+          : findBestResultNodeRefId(nodes, q, excludeRefId: '');
+      if (q == null || ref == null) return null;
       return (
         action: 'double_click',
-        refId: findBestResultNodeRefId(nodes, q, excludeRefId: '') ?? q,
+        refId: ref,
         valueText: q,
         submit: false,
       );
     }
     if (lower.contains('chuột phải') || lower.contains('right click')) {
-      final q = extractInAppQueryFromGoal(text, targetAppName) ?? 'ui_1';
+      final q = extractInAppQueryFromGoal(text, targetAppName);
+      final ref = q == null
+          ? null
+          : findBestResultNodeRefId(nodes, q, excludeRefId: '');
+      if (q == null || ref == null) return null;
       return (
         action: 'right_click',
-        refId: findBestResultNodeRefId(nodes, q, excludeRefId: '') ?? q,
+        refId: ref,
         valueText: q,
         submit: false,
       );
@@ -365,7 +379,7 @@ class DesktopAppAutomationRunner {
       final spec = coordMatch?.group(1) ?? '400,400->580,400';
       return (
         action: 'drag',
-        refId: 'ui_1',
+        refId: firstNodeRef,
         valueText: spec,
         submit: false,
       );

@@ -59,6 +59,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
         observes: false,
         reversible: true,
         permission: defaultPermission,
+        idempotent: false,
       ),
     ),
     ToolDescriptor(

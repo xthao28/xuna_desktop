@@ -69,8 +69,19 @@ class UiAccessibilityTreeService {
   String validateAndResolveRefKey(
     String? rawRef, {
     required String defaultRefId,
+    String? action,
   }) {
     if (rawRef == null || rawRef.trim().isEmpty) {
+      if (action != null && elementTargetingUiActions.contains(action)) {
+        // Never guess a target element: the first button in an AX tree is often the
+        // window close button, and `AXStaticText` is not editable. Ask the model to
+        // pick a ref from the live snapshot instead.
+        throw XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'missing_ref',
+          message: _missingRefMessage(action),
+        );
+      }
       return defaultRefId;
     }
     final trimmed = rawRef.trim();
@@ -108,6 +119,53 @@ class UiAccessibilityTreeService {
     return _resolveCanonicalRefKey(trimmed);
   }
 
+  /// UI actions that act on one specific element and therefore require a `refId`.
+  static const Set<String> elementTargetingUiActions = <String>{
+    'invoke_ref',
+    'set_value_ref',
+    'double_click',
+    'triple_click',
+    'right_click',
+    'middle_click',
+    'browser_click',
+    'browser_type',
+  };
+
+  /// Bounded `missing_ref` diagnostic listing up to 6 candidate refs from the live snapshot
+  /// (editable fields for `set_value_ref`, any non-secret control otherwise).
+  String _missingRefMessage(String action) {
+    if (_activeUiNodes.isEmpty) {
+      return 'refId is required for $action; call inspect_window first.';
+    }
+    final wantsEditable = action == 'set_value_ref' || action == 'browser_type';
+    final candidates = <String>[];
+    for (final node in _activeUiNodes.values) {
+      if (candidates.length >= 6) break;
+      if (node['isPassword'] == true) continue;
+      final role = (node['role']?.toString() ?? '').toLowerCase();
+      final isStaticText =
+          role.contains('statictext') || role == 'text' || role.contains('label');
+      final isEditable = !isStaticText &&
+          (role.contains('textfield') ||
+              role.contains('textarea') ||
+              role.contains('search') ||
+              role.contains('combo') ||
+              role.contains('edit'));
+      if (wantsEditable && !isEditable) continue;
+      final ref = (node['snapshotRef'] ?? node['refId'])?.toString() ?? '';
+      if (ref.isEmpty) continue;
+      final rawLabel = node['label']?.toString() ?? '';
+      final label =
+          rawLabel.length > 32 ? '${rawLabel.substring(0, 32)}…' : rawLabel;
+      candidates.add('$ref ${node['role']} "$label"');
+    }
+    if (candidates.isEmpty) {
+      return 'refId is required for $action; no suitable control in the current '
+          'snapshot, call inspect_window again.';
+    }
+    return 'refId is required for $action; candidates: ${candidates.join('; ')}';
+  }
+
   List<AppPlaybookEntry> listAppPlaybooks() =>
       List<AppPlaybookEntry>.unmodifiable(_learnedPlaybooks);
 
@@ -141,149 +199,47 @@ class UiAccessibilityTreeService {
     final resolvedId = appId.isEmpty ? 'custom_app' : appId;
 
     final mod = Platform.isMacOS ? '⌘' : 'Ctrl';
-    final shiftMod = Platform.isMacOS ? '⇧+' : 'Shift+';
 
-    int tier;
-    String tierBadgeVi;
-    var shortcuts = <String>[];
-    var peekabooNodes = <String>[];
-    var quickActions = <String>[];
+    var tier = 3;
+    var tierBadgeVi = 'Tầng 3 · Mắt thần Peekaboo [B1] [T1] (0-Lệch chuột)';
+    var shortcuts = <String>[
+      '$mod+N: Tạo mới (Quét từ Menu Bar)',
+      '$mod+F: Tìm kiếm trong cửa sổ',
+      '$mod+S: Lưu thay đổi',
+    ];
+    var peekabooNodes = <String>[
+      '[B1] Nút Tạo mới / Bắt đầu trong $cleanName',
+      '[T1] Ô Nhập liệu / Tìm kiếm chính',
+      '[B2] Nút Lưu / Xuất kết quả',
+      '[M1] Thanh Menu trên cùng của $cleanName',
+    ];
+    var quickActions = <String>[
+      'Quét cây điều khiển UI thực tế của $cleanName',
+      'Điền dữ liệu tự động vào ô nhập [T1]',
+      'Kích hoạt nút hành động [B1] không chiếm chuột',
+    ];
 
-    if (lower.contains('code') ||
-        lower.contains('cursor') ||
-        lower.contains('antigravity') ||
-        lower.contains('xcode')) {
-      tier = 1;
-      tierBadgeVi = 'Tầng 1 · Native CLI & URL Scheme (0.1s)';
-      shortcuts = <String>[
-        '$mod+P: Mở nhanh tệp trong dự án',
-        '$mod+${shiftMod}P: Mở bảng lệnh Command Palette',
-        'Ctrl+`: Mở/đóng Terminal tích hợp',
-      ];
-      peekabooNodes = <String>[
-        '[B1] Nút Run & Debug',
-        '[T1] Ô tìm kiếm toàn dự án',
-        '[M1] Menu Terminal → Run Task',
-      ];
-      quickActions = <String>[
-        'Mở nhanh dự án hiện tại',
-        'Chạy kiểm tra lỗi (Analyze/Test)',
-        'Tóm tắt nhánh Git đang sửa',
-      ];
-    } else if (lower.contains('safari') ||
-        lower.contains('chrome') ||
-        lower.contains('arc') ||
-        lower.contains('edge') ||
-        lower.contains('firefox') ||
-        lower.contains('brave')) {
-      tier = 1;
-      tierBadgeVi = 'Tầng 1 · Browser Bridge & UIA/AX (0.1s)';
-      shortcuts = <String>[
-        '$mod+L: Chọn thanh địa chỉ URL',
-        '$mod+T: Mở tab mới',
-        '$mod+F: Tìm nội dung trong trang',
-      ];
-      peekabooNodes = <String>[
-        '[T1] Ô tìm kiếm / Địa chỉ web',
-        '[B1] Nút Tải xuống / Gửi biểu mẫu',
-        '[M1] Menu Tab đang mở',
-      ];
-      quickActions = <String>[
-        'Lưu link Tab đang mở vào Túi đồ',
-        'Tóm tắt trang web đang đọc',
-        'Trích xuất bảng dữ liệu trên trang',
-      ];
-    } else if (lower.contains('note') ||
-        lower.contains('obsidian') ||
-        lower.contains('notion')) {
-      tier = 1;
-      tierBadgeVi = 'Tầng 1 · Native Bridge / URL Scheme (0.1s)';
-      shortcuts = <String>[
-        '$mod+N: Tạo trang ghi chú mới',
-        '$mod+K / $mod+O: Tìm kiếm ghi chú nhanh',
-        '$mod+${shiftMod}L: Chèn danh sách việc cần làm (Checklist)',
-      ];
-      peekabooNodes = <String>[
-        '[B1] Nút + Trang mới (New Page)',
-        '[T1] Ô Tiêu đề & Nội dung ghi chú',
-        '[M1] Menu File → Export PDF/Markdown',
-      ];
-      quickActions = <String>[
-        'Tạo ghi chú mới từ Túi đồ (Pocket)',
-        'Tìm ghi chú theo từ khóa',
-        'Lập danh sách việc cần làm hôm nay',
-      ];
-    } else if (lower.contains('spotify') || lower.contains('music')) {
-      tier = 1;
-      tierBadgeVi = 'Tầng 1 · Native Media & UIA/AX Bridge (0.1s)';
-      shortcuts = <String>[
-        'Space: Phát / Tạm dừng nhạc',
-        '$mod+F / $mod+L: Tìm bài hát / Nghệ sĩ',
-        '$mod+→: Chuyển bài tiếp theo',
-      ];
-      peekabooNodes = <String>[
-        '[B1] Nút Play / Pause',
-        '[T1] Ô Tìm kiếm bài hát / Nghệ sĩ',
-        '[B2] Kết quả bài hát đầu tiên',
-      ];
-      quickActions = <String>[
-        'Tìm và phát bài hát theo yêu cầu',
-        'Chuyển bài tiếp theo',
-        'Xem tên bài hát đang phát',
-      ];
-    } else if (lower.contains('figma') ||
-        lower.contains('canva') ||
-        lower.contains('capcut') ||
-        lower.contains('postman')) {
-      tier = 2;
-      tierBadgeVi = 'Tầng 2 · Quét Thanh Menu & Phím tắt (0.2s)';
-      shortcuts = <String>[
-        '$mod+N: Tạo tệp / Thiết kế mới',
-        '$mod+/: Mở tìm kiếm lệnh nhanh (Quick Actions)',
-        '$mod+${shiftMod}E: Xuất tệp (Export)',
-      ];
-      peekabooNodes = <String>[
-        '[M1] Menu File → New / Export trong $cleanName',
-        '[T1] Ô Tìm kiếm trong $cleanName',
-        '[B1] Nút Hành động chính (Primary CTA)',
-      ];
-      quickActions = <String>[
-        'Quét toàn bộ Menu & Phím tắt của $cleanName',
-        'Bấm nút Xuất tệp (Export) qua [M1]',
-        'Tìm kiếm nhanh trong $cleanName qua [T1]',
-      ];
-    } else {
-      tier = 3;
-      tierBadgeVi = 'Tầng 3 · Mắt thần Peekaboo [B1] [T1] (0-Lệch chuột)';
-      shortcuts = <String>[
-        '$mod+N: Tạo mới (Quét từ Menu Bar)',
-        '$mod+F: Tìm kiếm trong cửa sổ',
-        '$mod+S: Lưu thay đổi',
-      ];
-      peekabooNodes = <String>[
-        '[B1] Nút Tạo mới / Bắt đầu trong $cleanName',
-        '[T1] Ô Nhập liệu / Tìm kiếm chính',
-        '[B2] Nút Lưu / Xuất kết quả',
-        '[M1] Thanh Menu trên cùng của $cleanName',
-      ];
-      quickActions = <String>[
-        'Đánh số nút bấm Peekaboo [B1]..[T1] cho $cleanName',
-        'Điền dữ liệu tự động vào ô [T1]',
-        'Bấm nút thực thi [B1] không chiếm chuột',
-      ];
-    }
-
-    // Overlay real scanned UI controls & menu shortcuts when a live OS UI tree was captured!
+    // Derive tier, shortcuts, and controls dynamically from the live scanned OS UI tree when present
     if (_hasLiveNativeTree && _activeUiNodes.isNotEmpty) {
       final liveShortcuts = <String>[];
       final liveNodes = <String>[];
+      final liveActions = <String>[];
+      var hasNativeBridgePattern = false;
+      var hasMenuPattern = false;
       var bIdx = 0;
       var tIdx = 0;
       var mIdx = 0;
       for (final node in _activeUiNodes.values) {
         final role = (node['role']?.toString() ?? '').toLowerCase();
+        final pattern = (node['pattern']?.toString() ?? '').toLowerCase();
         final label = (node['label']?.toString() ?? '').trim();
         if (label.isEmpty || label == '[REDACTED_PASSWORD_CONTROL]') continue;
+        if (pattern.contains('appleevents') || pattern.contains('url')) {
+          hasNativeBridgePattern = true;
+        }
+        if (role.contains('menu')) {
+          hasMenuPattern = true;
+        }
         final accelMatch = RegExp(r'\[([^\]]+)\]$').firstMatch(label);
         if (accelMatch != null && liveShortcuts.length < 6) {
           final keyCombo = accelMatch.group(1)!.trim();
@@ -299,20 +255,36 @@ class UiAccessibilityTreeService {
               role.contains('document')) {
             tIdx++;
             liveNodes.add('[T$tIdx] $label (${node['refId']})');
+            if (liveActions.length < 3) {
+              liveActions.add('Nhập nội dung vào "$label" (${node['refId']})');
+            }
           } else if (role.contains('menu')) {
             mIdx++;
             liveNodes.add('[M$mIdx] $label (${node['refId']})');
           } else {
             bIdx++;
             liveNodes.add('[B$bIdx] $label (${node['refId']})');
+            if (liveActions.length < 3) {
+              liveActions.add('Kích hoạt "$label" (${node['refId']})');
+            }
           }
         }
+      }
+      if (hasNativeBridgePattern) {
+        tier = 1;
+        tierBadgeVi = 'Tầng 1 · Native Bridge & UIA/AX (0.1s)';
+      } else if (hasMenuPattern || liveShortcuts.isNotEmpty) {
+        tier = 2;
+        tierBadgeVi = 'Tầng 2 · Quét Thanh Menu & Phím tắt (0.2s)';
       }
       if (liveShortcuts.isNotEmpty) {
         shortcuts = liveShortcuts;
       }
       if (liveNodes.isNotEmpty) {
         peekabooNodes = liveNodes;
+      }
+      if (liveActions.isNotEmpty) {
+        quickActions = liveActions;
       }
     }
 

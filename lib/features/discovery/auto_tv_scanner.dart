@@ -2,7 +2,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
+
+/// Thrown instead of pretending success when no real TV command transport is wired.
+XunaHostChannelException _tvTransportMissing(String operation) =>
+    XunaHostChannelException(
+      status: XtpStatus.unsupported,
+      errorCode: 'tv_bridge_not_configured',
+      message: 'No TV command transport is configured on this host, so "$operation" '
+          'cannot reach the TV. Only power_wake (Wake-on-LAN) works today.',
+    );
 
 /// Discovered Smart TV metadata on the local LAN (`UDC-14` S14.1).
 ///
@@ -277,6 +287,13 @@ class AutoTvScanner {
     }
 
     if (action == 'power_wake') {
+      if (!tv.supportsWakeOnLan) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'wol_unavailable',
+          message: 'This TV has no MAC address configured, so Wake-on-LAN cannot be sent.',
+        );
+      }
       if (tv.supportsWakeOnLan) {
         final sender = _wolSender;
         if (sender != null) {
@@ -295,16 +312,18 @@ class AutoTvScanner {
       );
     }
 
-    if (_commandTransport != null) {
-      await _commandTransport(
-        tv: tv,
-        operation: 'control',
-        payload: <String, Object?>{
-          'action': action,
-          if (level != null) 'level': level,
-        },
-      );
+    final transport = _commandTransport;
+    if (transport == null) {
+      throw _tvTransportMissing(action);
     }
+    await transport(
+      tv: tv,
+      operation: 'control',
+      payload: <String, Object?>{
+        'action': action,
+        if (level != null) 'level': level,
+      },
+    );
 
     final prevVol = tv.volume;
     DiscoveredSmartTv updated = tv;
@@ -356,13 +375,15 @@ class AutoTvScanner {
     if (tv == null) {
       throw StateError('tv_not_found');
     }
-    if (_commandTransport != null) {
-      await _commandTransport(
-        tv: tv,
-        operation: 'launch_app',
-        payload: <String, Object?>{'appId': appId},
-      );
+    final transport = _commandTransport;
+    if (transport == null) {
+      throw _tvTransportMissing('launch_app');
     }
+    await transport(
+      tv: tv,
+      operation: 'launch_app',
+      payload: <String, Object?>{'appId': appId},
+    );
     return tv;
   }
 
@@ -384,17 +405,19 @@ class AutoTvScanner {
     final appId = (host.contains('youtube.com') || host.contains('youtu.be'))
         ? 'youtube'
         : (host.contains('netflix.com') ? 'netflix' : 'browser');
-    if (_commandTransport != null) {
-      await _commandTransport(
-        tv: tv,
-        operation: 'cast_media',
-        payload: <String, Object?>{
-          'appId': appId,
-          'url': url.trim(),
-          if (title != null) 'title': title,
-        },
-      );
+    final transport = _commandTransport;
+    if (transport == null) {
+      throw _tvTransportMissing('cast_media');
     }
+    await transport(
+      tv: tv,
+      operation: 'cast_media',
+      payload: <String, Object?>{
+        'appId': appId,
+        'url': url.trim(),
+        if (title != null) 'title': title,
+      },
+    );
     return (tv: tv, appId: appId, host: host);
   }
 

@@ -799,10 +799,12 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     if (_externalDelegate != null) {
       return _externalDelegate!.captureScreen(scope: scope, maxEdge: maxEdge);
     }
-    return ScreenCaptureObservation(
-      width: maxEdge,
-      height: (maxEdge * 9) ~/ 16,
-      dataBase64: '',
+    // No capture driver: an empty image would be reported as a successful screenshot.
+    throw const XunaHostChannelException(
+      status: XtpStatus.unsupported,
+      errorCode: 'screen_capture_unavailable',
+      message: 'No screen-capture driver is configured on this host; use '
+          'ui.accessibility_tree to read the window instead.',
     );
   }
 

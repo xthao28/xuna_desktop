@@ -1,6 +1,8 @@
 import 'dart:io';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
+import 'package:xuna_xtp/xuna_xtp.dart';
 
 String _resolveWorkspaceSkillDir(String rawFolder) {
   final clean = rawFolder.trim();
@@ -678,6 +680,16 @@ class BrowserSemanticSnapshotTool implements HostToolHandler {
     final rawHtml = context.arguments['rawHtml'] as String?;
     final pageTitle = context.arguments['pageTitle'] as String?;
     final maxElements = (context.arguments['maxElements'] as int?) ?? 25;
+    if (rawHtml == null || rawHtml.trim().isEmpty) {
+      // The service would otherwise parse a built-in sample portal page and report it
+      // as if it were the owner's browser. This tool does not read the browser itself.
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'raw_html_required',
+        message: 'browser.semantic_snapshot only parses supplied rawHtml; use '
+            'browser.read_page to read the active browser tab.',
+      );
+    }
 
     final res = context.symbioticService.captureSemanticBrowserSnapshot(
       rawHtml: rawHtml,
@@ -1007,6 +1019,7 @@ class UiAccessibilityTreeTool implements HostToolHandler {
         ? context.symbioticService.uiAccessibility.validateAndResolveRefKey(
             refId,
             defaultRefId: action == 'set_value_ref' ? 'ui_1' : 'ui_3',
+            action: action,
           )
         : null;
 
@@ -1048,8 +1061,27 @@ class UiAccessibilityTreeTool implements HostToolHandler {
           hasNativeSnapshot = true;
         }
       }
+    } on XunaHostChannelException {
+      rethrow;
     } catch (_) {
-      // Fall back to symbiotic in-memory UI tree if native channel is unavailable
+      // Never substitute an invented tree: the model would act on controls that do not
+      // exist and report success.
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'ui_tree_unavailable',
+        message:
+            'The native accessibility channel failed; check Accessibility permission '
+            'and that the window is open, then inspect_window again.',
+      );
+    }
+    if (!hasNativeSnapshot) {
+      throw XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'ui_tree_unavailable',
+        message: 'No live UI controls found for window '
+            '"${effectiveWindowTitle ?? 'active window'}"; open or focus it, or check '
+            'Accessibility permission, then inspect_window again.',
+      );
     }
 
     final res = context.symbioticService.uiAccessibility

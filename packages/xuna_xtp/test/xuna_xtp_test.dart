@@ -72,6 +72,46 @@ void main() {
   late Map<String, Object?> golden;
   late Map<String, Object?> sampleFrames;
 
+  group('xuna/policy.idempotent (optional, additive)', () {
+    const base = <String, Object?>{
+      'version': 1,
+      'family': 'media',
+      'risk': 'R1',
+      'observes': false,
+      'reversible': true,
+      'permission': 'granted',
+    };
+
+    test('round-trips when declared and is omitted when not', () {
+      final declared = ToolPolicyMeta.fromJson(
+        <String, Object?>{...base, 'idempotent': false},
+      );
+      expect(declared.idempotent, isFalse);
+      expect(declared.toJson()['idempotent'], isFalse);
+      final legacy = ToolPolicyMeta.fromJson(base);
+      expect(legacy.idempotent, isNull);
+      expect(legacy.toJson().containsKey('idempotent'), isFalse);
+    });
+
+    test('rejects a non-boolean value and still rejects unknown keys', () {
+      expect(
+        () => ToolPolicyMeta.fromJson(<String, Object?>{...base, 'idempotent': 'no'}),
+        throwsFormatException,
+      );
+      expect(
+        () => ToolPolicyMeta.fromJson(<String, Object?>{...base, 'extra': 1}),
+        throwsFormatException,
+      );
+    });
+
+    test('desktop media.play_pause declares itself non-idempotent', () {
+      final playPause = buildMvpToolCatalog().firstWhere(
+        (t) => t.name == 'media.play_pause',
+      );
+      expect(playPause.policy.idempotent, isFalse);
+    });
+  });
+
   setUpAll(() {
     final goldenFile = File('test/fixtures/xtp/golden_vectors.json');
     final framesFile = File('test/fixtures/xtp/sample_frames.json');

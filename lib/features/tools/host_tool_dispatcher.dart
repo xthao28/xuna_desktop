@@ -689,6 +689,15 @@ class HostToolDispatcher {
       status = error.status;
       errorCode = error.errorCode;
       text = 'Không thể thực thi ${params.name} (${error.errorCode}).';
+      // Agent-authored diagnostics (e.g. `missing_ref` candidates) let the model recover
+      // instead of seeing only an opaque code.
+      final message = error.message;
+      structuredContent = <String, Object?>{
+        'errorCode': error.errorCode,
+        if (message != null && message.isNotEmpty)
+          'message':
+              message.length > 600 ? message.substring(0, 600) : message,
+      };
     } catch (_) {
       status = XtpStatus.failed;
       errorCode = 'os_error';

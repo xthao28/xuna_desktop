@@ -623,6 +623,7 @@ class ToolPolicyMeta {
     required this.observes,
     required this.reversible,
     required this.permission,
+    this.idempotent,
   });
 
   factory ToolPolicyMeta.fromJson(Map<String, Object?> json) {
@@ -636,8 +637,13 @@ class ToolPolicyMeta {
         'reversible',
         'permission',
       },
+      optionalKeys: const <String>{'idempotent'},
       context: 'xuna/policy',
     );
+    final rawIdempotent = json['idempotent'];
+    if (rawIdempotent != null && rawIdempotent is! bool) {
+      throw const FormatException('xuna/policy.idempotent must be a boolean');
+    }
     final version = json['version'];
     if (version != 1) {
       throw FormatException('Unsupported xuna/policy version: $version');
@@ -651,6 +657,7 @@ class ToolPolicyMeta {
       permission: XtpPermissionState.fromWire(
         _requireString(json, 'permission'),
       ),
+      idempotent: rawIdempotent as bool?,
     );
   }
 
@@ -661,6 +668,11 @@ class ToolPolicyMeta {
   final bool reversible;
   final XtpPermissionState permission;
 
+  /// Optional: `false` declares that repeating a successful call with the same
+  /// arguments changes state again (a toggle), so the agent must not re-run it.
+  /// Omitted (`null`) when the tool does not declare it.
+  final bool? idempotent;
+
   Map<String, Object?> toJson() => <String, Object?>{
         'version': version,
         'family': family.wire,
@@ -668,6 +680,7 @@ class ToolPolicyMeta {
         'observes': observes,
         'reversible': reversible,
         'permission': permission.wire,
+        if (idempotent != null) 'idempotent': idempotent,
       };
 }
 
