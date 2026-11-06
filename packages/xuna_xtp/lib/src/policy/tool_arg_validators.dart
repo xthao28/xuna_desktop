@@ -977,12 +977,10 @@ PolicyEvaluationResult validateToolArguments({
       final action = arguments['action'];
       final checkName = arguments['checkName'];
       final intervalMinutes = arguments['intervalMinutes'];
-      final simulateDelta = arguments['simulateDelta'];
       const allowedHbKeys = <String>{
         'action',
         'checkName',
         'intervalMinutes',
-        'simulateDelta',
       };
       if (arguments.keys.any((k) => !allowedHbKeys.contains(k)) ||
           (action != null &&
@@ -996,8 +994,7 @@ PolicyEvaluationResult validateToolArguments({
           (intervalMinutes != null &&
               (intervalMinutes is! int ||
                   intervalMinutes < 5 ||
-                  intervalMinutes > 720)) ||
-          (simulateDelta != null && simulateDelta is! bool)) {
+                  intervalMinutes > 720))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,

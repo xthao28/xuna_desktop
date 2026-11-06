@@ -525,9 +525,6 @@ List<ToolDescriptor> buildClawPulseTools({
             'minimum': 5,
             'maximum': 720,
           },
-          'simulateDelta': <String, Object?>{
-            'type': 'boolean',
-          },
         },
         'additionalProperties': false,
       },

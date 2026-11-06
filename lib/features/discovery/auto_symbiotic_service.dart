@@ -411,14 +411,12 @@ class AutoSymbioticService {
     String action = 'tick',
     String? checkName,
     int? intervalMinutes,
-    bool simulateDelta = false,
     String? watchedDirectoryPath,
     String? watchedContent,
   }) => heartbeatCanvas.configureAndTickHeartbeat(
     action: action,
     checkName: checkName,
     intervalMinutes: intervalMinutes,
-    simulateDelta: simulateDelta,
     watchedDirectoryPath: watchedDirectoryPath,
     watchedContent: watchedContent,
   );

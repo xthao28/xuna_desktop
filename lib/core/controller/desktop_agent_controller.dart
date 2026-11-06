@@ -364,15 +364,10 @@ class DesktopAgentController extends BaseGetxController {
     return resolved;
   }
 
-  HeartbeatStatusSnapshot? runZeroTokenHeartbeatFromUi({
-    bool simulateDelta = false,
-  }) {
+  HeartbeatStatusSnapshot? runZeroTokenHeartbeatFromUi() {
     final svc = symbioticService;
     if (svc == null) return null;
-    final snap = svc.configureAndTickHeartbeat(
-      action: 'tick',
-      simulateDelta: simulateDelta,
-    );
+    final snap = svc.configureAndTickHeartbeat(action: 'tick');
     refreshSymbioticState();
     return snap;
   }

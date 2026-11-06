@@ -47,7 +47,6 @@ class HeartbeatCanvasService {
     String action = 'tick',
     String? checkName,
     int? intervalMinutes,
-    bool simulateDelta = false,
     String? watchedDirectoryPath,
     String? watchedContent,
   }) {
@@ -64,11 +63,13 @@ class HeartbeatCanvasService {
       return _lastHeartbeatStatus!;
     }
 
-    var realDelta = simulateDelta;
+    var realDelta = false;
+    var sensed = false;
     if (watchedDirectoryPath != null &&
         watchedDirectoryPath.trim().isNotEmpty) {
       final dir = Directory(watchedDirectoryPath.trim());
       if (dir.existsSync()) {
+        sensed = true;
         final entries = dir.listSync().whereType<File>().map((f) {
           final stat = f.statSync();
           final base = f.path.split(RegExp(r'[/\\]')).last;
@@ -85,6 +86,7 @@ class HeartbeatCanvasService {
         }
       }
     } else if (watchedContent != null) {
+      sensed = true;
       final digest = sha256.convert(utf8.encode(watchedContent)).toString();
       final key = 'content:$_heartbeatCheckName';
       final prev = _sensorHashByTarget[key];
@@ -126,7 +128,9 @@ class HeartbeatCanvasService {
         : ' — Đã tự động chạy ${autoTriggeredTitles.length} kỹ năng liên kết (${autoTriggeredTitles.join(", ")})!';
     final summaryVi = realDelta
         ? 'HEARTBEAT_ALERT: Phát hiện biến động dữ liệu mới (SHA-256 delta) trong phiên tuần tra "$_heartbeatCheckName"$autoSuffix'
-        : 'HEARTBEAT_OK: Tuần tra ngầm "$_heartbeatCheckName" (chu kỳ $_heartbeatIntervalMinutes phút) hoàn tất với 0 LLM token — không làm phiền bạn.';
+        : (sensed
+            ? 'HEARTBEAT_OK: Tuần tra ngầm "$_heartbeatCheckName" (chu kỳ $_heartbeatIntervalMinutes phút) hoàn tất với 0 LLM token — không có thay đổi.'
+            : 'HEARTBEAT_OK: "$_heartbeatCheckName" chưa gắn thư mục hay nội dung để canh nên chưa kiểm tra dữ liệu nào.');
     final snap = HeartbeatStatusSnapshot(
       status: status,
       deltaDetected: realDelta,

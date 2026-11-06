@@ -425,13 +425,10 @@ class HeartbeatConfigureAndTickTool extends HostToolHandler {
     final action = (context.arguments['action'] as String?) ?? 'tick';
     final checkName = context.arguments['checkName'] as String?;
     final intervalMinutes = context.arguments['intervalMinutes'] as int?;
-    final simulateDelta =
-        (context.arguments['simulateDelta'] as bool?) ?? false;
     final snap = context.symbioticService.configureAndTickHeartbeat(
       action: action,
       checkName: checkName,
       intervalMinutes: intervalMinutes,
-      simulateDelta: simulateDelta,
     );
     return ToolHandlerOutput(
       text: snap.summaryVi,

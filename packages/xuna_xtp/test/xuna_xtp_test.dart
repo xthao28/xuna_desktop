@@ -2127,7 +2127,6 @@ void main() {
                 'action': 'tick',
                 'checkName': 'Canh hóa đơn mới',
                 'intervalMinutes': 30,
-                'simulateDelta': false,
               },
               nowUtc: now,
             )

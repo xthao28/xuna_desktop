@@ -3109,7 +3109,6 @@ void main() {
                 'action': 'tick',
                 'checkName': 'Canh hóa đơn mới',
                 'intervalMinutes': 30,
-                'simulateDelta': false,
               },
               invocationId: '12210000-0000-4000-8000-000000000021',
               deadlineMs: 5000,
@@ -3396,10 +3395,14 @@ void main() {
             expect(chainSc['autoTriggerOnDelta'], isTrue);
 
             // 5. Next Heartbeat delta automatically triggers the bound skill!
+            sym1Dispatcher.symbioticService.configureAndTickHeartbeat(
+              checkName: 'Canh hóa đơn tự chạy chuỗi',
+              watchedContent: 'HD01',
+            );
             final hbAuto = sym1Dispatcher.symbioticService
                 .configureAndTickHeartbeat(
                   checkName: 'Canh hóa đơn tự chạy chuỗi',
-                  simulateDelta: true,
+                  watchedContent: 'HD01,HD02',
                 );
             expect(hbAuto.status, equals('HEARTBEAT_ALERT'));
             expect(hbAuto.summaryVi, contains('Đã tự động chạy'));
