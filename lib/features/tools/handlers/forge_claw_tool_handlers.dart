@@ -711,7 +711,11 @@ class BrowserSemanticSnapshotTool implements HostToolHandler {
   }
 }
 
-/// Zero-Screenshot Native OS UI Automation (`ui.accessibility_tree`, `UIA-2`).
+/// Read-only native OS UI inspection (`ui.accessibility_tree`, `UIA-2`).
+///
+/// Only `inspect_window` exists: the policy layer rejects every other action,
+/// so this handler never clicks, types or closes anything. Acting on a window
+/// goes through `input.*` in an approved computer-use session.
 class UiAccessibilityTreeTool implements HostToolHandler {
   const UiAccessibilityTreeTool();
 
@@ -720,61 +724,24 @@ class UiAccessibilityTreeTool implements HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final action = context.arguments['action'] as String;
     final windowTitle = context.arguments['windowTitle'] as String?;
-    final refId = context.arguments['refId'] as String?;
-    final valueText = context.arguments['valueText'] as String?;
     final maxNodes = (context.arguments['maxNodes'] as int?) ?? 30;
 
     var hasNativeSnapshot = false;
     var effectiveWindowTitle = windowTitle;
-    String? nativeDetail;
-
-    final resolvedNativeRefId = action != 'inspect_window'
-        ? context.symbioticService.uiAccessibility.validateAndResolveRefKey(
-            refId,
-            defaultRefId: action == 'set_value_ref' ? 'ui_1' : 'ui_3',
-            action: action,
-          )
-        : null;
 
     try {
-      List<Map<String, Object?>> postActionNodes = const <Map<String, Object?>>[];
-      if (action != 'inspect_window') {
-        final actRes = await context.channel.invokeWindowUiControl(
-          action: action,
-          refId: resolvedNativeRefId!,
-          windowTitle: windowTitle,
-          valueText: valueText,
-          submit: true,
-        );
-        nativeDetail = actRes.detail;
-        postActionNodes = actRes.nodes;
-        if (actRes.windowTitle.trim().isNotEmpty &&
-            (effectiveWindowTitle == null ||
-                effectiveWindowTitle.trim().isEmpty)) {
-          effectiveWindowTitle = actRes.windowTitle;
-        }
-      }
-      if (postActionNodes.isNotEmpty) {
+      final nativeSnap = await context.channel.inspectWindowUiTree(
+        windowTitle: effectiveWindowTitle,
+        maxNodes: maxNodes,
+      );
+      if (nativeSnap.nodes.isNotEmpty) {
         context.symbioticService.uiAccessibility.applyNativeWindowUiTree(
-          windowTitle: effectiveWindowTitle ?? 'Active Window',
-          nodes: postActionNodes,
+          windowTitle: nativeSnap.windowTitle,
+          nodes: nativeSnap.nodes,
         );
+        effectiveWindowTitle = nativeSnap.windowTitle;
         hasNativeSnapshot = true;
-      } else {
-        final nativeSnap = await context.channel.inspectWindowUiTree(
-          windowTitle: effectiveWindowTitle,
-          maxNodes: maxNodes,
-        );
-        if (nativeSnap.nodes.isNotEmpty) {
-          context.symbioticService.uiAccessibility.applyNativeWindowUiTree(
-            windowTitle: nativeSnap.windowTitle,
-            nodes: nativeSnap.nodes,
-          );
-          effectiveWindowTitle = nativeSnap.windowTitle;
-          hasNativeSnapshot = true;
-        }
       }
     } on XunaHostChannelException {
       rethrow;
@@ -801,30 +768,11 @@ class UiAccessibilityTreeTool implements HostToolHandler {
 
     final res = context.symbioticService.uiAccessibility
         .executeUiAccessibilityTree(
-          action: action,
+          action: 'inspect_window',
           windowTitle: effectiveWindowTitle,
-          refId: refId,
-          valueText: valueText,
           maxNodes: maxNodes,
           preserveNativeNodes: hasNativeSnapshot,
-          nativeActionDetail: nativeDetail,
         );
-
-    if (action == 'invoke_ref' || action == 'set_value_ref') {
-      context.actionLedger.pushEntry(
-        ReversibleActionEntry(
-          originalTool: name,
-          inverseTool: name,
-          inverseArgs: <String, Object?>{
-            'action': 'inspect_window',
-            'windowTitle': res.windowTitle,
-          },
-          description:
-              'hoàn tác thao tác điều khiển [${res.invokedRefId}] trên cửa sổ ${res.windowTitle}',
-          recordedAt: context.nowUtc,
-        ),
-      );
-    }
 
     return ToolHandlerOutput(
       text: res.summaryVi,

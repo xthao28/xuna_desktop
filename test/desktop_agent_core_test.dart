@@ -3517,11 +3517,12 @@ void main() {
               ),
               nowUtc: now,
             );
-            final uiaInvokeSc =
-                uiaInvokeResp.result['structuredContent']
-                    as Map<String, Object?>;
-            expect(uiaInvokeSc['invokedRefId'], equals('ui_3'));
-            expect(uiaInvokeSc['screenshotBytesUsed'], equals(0));
+            // ui.accessibility_tree is read-only: acting on a control is not a
+            // valid action and must never reach the native channel.
+            final uiaInvokeMeta =
+                uiaInvokeResp.result['_meta'] as Map<String, Object?>;
+            expect(uiaInvokeMeta['xuna/status'], equals('invalid_args'));
+            expect(uiaInvokeMeta['xuna/errorCode'], equals('schema_mismatch'));
 
             final uiaSetValResp = await sym1Dispatcher.dispatch(
               requestId: 1241,
@@ -3538,11 +3539,16 @@ void main() {
               ),
               nowUtc: now,
             );
-            final uiaSetValSc =
-                uiaSetValResp.result['structuredContent']
-                    as Map<String, Object?>;
-            expect(uiaSetValSc['invokedRefId'], equals('ui_1'));
-            expect(uiaSetValSc['screenshotBytesUsed'], equals(0));
+            final uiaSetValMeta =
+                uiaSetValResp.result['_meta'] as Map<String, Object?>;
+            expect(uiaSetValMeta['xuna/status'], equals('invalid_args'));
+            expect(uiaSetValMeta['xuna/errorCode'], equals('schema_mismatch'));
+            expect(
+              channel.invokedMethods.where(
+                (m) => m.startsWith('invokeWindowUiControl'),
+              ),
+              isEmpty,
+            );
 
             // A native accessibility failure is reported, never replaced by an invented tree.
             channel.nextException = const XunaHostChannelException(

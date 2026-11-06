@@ -2407,20 +2407,63 @@ void main() {
             .allowed,
         isTrue,
       );
+      // ui.accessibility_tree is read-only: it is declared R1 and outside the
+      // approved computer-use session, so every acting action is rejected by
+      // the schema instead of running without an owner approval.
+      for (final acting in const <String>[
+        'invoke_ref',
+        'set_value_ref',
+        'close_window',
+        'drag',
+        'shortcut',
+        'invoke_menu',
+        'browser_type',
+        'bring_to_front',
+      ]) {
+        final res = evaluator.evaluateInvocation(
+          toolName: 'ui.accessibility_tree',
+          arguments: <String, Object?>{
+            'action': acting,
+            'windowTitle': 'MISA SME 2026 - Quản lý Hóa đơn',
+          },
+          nowUtc: now,
+        );
+        expect(res.allowed, isFalse, reason: acting);
+        expect(res.errorCode, equals('schema_mismatch'), reason: acting);
+      }
+      // Targets and text are not accepted any more either.
       expect(
         evaluator
             .evaluateInvocation(
               toolName: 'ui.accessibility_tree',
               arguments: const <String, Object?>{
-                'action': 'invoke_ref',
-                'windowTitle': 'MISA SME 2026 - Quản lý Hóa đơn',
+                'action': 'inspect_window',
                 'refId': 'ui_3',
               },
               nowUtc: now,
             )
-            .allowed,
-        isTrue,
+            .errorCode,
+        equals('schema_mismatch'),
       );
+      expect(allowedUiAccessibilityActions, equals(const <String>{'inspect_window'}));
+      final uiaDescriptor = buildMvpToolCatalog(
+        includeBrowserCurrentUrl: true,
+        includeDevWorkspaceTools: true,
+        includeDeskCopilotTools: true,
+        includeAmbientCopilotTools: true,
+        includeSmartTvHomeTools: true,
+        includeSymbioticCopilotTools: true,
+        includeSymbioticEvolutionTools: true,
+        includeSymbioticSentinelTools: true,
+        includeOmniForgeTools: true,
+        includeClawPulseTools: true,
+      ).firstWhere((t) => t.name == 'ui.accessibility_tree');
+      final uiaActionEnum =
+          ((uiaDescriptor.inputSchema['properties']! as Map)['action']! as Map)['enum'];
+      expect(uiaActionEnum, equals(const <String>['inspect_window']));
+      final uiaProps = uiaDescriptor.inputSchema['properties']! as Map;
+      expect(uiaProps.containsKey('refId'), isFalse);
+      expect(uiaProps.containsKey('valueText'), isFalse);
       expect(
         evaluator
             .evaluateInvocation(
@@ -2433,20 +2476,6 @@ void main() {
             )
             .errorCode,
         equals('ui_window_forbidden_target'),
-      );
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'ui.accessibility_tree',
-              arguments: const <String, Object?>{
-                'action': 'set_value_ref',
-                'refId': 'ui_password_input',
-                'valueText': 'secret123',
-              },
-              nowUtc: now,
-            )
-            .errorCode,
-        equals('ui_ref_password_or_unsafe_blocked'),
       );
     });
 

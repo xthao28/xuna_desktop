@@ -1214,5 +1214,62 @@ void main() {
       manager.dispose();
       await tempDir.delete(recursive: true);
     });
+
+    test('NativeHostChannelComputerUseProvider never guesses a target: no element, coordinates only or an unparseable ref fail without touching the native channel', () async {
+      final channel = FakeXunaHostChannel();
+      final provider = NativeHostChannelComputerUseProvider(channel: channel);
+      const window = ActiveWindowObservation(
+        appId: 'explorer',
+        processName: 'explorer.exe',
+        windowTitle: 'Reports',
+        nodes: <Map<String, Object?>>[],
+      );
+
+      Matcher failsWith(String code) => throwsA(
+        isA<XunaHostChannelException>()
+            .having((e) => e.status, 'status', XtpStatus.invalidArgs)
+            .having((e) => e.errorCode, 'errorCode', code),
+      );
+
+      // Coordinates are not a target: this used to click the first control (ui_1).
+      await expectLater(
+        provider.performClick(window: window, x: 10, y: 20),
+        failsWith('target_required'),
+      );
+      await expectLater(
+        provider.performClick(window: window, elementId: '  '),
+        failsWith('target_required'),
+      );
+      await expectLater(
+        provider.performTypeText(
+          window: window,
+          elementId: '',
+          text: 'hello',
+        ),
+        failsWith('target_required'),
+      );
+      await expectLater(
+        provider.performScroll(window: window, direction: 'down', amount: 3),
+        failsWith('target_required'),
+      );
+      // A string that merely ends in digits is not a ref: this used to become ui_7.
+      await expectLater(
+        provider.performClick(window: window, elementId: 'modal_ok_7'),
+        failsWith('ref_unresolvable'),
+      );
+      expect(
+        channel.invokedMethods.where(
+          (m) => m.startsWith('invokeWindowUiControl'),
+        ),
+        isEmpty,
+      );
+
+      // A real native ref still reaches the channel.
+      await provider.performClick(window: window, elementId: 'ui_2');
+      expect(
+        channel.invokedMethods,
+        contains('invokeWindowUiControl:invoke_ref:ui_2'),
+      );
+    });
   });
 }

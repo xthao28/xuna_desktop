@@ -277,25 +277,14 @@ const Set<String> allowedMemoryVaultTargetFiles = <String>{
 };
 
 /// Allowed actions for `ui.accessibility_tree` (`UIA-1` Zero-Screenshot Native OS UI Automation).
+///
+/// Observation only. `ui.accessibility_tree` is declared R1 and is not part of
+/// the approved computer-use session, so it must never change another
+/// application's state. Clicking, typing, scrolling, key presses, menus and
+/// closing windows go through `input.*` inside an approved `cu.session_start`
+/// session, where target resolution and approvals apply.
 const Set<String> allowedUiAccessibilityActions = <String>{
   'inspect_window',
-  'invoke_ref',
-  'set_value_ref',
-  'double_click',
-  'triple_click',
-  'right_click',
-  'middle_click',
-  'drag',
-  'scroll_up',
-  'scroll_down',
-  'scroll_left',
-  'scroll_right',
-  'invoke_menu',
-  'browser_click',
-  'browser_type',
-  'shortcut',
-  'bring_to_front',
-  'close_window',
 };
 
 /// Security-sensitive window title substrings permanently blocked for `ui.accessibility_tree` (`UIA-1`).

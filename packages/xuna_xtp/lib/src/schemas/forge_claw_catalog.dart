@@ -987,44 +987,17 @@ List<ToolDescriptor> buildClawPulseTools({
     ToolDescriptor(
       name: 'ui.accessibility_tree',
       description:
-          'Universal Native OS UI Automation (Observe -> Act -> Verify): inspect any app window & menu bar into [ref=ui_1]..[ref=ui_N] (inspect_window), click controls or send shortcuts (invoke_ref), or type/submit text (set_value_ref).',
+          'Read-only native OS UI inspection: list the interactive controls of an app window as [ref=ui_1]..[ref=ui_N] (inspect_window). It never clicks or types; use input.* inside an approved computer-use session to act.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
           'action': <String, Object?>{
             'type': 'string',
-            'enum': <String>[
-              'inspect_window',
-              'invoke_ref',
-              'set_value_ref',
-              'double_click',
-              'triple_click',
-              'right_click',
-              'middle_click',
-              'drag',
-              'scroll_up',
-              'scroll_down',
-              'scroll_left',
-              'scroll_right',
-              'invoke_menu',
-              'browser_click',
-              'browser_type',
-              'shortcut',
-              'bring_to_front',
-              'close_window',
-            ],
+            'enum': <String>['inspect_window'],
           },
           'windowTitle': <String, Object?>{
             'type': 'string',
             'maxLength': 120,
-          },
-          'refId': <String, Object?>{
-            'type': 'string',
-            'maxLength': 32,
-          },
-          'valueText': <String, Object?>{
-            'type': 'string',
-            'maxLength': 500,
           },
           'maxNodes': <String, Object?>{
             'type': 'integer',

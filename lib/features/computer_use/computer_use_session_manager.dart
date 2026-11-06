@@ -824,7 +824,7 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
       );
       return;
     }
-    final canonicalRef = _toNativeUiRefId(elementId, fallback: 'ui_1');
+    final canonicalRef = _toNativeUiRefId(elementId);
     final res = await channel.invokeWindowUiControl(
       action: 'invoke_ref',
       refId: canonicalRef,
@@ -848,7 +848,7 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
       );
       return;
     }
-    final canonicalRef = _toNativeUiRefId(elementId, fallback: 'ui_1');
+    final canonicalRef = _toNativeUiRefId(elementId);
     final res = await channel.invokeWindowUiControl(
       action: 'set_value_ref',
       refId: canonicalRef,
@@ -896,7 +896,7 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
       return;
     }
     final dir = direction.trim().toLowerCase();
-    final canonicalRef = _toNativeUiRefId(elementId, fallback: 'ui_1');
+    final canonicalRef = _toNativeUiRefId(elementId);
     final res = await channel.invokeWindowUiControl(
       action: 'scroll_$dir',
       refId: canonicalRef,
@@ -967,9 +967,15 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     }.contains(normalizedRole.toLowerCase());
   }
 
-  static String _toNativeUiRefId(String? rawElementId, {required String fallback}) {
+  /// Maps a resolved element id to the native `ui_N` ref. Never guesses: a
+  /// missing or unparseable id is an error (H3), not "the first control".
+  static String _toNativeUiRefId(String? rawElementId) {
     if (rawElementId == null || rawElementId.trim().isEmpty) {
-      return fallback;
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'target_required',
+        message: 'A resolved element ref is required; coordinates are not a target.',
+      );
     }
     final trimmed = rawElementId.trim();
     if (trimmed.startsWith('ui_') || trimmed.startsWith('shortcut:')) {
@@ -979,11 +985,11 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     if (parsed != null) {
       return 'ui_${parsed.elementNumber}';
     }
-    final trailingDigits = RegExp(r'(\d+)$').firstMatch(trimmed);
-    if (trailingDigits != null) {
-      return 'ui_${trailingDigits.group(1)}';
-    }
-    return trimmed;
+    throw const XunaHostChannelException(
+      status: XtpStatus.invalidArgs,
+      errorCode: 'ref_unresolvable',
+      message: 'The element ref is not a native or snapshot ref.',
+    );
   }
 
   static void _verifyNativeControlResult(WindowUiControlActionResult res) {

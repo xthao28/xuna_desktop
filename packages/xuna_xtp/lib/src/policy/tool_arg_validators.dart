@@ -1262,19 +1262,8 @@ PolicyEvaluationResult validateToolArguments({
     case 'ui.accessibility_tree':
       final action = arguments['action'];
       final windowTitle = arguments['windowTitle'];
-      final refId = arguments['refId'];
-      final valueText = arguments['valueText'];
       final maxNodes = arguments['maxNodes'];
-      const allowedUiaKeys = <String>{
-        'action',
-        'windowTitle',
-        'refId',
-        'valueText',
-        'maxNodes',
-      };
-      final refPattern = RegExp(
-        r'^(?:ui_[a-z0-9_]{1,24}|@?s[a-z0-9]{4,16}:(?:e)?[0-9]{1,6})$',
-      );
+      const allowedUiaKeys = <String>{'action', 'windowTitle', 'maxNodes'};
       if (arguments.keys.any((k) => !allowedUiaKeys.contains(k)) ||
           action is! String ||
           !allowedUiAccessibilityActions.contains(action) ||
@@ -1283,18 +1272,8 @@ PolicyEvaluationResult validateToolArguments({
                   windowTitle.trim().isEmpty ||
                   windowTitle.length > 120 ||
                   !isSafeAgentPrompt(windowTitle))) ||
-          (refId != null &&
-              (refId is! String || !refPattern.hasMatch(refId.trim()))) ||
-          (valueText != null &&
-              (valueText is! String ||
-                  valueText.length > 500 ||
-                  !isSafeClipboardWriteText(valueText))) ||
           (maxNodes != null &&
-              (maxNodes is! int || maxNodes < 1 || maxNodes > 80)) ||
-          ((action == 'invoke_ref' || action == 'set_value_ref') &&
-              (refId is! String || !refPattern.hasMatch(refId.trim()))) ||
-          (action == 'set_value_ref' &&
-              (valueText is! String || valueText.trim().isEmpty))) {
+              (maxNodes is! int || maxNodes < 1 || maxNodes > 80))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -1313,29 +1292,7 @@ PolicyEvaluationResult validateToolArguments({
           );
         }
       }
-      if (refId is String) {
-        final lowerRef = refId.toLowerCase();
-        if (lowerRef.contains('pass') ||
-            lowerRef.contains('secret') ||
-            lowerRef.contains('pin') ||
-            lowerRef.contains('token')) {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: RiskTier.r1,
-            errorCode: 'ui_ref_password_or_unsafe_blocked',
-          );
-        }
-      }
-      if (valueText is String &&
-          containsForbiddenSkillMarkdownPattern(valueText)) {
-        return const PolicyEvaluationResult(
-          allowed: false,
-          status: XtpStatus.denied,
-          effectiveRisk: RiskTier.r1,
-          errorCode: 'ui_ref_password_or_unsafe_blocked',
-        );
-      }
+      // Observation only (see [allowedUiAccessibilityActions]).
       effectiveRisk = RiskTier.r1;
     case 'workspace.coding_agent':
       final proj = arguments['project'];
