@@ -714,122 +714,6 @@ class BrowserSemanticSnapshotTool implements HostToolHandler {
   }
 }
 
-/// Delegated Background Sub-Agent & Zero-Token Specialist Swarm Spawner (`subagent.spawn_and_poll`, `MIND-2`, `SWARM-2`).
-class SubagentSpawnAndPollTool implements HostToolHandler {
-  const SubagentSpawnAndPollTool();
-
-  @override
-  String get name => 'subagent.spawn_and_poll';
-
-  @override
-  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final action = context.arguments['action'] as String;
-    final taskGoal = context.arguments['taskGoal'] as String?;
-    final workerId = context.arguments['workerId'] as String?;
-    final tokenBudget = (context.arguments['tokenBudget'] as int?) ?? 2048;
-    final sourceFolder = context.arguments['sourceFolder'] as String?;
-    final rawRoles = context.arguments['specialistRoles'] as List<Object?>?;
-    final specialistRoles = rawRoles
-        ?.whereType<String>()
-        .map((r) => r.trim())
-        .toList(growable: false);
-    final enableCriticVerification =
-        (context.arguments['enableCriticVerification'] as bool?) ?? true;
-
-    final res = context.symbioticService.spawnOrPollSubagent(
-      action: action,
-      taskGoal: taskGoal,
-      workerId: workerId,
-      tokenBudget: tokenBudget,
-      sourceFolder: sourceFolder,
-      specialistRoles: specialistRoles,
-      enableCriticVerification: enableCriticVerification,
-      nowUtc: context.nowUtc,
-    );
-
-    return ToolHandlerOutput(
-      text: res.summaryVi,
-      structuredContent: <String, Object?>{
-        'action': res.action,
-        'workerId': res.workerId,
-        'status': res.status,
-        'progressPercent': res.progressPercent,
-        'tokenBudget': res.tokenBudget,
-        'tokensUsed': res.tokensUsed,
-        'llmTokensUsed': res.llmTokensUsed,
-        'contextSavedPercent': res.contextSavedPercent,
-        'distilledResultVi': res.distilledResultVi,
-        'activeWorkers': res.activeWorkers,
-        'blackboardEntries': res.blackboardEntries,
-        'criticPassed': res.criticPassed,
-        'criticConfidenceScore': res.criticConfidenceScore,
-        'specialistBreakdown': res.specialistBreakdown,
-        'summaryVi': res.summaryVi,
-      },
-      toastBody:
-          'Sub-Agent [${res.workerId}]: ${res.status} (0 LLM Token, Critic ${res.criticConfidenceScore}%)',
-    );
-  }
-}
-
-/// Autonomous Cron & Event-Driven Lifecycle Hooks (`schedule.cron_and_hooks`, `MIND-2`).
-class ScheduleCronAndHooksTool implements HostToolHandler {
-  const ScheduleCronAndHooksTool();
-
-  @override
-  String get name => 'schedule.cron_and_hooks';
-
-  @override
-  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final action = context.arguments['action'] as String;
-    final hookId = context.arguments['hookId'] as String?;
-    final eventOrCron = context.arguments['eventOrCron'] as String?;
-    final targetSkillId = context.arguments['targetSkillId'] as String?;
-    final labelVi = context.arguments['labelVi'] as String?;
-
-    final res = context.symbioticService.manageCronAndHooks(
-      action: action,
-      hookId: hookId,
-      eventOrCron: eventOrCron,
-      targetSkillId: targetSkillId,
-      labelVi: labelVi,
-      nowUtc: context.nowUtc,
-    );
-
-    if (action == 'register' || action == 'trigger_event') {
-      context.actionLedger.pushEntry(
-        ReversibleActionEntry(
-          originalTool: name,
-          inverseTool: name,
-          inverseArgs: <String, Object?>{
-            'action': 'remove',
-            'hookId': res.hookId,
-          },
-          description:
-              'hoàn tác Hook tự trị ${res.hookId} (${res.undoSnapshotId})',
-          recordedAt: context.nowUtc,
-        ),
-      );
-    }
-
-    return ToolHandlerOutput(
-      text: res.summaryVi,
-      structuredContent: <String, Object?>{
-        'action': res.action,
-        'hookId': res.hookId,
-        'eventOrCron': res.eventOrCron,
-        'targetSkillId': res.targetSkillId,
-        'triggeredCount': res.triggeredCount,
-        'activeHooks': res.activeHooks,
-        'undoSnapshotId': res.undoSnapshotId,
-        'summaryVi': res.summaryVi,
-      },
-      toastBody:
-          'Lifecycle Hook (${res.action}): ${res.hookId} -> ${res.targetSkillId}',
-    );
-  }
-}
-
 /// Living Overlay & Drag-and-Drop Feed-to-Process (`companion.overlay_and_drop`, `FRONTIER-1`).
 class CompanionOverlayAndDropTool implements HostToolHandler {
   const CompanionOverlayAndDropTool();
@@ -1146,8 +1030,6 @@ const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
   SkillChainAndTestTool(),
   MemoryMarkdownVaultTool(),
   BrowserSemanticSnapshotTool(),
-  SubagentSpawnAndPollTool(),
-  ScheduleCronAndHooksTool(),
   CompanionOverlayAndDropTool(),
   AcousticVocalizeAndSenseTool(),
   MemoryTemporalGraphTool(),

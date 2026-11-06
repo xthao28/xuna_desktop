@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(68));
+        expect(toolsList, hasLength(66));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -3475,128 +3475,7 @@ void main() {
               contains('[ref=e2] button "Tải hóa đơn PDF"'),
             );
 
-            // 8. MIND-2: Delegated Background Sub-Agent Spawner
-            final subResp = await sym1Dispatcher.dispatch(
-              requestId: 1230,
-              params: const ToolsCallParams(
-                name: 'subagent.spawn_and_poll',
-                arguments: <String, Object?>{
-                  'action': 'spawn',
-                  'taskGoal':
-                      'Quét thư mục CV ứng viên và lập bảng xếp hạng kỹ năng Python',
-                  'tokenBudget': 2048,
-                  'sourceFolder': 'XUNA_Data/UngVien_Python',
-                },
-                invocationId: '12300000-0000-4000-8000-000000000030',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final subSc =
-                subResp.result['structuredContent'] as Map<String, Object?>;
-            expect(subSc['status'], equals('completed'));
-            expect(subSc['progressPercent'], equals(100));
-            expect(subSc['tokensUsed'], lessThanOrEqualTo(2048));
-            expect(
-              subSc['distilledResultVi'] as String,
-              contains('Sub-Agent [subagent-worker-1] hoàn tất'),
-            );
-
-            // 9. MIND-2: Autonomous Cron & Event-Driven Lifecycle Hooks
-            await sym1Dispatcher.dispatch(
-              requestId: 1231,
-              params: ToolsCallParams(
-                name: 'schedule.cron_and_hooks',
-                arguments: <String, Object?>{
-                  'action': 'register',
-                  'hookId': 'hook-file-drop-cv',
-                  'eventOrCron': 'on_file_drop',
-                  'targetSkillId': firstSkillId,
-                  'labelVi': 'Tự động lọc CV khi có file mới rơi vào thư mục',
-                },
-                invocationId: '12310000-0000-4000-8000-000000000031',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final trigResp = await sym1Dispatcher.dispatch(
-              requestId: 1232,
-              params: const ToolsCallParams(
-                name: 'schedule.cron_and_hooks',
-                arguments: <String, Object?>{
-                  'action': 'trigger_event',
-                  'eventOrCron': 'on_file_drop',
-                },
-                invocationId: '12320000-0000-4000-8000-000000000032',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final trigSc =
-                trigResp.result['structuredContent'] as Map<String, Object?>;
-            expect(trigSc['triggeredCount'], greaterThanOrEqualTo(1));
-            expect(trigSc['targetSkillId'], equals(firstSkillId));
-
-            // 10. SWARM-2: Zero-Token 4-Specialist Sub-Agent Swarm & Shared Blackboard
-            final swarmResp = await sym1Dispatcher.dispatch(
-              requestId: 1233,
-              params: const ToolsCallParams(
-                name: 'subagent.spawn_and_poll',
-                arguments: <String, Object?>{
-                  'action': 'spawn_swarm',
-                  'taskGoal':
-                      'Quét 30 hóa đơn PDF, đối chiếu sao kê ngân hàng và xuất CSV kế toán',
-                  'tokenBudget': 2048,
-                  'sourceFolder': 'XUNA_Data/HoaDon_T11',
-                  'specialistRoles': <String>[
-                    'scout_harvester',
-                    'analyst_reconciler',
-                    'executor_organizer',
-                    'critic_verifier',
-                  ],
-                  'enableCriticVerification': true,
-                },
-                invocationId: '12330000-0000-4000-8000-000000000033',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final swarmSc =
-                swarmResp.result['structuredContent'] as Map<String, Object?>;
-            expect(swarmSc['action'], equals('spawn_swarm'));
-            expect(swarmSc['llmTokensUsed'], equals(0));
-            expect(swarmSc['contextSavedPercent'], equals(88));
-            expect(swarmSc['criticPassed'], isTrue);
-            expect(swarmSc['criticConfidenceScore'], equals(98));
-            expect(
-              (swarmSc['specialistBreakdown'] as List<Object?>).length,
-              equals(4),
-            );
-            expect(
-              (swarmSc['blackboardEntries'] as List<Object?>).length,
-              equals(4),
-            );
-
-            final bbResp = await sym1Dispatcher.dispatch(
-              requestId: 1234,
-              params: const ToolsCallParams(
-                name: 'subagent.spawn_and_poll',
-                arguments: <String, Object?>{'action': 'read_blackboard'},
-                invocationId: '12340000-0000-4000-8000-000000000034',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final bbSc =
-                bbResp.result['structuredContent'] as Map<String, Object?>;
-            expect(bbSc['status'], equals('ready'));
-            expect(bbSc['llmTokensUsed'], equals(0));
-            expect(
-              (bbSc['blackboardEntries'] as List<Object?>).length,
-              equals(4),
-            );
-
-            // 11. FRONTIER-1..4: Living Overlay Drop-Zone, Bio-Acoustic Vocalizer, ChronoGraph & Mindful Rituals
+            // 8. FRONTIER-1..4: Living Overlay Drop-Zone, Bio-Acoustic Vocalizer, ChronoGraph & Mindful Rituals
             final dropResp = await sym1Dispatcher.dispatch(
               requestId: 1235,
               params: const ToolsCallParams(

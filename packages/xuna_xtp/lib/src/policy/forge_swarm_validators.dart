@@ -1,4 +1,3 @@
-import '../schemas.dart';
 import 'security_redaction.dart';
 
 /// Allowed safe document/media/archive file extensions for `OMNIFORGE` batch
@@ -221,66 +220,4 @@ String interpolateSkillTemplate(
     }
     return match.group(0) ?? '';
   });
-}
-
-/// Checks whether a Sub-Agent specialist [role] is permitted to invoke a XunaScript [primitive] (`SWARM-1`).
-/// `scout_harvester` and `critic_verifier` are strictly read-only.
-bool isPrimitiveAllowedForSubagentRole(String role, String primitive) {
-  final allowed = roleScopedPrimitiveAllowlist[role.trim()];
-  if (allowed == null) return false;
-  return allowed.contains(primitive.trim());
-}
-
-/// Decomposes a compound natural-language [compoundGoal] into a deterministic
-/// Zero-Token Specialist Sub-Agent Swarm plan (`SWARM-1`).
-List<Map<String, Object>> decomposeGoalIntoSpecialistSwarm(
-  String compoundGoal, {
-  List<String>? requestedRoles,
-  bool enableCriticVerification = true,
-}) {
-  final roles = (requestedRoles != null && requestedRoles.isNotEmpty)
-      ? requestedRoles
-          .where((r) => allowedSubagentSpecialistRoles.contains(r))
-          .toList()
-      : <String>[
-          'scout_harvester',
-          'analyst_reconciler',
-          'executor_organizer',
-          if (enableCriticVerification) 'critic_verifier',
-        ];
-  final inferredPrimitives = inferUniversalPrimitivesForGoal(compoundGoal);
-  final swarmPlan = <Map<String, Object>>[];
-  for (final role in roles) {
-    final roleAllowlist =
-        roleScopedPrimitiveAllowlist[role] ?? const <String>{};
-    final scopedPrimitives =
-        inferredPrimitives.where((p) => roleAllowlist.contains(p)).toList();
-    final effectivePrimitives = scopedPrimitives.isNotEmpty
-        ? scopedPrimitives
-        : roleAllowlist.take(2).toList();
-    String subGoalVi;
-    switch (role) {
-      case 'scout_harvester':
-        subGoalVi =
-            'Quét song song dữ liệu thô & trích xuất trường chuẩn hóa lên Shared Blackboard (Read-Only)';
-      case 'analyst_reconciler':
-        subGoalVi =
-            'Đối chiếu chéo, gom nhóm & tính toán số liệu từ Shared Blackboard (0 LLM Token)';
-      case 'executor_organizer':
-        subGoalVi =
-            'Thực thi sắp xếp file / xuất báo cáo thông qua ReversibleActionLedger có Undo';
-      case 'critic_verifier':
-      default:
-        subGoalVi =
-            'Kiểm toán chéo tổng số học, schema & phát hiện lệch dữ liệu trước khi chốt';
-    }
-    swarmPlan.add(<String, Object>{
-      'role': role,
-      'subGoalVi': subGoalVi,
-      'allowedPrimitives': effectivePrimitives,
-      'readOnly': role == 'scout_harvester' || role == 'critic_verifier',
-      'llmTokensUsed': 0,
-    });
-  }
-  return swarmPlan;
 }

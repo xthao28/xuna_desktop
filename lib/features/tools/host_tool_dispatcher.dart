@@ -379,7 +379,6 @@ class HostToolDispatcher {
     'skill.workshop_sync',
     'memory.markdown_vault',
     'browser.semantic_snapshot',
-    'subagent.spawn_and_poll',
     'heartbeat.configure_and_tick',
     'screen.capture',
     'ui.inspect',

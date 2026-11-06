@@ -276,68 +276,6 @@ const Set<String> allowedMemoryVaultTargetFiles = <String>{
   'MEMORY_JOURNAL.md',
 };
 
-/// Allowed actions for `subagent.spawn_and_poll` (`MIND-1`, `SWARM-1`).
-const Set<String> allowedSubagentActions = <String>{
-  'spawn',
-  'spawn_swarm',
-  'poll',
-  'list_active',
-  'read_blackboard',
-};
-
-/// Specialist Sub-Agent roles for the Zero-Token Multi-Specialist Swarm (`SWARM-1`).
-const Set<String> allowedSubagentSpecialistRoles = <String>{
-  'scout_harvester',
-  'analyst_reconciler',
-  'executor_organizer',
-  'critic_verifier',
-};
-
-/// Role-scoped primitive whitelist (`SWARM-1`):
-/// `scout_harvester` and `critic_verifier` are strictly read-only and cannot write or rename files.
-const Map<String, Set<String>> roleScopedPrimitiveAllowlist =
-    <String, Set<String>>{
-  'scout_harvester': <String>{
-    'source.filesystem',
-    'source.clipboard',
-    'source.http_fetch',
-    'source.web_http',
-    'sensor.hash_delta',
-    'parse.universal',
-  },
-  'analyst_reconciler': <String>{
-    'parse.universal',
-    'transform.pipeline',
-  },
-  'executor_organizer': <String>{
-    'file.batch_ops',
-    'export.artifact',
-    'canvas.dynamic_a2ui',
-  },
-  'critic_verifier': <String>{
-    'source.filesystem',
-    'parse.universal',
-    'transform.pipeline',
-  },
-};
-
-/// Allowed actions for `schedule.cron_and_hooks` (`MIND-1`).
-const Set<String> allowedScheduleHookActions = <String>{
-  'register',
-  'trigger_event',
-  'list',
-  'remove',
-};
-
-/// Allowed lifecycle events and cron triggers for `schedule.cron_and_hooks` (`MIND-1`).
-const Set<String> allowedLifecycleEvents = <String>{
-  'cron_daily',
-  'on_morning_wake',
-  'on_file_drop',
-  'on_before_sleep',
-  'on_git_commit',
-};
-
 /// Allowed modes for `companion.overlay_and_drop` (`FRONTIER-1`).
 const Set<String> allowedCompanionOverlayModes = <String>{
   'toggle_overlay',
@@ -946,8 +884,6 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
       prefix == 'canvas' ||
       prefix == 'pipeline' ||
       prefix == 'memory' ||
-      prefix == 'subagent' ||
-      prefix == 'schedule' ||
       prefix == 'companion' ||
       prefix == 'ritual' ||
       toolName == 'tv.launch_app' ||

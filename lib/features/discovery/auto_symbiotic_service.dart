@@ -7,7 +7,6 @@ import 'symbiotic/heartbeat_canvas_service.dart';
 import 'symbiotic/memory_aria_service.dart';
 import 'symbiotic/omniforge_service.dart';
 import 'symbiotic/skill_workshop_service.dart';
-import 'symbiotic/subagent_cron_service.dart';
 import 'symbiotic/symbiotic_models.dart';
 import 'symbiotic/symbiotic_vitals_service.dart';
 import 'symbiotic/ui_accessibility_service.dart';
@@ -20,7 +19,6 @@ export 'symbiotic/heartbeat_canvas_service.dart';
 export 'symbiotic/memory_aria_service.dart';
 export 'symbiotic/omniforge_service.dart';
 export 'symbiotic/skill_workshop_service.dart';
-export 'symbiotic/subagent_cron_service.dart';
 export 'symbiotic/symbiotic_models.dart';
 export 'symbiotic/symbiotic_vitals_service.dart';
 export 'symbiotic/ui_accessibility_service.dart';
@@ -38,7 +36,6 @@ export 'symbiotic/workspace_pocket_service.dart';
 /// - [HeartbeatCanvasService] (`CLAW-2`, `CLAW-3`)
 /// - [SkillWorkshopService] (`CLAW-1`, `WORKSHOP-2`)
 /// - [MemoryAriaService] (`MIND-2`)
-/// - [SubagentCronService] (`MIND-2`, `SWARM-2`)
 class AutoSymbioticService {
   AutoSymbioticService({
     Future<void> Function(String text)? clipboardWriter,
@@ -73,12 +70,6 @@ class AutoSymbioticService {
       heartbeatCanvasService: heartbeatCanvas,
     );
     memoryAria = MemoryAriaService();
-    subagentCron = SubagentCronService(
-      pipelineService: pipeline,
-      memoryAriaService: memoryAria,
-      workshopService: workshop,
-      forgeService: forge,
-    );
     frontier2026 = Frontier2026Service(
       pocketService: workspacePocket,
       canvasService: heartbeatCanvas,
@@ -96,7 +87,6 @@ class AutoSymbioticService {
   late final HeartbeatCanvasService heartbeatCanvas;
   late final SkillWorkshopService workshop;
   late final MemoryAriaService memoryAria;
-  late final SubagentCronService subagentCron;
   late final Frontier2026Service frontier2026;
   late final UiAccessibilityTreeService uiAccessibility;
 
@@ -539,7 +529,7 @@ class AutoSymbioticService {
     nowUtc: nowUtc,
   );
 
-  // ── MIND-2 & SWARM-2: Memory Vault, ARIA Snapshot, Subagent & Cron ────────
+  // ── MIND-2: Memory Vault & ARIA Snapshot ────────
 
   ({
     String action,
@@ -584,69 +574,6 @@ class AutoSymbioticService {
     rawHtml: rawHtml,
     pageTitle: pageTitle,
     maxElements: maxElements,
-  );
-
-  ({
-    String action,
-    String workerId,
-    String status,
-    int progressPercent,
-    int tokenBudget,
-    int tokensUsed,
-    int llmTokensUsed,
-    int contextSavedPercent,
-    String distilledResultVi,
-    List<Map<String, Object?>> activeWorkers,
-    List<Map<String, Object?>> blackboardEntries,
-    bool criticPassed,
-    int criticConfidenceScore,
-    List<Map<String, Object?>> specialistBreakdown,
-    String summaryVi,
-  })
-  spawnOrPollSubagent({
-    required String action,
-    String? taskGoal,
-    String? workerId,
-    int tokenBudget = 2048,
-    String? sourceFolder,
-    List<String>? specialistRoles,
-    bool enableCriticVerification = true,
-    DateTime? nowUtc,
-  }) => subagentCron.spawnOrPollSubagent(
-    action: action,
-    taskGoal: taskGoal,
-    workerId: workerId,
-    tokenBudget: tokenBudget,
-    sourceFolder: sourceFolder,
-    specialistRoles: specialistRoles,
-    enableCriticVerification: enableCriticVerification,
-    nowUtc: nowUtc,
-  );
-
-  ({
-    String action,
-    String hookId,
-    String eventOrCron,
-    String targetSkillId,
-    int triggeredCount,
-    List<Map<String, Object?>> activeHooks,
-    String undoSnapshotId,
-    String summaryVi,
-  })
-  manageCronAndHooks({
-    required String action,
-    String? hookId,
-    String? eventOrCron,
-    String? targetSkillId,
-    String? labelVi,
-    DateTime? nowUtc,
-  }) => subagentCron.manageCronAndHooks(
-    action: action,
-    hookId: hookId,
-    eventOrCron: eventOrCron,
-    targetSkillId: targetSkillId,
-    labelVi: labelVi,
-    nowUtc: nowUtc,
   );
 
   // ── FRONTIER-1..4: Living Overlay, Bio-Acoustic, ChronoGraph & Rituals ───

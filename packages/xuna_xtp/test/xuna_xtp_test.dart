@@ -2042,7 +2042,7 @@ void main() {
       );
 
       final clawPulseTools = buildClawPulseTools();
-      expect(clawPulseTools, hasLength(16));
+      expect(clawPulseTools, hasLength(14));
       expect(
         clawPulseTools.map((t) => t.name).toList(),
         equals(<String>[
@@ -2055,8 +2055,6 @@ void main() {
           'skill.chain_and_test',
           'memory.markdown_vault',
           'browser.semantic_snapshot',
-          'subagent.spawn_and_poll',
-          'schedule.cron_and_hooks',
           'companion.overlay_and_drop',
           'acoustic.vocalize_and_sense',
           'memory.temporal_graph',
@@ -2077,7 +2075,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(68));
+      expect(fullCatalog71, hasLength(66));
 
       expect(
         evaluator
@@ -2352,8 +2350,7 @@ void main() {
         equals('Quét HoaDon_T11 cho bộ phận KeToan'),
       );
 
-      // MIND-1: memory.markdown_vault, browser.semantic_snapshot,
-      // subagent.spawn_and_poll, schedule.cron_and_hooks
+      // MIND-1: memory.markdown_vault, browser.semantic_snapshot
       expect(
         evaluator
             .evaluateInvocation(
@@ -2399,114 +2396,6 @@ void main() {
             .allowed,
         isTrue,
       );
-
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'subagent.spawn_and_poll',
-              arguments: const <String, Object?>{
-                'action': 'spawn',
-                'taskGoal':
-                    'Quét sâu 30 CV ứng viên Backend và lọc top 5 ứng viên',
-                'tokenBudget': 2048,
-                'sourceFolder': 'XUNA_Data/UngVien_Backend',
-              },
-              nowUtc: now,
-            )
-            .allowed,
-        isTrue,
-      );
-
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'schedule.cron_and_hooks',
-              arguments: const <String, Object?>{
-                'action': 'register',
-                'eventOrCron': 'on_morning_wake',
-                'targetSkillId': 'skill-invoice-harvester-1',
-                'labelVi': 'Tự động gom hóa đơn mỗi sáng thức dậy',
-              },
-              nowUtc: now,
-            )
-            .allowed,
-        isTrue,
-      );
-
-      // SWARM-1: Zero-Token Specialist Sub-Agent Swarm & Role-Scoped Security
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'subagent.spawn_and_poll',
-              arguments: const <String, Object?>{
-                'action': 'spawn_swarm',
-                'taskGoal':
-                    'Quét 30 hóa đơn PDF, đối chiếu sao kê ngân hàng và xuất CSV kế toán',
-                'tokenBudget': 2048,
-                'sourceFolder': 'XUNA_Data/HoaDon_T11',
-                'specialistRoles': <String>[
-                  'scout_harvester',
-                  'analyst_reconciler',
-                  'executor_organizer',
-                  'critic_verifier',
-                ],
-                'enableCriticVerification': true,
-              },
-              nowUtc: now,
-            )
-            .allowed,
-        isTrue,
-      );
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'subagent.spawn_and_poll',
-              arguments: const <String, Object?>{
-                'action': 'spawn_swarm',
-                'taskGoal': 'Quét hóa đơn',
-                'specialistRoles': <String>['root_shell_hacker'],
-              },
-              nowUtc: now,
-            )
-            .errorCode,
-        equals('subagent_role_forbidden'),
-      );
-      expect(
-        isPrimitiveAllowedForSubagentRole(
-          'scout_harvester',
-          'source.filesystem',
-        ),
-        isTrue,
-      );
-      expect(
-        isPrimitiveAllowedForSubagentRole(
-          'scout_harvester',
-          'file.batch_ops',
-        ),
-        isFalse,
-      );
-      expect(
-        isPrimitiveAllowedForSubagentRole(
-          'critic_verifier',
-          'export.artifact',
-        ),
-        isFalse,
-      );
-      expect(
-        isPrimitiveAllowedForSubagentRole(
-          'executor_organizer',
-          'file.batch_ops',
-        ),
-        isTrue,
-      );
-      final swarmPlan = decomposeGoalIntoSpecialistSwarm(
-        'Quét hóa đơn PDF và xuất bảng tổng hợp CSV',
-      );
-      expect(swarmPlan.length, equals(4));
-      expect(swarmPlan.first['role'], equals('scout_harvester'));
-      expect(swarmPlan.first['readOnly'], isTrue);
-      expect(swarmPlan.last['role'], equals('critic_verifier'));
-      expect(swarmPlan.last['llmTokensUsed'], equals(0));
 
       // FRONTIER-1..4: companion.overlay_and_drop, acoustic.vocalize_and_sense,
       // memory.temporal_graph, ritual.mindful_and_playdate
@@ -2666,7 +2555,7 @@ void main() {
     });
 
     test(
-        'every tool in the full 68-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
+        'every tool in the full 66-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
         () {
       final fullCatalog71 = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
@@ -2680,7 +2569,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(68));
+      expect(fullCatalog71, hasLength(66));
       for (final tool in fullCatalog71) {
         final resolvedFamily = resolveToolFamilyForName(tool.name);
         expect(
