@@ -106,10 +106,6 @@ class DesktopTrayService with TrayListener, WindowListener {
           key: 'quick_capsule',
           label: 'Đóng băng nhanh không gian làm việc',
         ),
-        MenuItem(
-          key: 'quick_ritual',
-          label: 'Hít thở 4-7-8 cùng XUNA',
-        ),
         MenuItem.separator(),
         MenuItem(
           key: stopped ? 'resume' : 'stop',
@@ -157,10 +153,6 @@ class DesktopTrayService with TrayListener, WindowListener {
         controller.captureQuickWorkspaceCapsule(
           nextStepHint: 'Đóng băng từ thanh Menu Bar XUNA',
         );
-        controller.activeTab.value = AgentWindowTab.symbiotic;
-        unawaited(_showSettingsWindow());
-      case 'quick_ritual':
-        controller.updateChronoGraphAndRitualFromUi();
         controller.activeTab.value = AgentWindowTab.symbiotic;
         unawaited(_showSettingsWindow());
       case 'quit':

@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:xuna_xtp/xuna_xtp.dart';
 
-import 'symbiotic/frontier_2026_service.dart';
 import 'symbiotic/heartbeat_canvas_service.dart';
 import 'symbiotic/memory_aria_service.dart';
 import 'symbiotic/omniforge_service.dart';
@@ -14,7 +13,6 @@ import 'symbiotic/universal_pipeline_service.dart';
 import 'symbiotic/watchdog_coach_service.dart';
 import 'symbiotic/workspace_pocket_service.dart';
 
-export 'symbiotic/frontier_2026_service.dart';
 export 'symbiotic/heartbeat_canvas_service.dart';
 export 'symbiotic/memory_aria_service.dart';
 export 'symbiotic/omniforge_service.dart';
@@ -70,10 +68,6 @@ class AutoSymbioticService {
       heartbeatCanvasService: heartbeatCanvas,
     );
     memoryAria = MemoryAriaService();
-    frontier2026 = Frontier2026Service(
-      pocketService: workspacePocket,
-      canvasService: heartbeatCanvas,
-    );
     uiAccessibility = UiAccessibilityTreeService(
       canvasService: heartbeatCanvas,
     );
@@ -87,8 +81,30 @@ class AutoSymbioticService {
   late final HeartbeatCanvasService heartbeatCanvas;
   late final SkillWorkshopService workshop;
   late final MemoryAriaService memoryAria;
-  late final Frontier2026Service frontier2026;
   late final UiAccessibilityTreeService uiAccessibility;
+
+  String _activeColorThemeId = 'green_edition';
+
+  /// Active XUNA colour theme id shared with mobile, widget and board.
+  String get activeColorThemeId => _activeColorThemeId;
+
+  /// Records the owner's colour theme choice; unknown ids fall back to the default theme.
+  void syncColorTheme(String themeId, {DateTime? nowUtc}) {
+    final cleaned = themeId.trim().toLowerCase();
+    if (cleaned.isEmpty) return;
+    _activeColorThemeId = switch (cleaned) {
+      'forest_mint' || 'theme_02' || 'theme_02_forest_mint' => 'forest_mint',
+      'seafoam' || 'theme_03' || 'theme_03_seafoam' => 'seafoam',
+      'lavender_dream' ||
+      'theme_04' ||
+      'theme_04_lavender_dream' =>
+        'lavender_dream',
+      'sunny_gold' || 'theme_05' || 'theme_05_sunny_gold' => 'sunny_gold',
+      'sky_blue' || 'theme_06' || 'theme_06_sky_blue' => 'sky_blue',
+      'berry_candy' || 'theme_07' || 'theme_07_berry_candy' => 'berry_candy',
+      _ => 'green_edition',
+    };
+  }
 
   bool get isTeachRecordingActive => forge.isTeachRecordingActive;
   HeartbeatStatusSnapshot? get lastHeartbeatStatus =>
@@ -574,113 +590,6 @@ class AutoSymbioticService {
     rawHtml: rawHtml,
     pageTitle: pageTitle,
     maxElements: maxElements,
-  );
-
-  // ── FRONTIER-1..4: Living Overlay, Bio-Acoustic, ChronoGraph & Rituals ───
-
-  ({
-    String mode,
-    bool overlayVisible,
-    String anchor,
-    String munchAnimation,
-    String routedTarget,
-    int redactedSecretsCount,
-    String summaryVi,
-  })
-  manageOverlayAndDropZone({
-    required String mode,
-    String? anchor,
-    String? droppedItemName,
-    String? droppedContent,
-    String? targetAction,
-    DateTime? nowUtc,
-  }) => frontier2026.manageOverlayAndDropZone(
-    mode: mode,
-    anchor: anchor,
-    droppedItemName: droppedItemName,
-    droppedContent: droppedContent,
-    targetAction: targetAction,
-    nowUtc: nowUtc,
-  );
-
-  String get activeColorThemeId => frontier2026.activeColorThemeId;
-
-  void syncColorTheme(String themeId, {DateTime? nowUtc}) =>
-      frontier2026.syncColorTheme(themeId, nowUtc: nowUtc);
-
-  ({
-    String mode,
-    String vocalKind,
-    int sampleRateHz,
-    int pcmByteCount,
-    String wavSha256,
-    String detectedOwnerTone,
-    String empathyAdjustmentVi,
-    String summaryVi,
-  })
-  vocalizeAndSenseProsody({
-    required String mode,
-    String? vocalKind,
-    String? themeId,
-    int? speechRateWpm,
-    int? rmsEnergyDb,
-    int? pauseRatioPercent,
-  }) => frontier2026.vocalizeAndSenseProsody(
-    mode: mode,
-    vocalKind: vocalKind,
-    themeId: themeId,
-    speechRateWpm: speechRateWpm,
-    rmsEnergyDb: rmsEnergyDb,
-    pauseRatioPercent: pauseRatioPercent,
-  );
-
-  ({
-    String mode,
-    int activeEdgesCount,
-    int historicalEdgesCount,
-    String supersededEdgeId,
-    String temporalNarrativeVi,
-    List<Map<String, Object?>> constellationNodes,
-    List<Map<String, Object?>> constellationEdges,
-    String summaryVi,
-  })
-  manageTemporalLifeGraph({
-    required String mode,
-    String? subject,
-    String? predicate,
-    String? object,
-    String? validFromIso,
-    DateTime? nowUtc,
-  }) => frontier2026.manageTemporalLifeGraph(
-    mode: mode,
-    subject: subject,
-    predicate: predicate,
-    object: object,
-    validFromIso: validFromIso,
-    nowUtc: nowUtc,
-  );
-
-  ({
-    String mode,
-    String activeRitual,
-    String cadencePattern,
-    bool standbyDockActive,
-    String unlockedKeepsakeVi,
-    String playdateSummaryVi,
-    String summaryVi,
-  })
-  executeMindfulRitualAndPlaydate({
-    required String mode,
-    int? durationMinutes,
-    String? focusGoal,
-    String? neighborShortId,
-    String? giftMessage,
-  }) => frontier2026.executeMindfulRitualAndPlaydate(
-    mode: mode,
-    durationMinutes: durationMinutes,
-    focusGoal: focusGoal,
-    neighborShortId: neighborShortId,
-    giftMessage: giftMessage,
   );
 
   // ── UIA-2: Zero-Screenshot Native OS UI Automation (UIA / AXUIElement) ────

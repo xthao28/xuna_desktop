@@ -344,7 +344,7 @@ class DesktopAgentController extends BaseGetxController {
     selectedColorThemeId.value = resolved.id;
     symbioticService?.syncColorTheme(resolved.id);
     frontierStatusSummaryVi.value =
-        '🎨 Đã đồng bộ bảng màu ${resolved.name} (${resolved.nameVi}) trên Desktop & ChronoGraph';
+        '🎨 Đã đồng bộ bảng màu ${resolved.name} (${resolved.nameVi}) trên Desktop';
     return resolved;
   }
 
@@ -417,52 +417,6 @@ class DesktopAgentController extends BaseGetxController {
     final snap = svc.presentLiveCanvas(action: action, title: title);
     refreshSymbioticState();
     return snap;
-  }
-
-  String? feedOverlayDropAndVocalizeFromUi({
-    required String droppedItemName,
-    String? droppedContent,
-    String vocalKind = 'happy_chirp',
-  }) {
-    final svc = symbioticService;
-    final cleanItem = droppedItemName.trim();
-    if (svc == null || cleanItem.isEmpty) return null;
-    final dropRes = svc.manageOverlayAndDropZone(
-      mode: 'feed_drop_item',
-      anchor: Platform.isMacOS ? 'mac_notch' : 'win_top_right',
-      droppedItemName: cleanItem,
-      droppedContent: droppedContent,
-    );
-    final vocalRes = svc.vocalizeAndSenseProsody(
-      mode: 'synthesize_vocal',
-      vocalKind: vocalKind,
-      speechRateWpm: 105,
-      rmsEnergyDb: -25,
-    );
-    frontierStatusSummaryVi.value =
-        '${dropRes.summaryVi}\n${vocalRes.summaryVi}';
-    refreshSymbioticState();
-    return frontierStatusSummaryVi.value;
-  }
-
-  String? updateChronoGraphAndRitualFromUi({
-    String objectVal = 'XUNA Frontier 2026',
-  }) {
-    final svc = symbioticService;
-    if (svc == null) return null;
-    final graphRes = svc.manageTemporalLifeGraph(
-      mode: 'upsert_temporal_edge',
-      subject: 'Chủ nhân',
-      predicate: 'đang_tập_trung_dự_án',
-      object: objectVal,
-    );
-    final ritualRes = svc.executeMindfulRitualAndPlaydate(
-      mode: 'start_breathing_478',
-    );
-    frontierStatusSummaryVi.value =
-        '${graphRes.summaryVi}\n${ritualRes.summaryVi}';
-    refreshSymbioticState();
-    return frontierStatusSummaryVi.value;
   }
 
   String? runZeroScreenshotUiAutomationFromUi({

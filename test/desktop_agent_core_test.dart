@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(66));
+        expect(toolsList, hasLength(62));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -3473,95 +3473,6 @@ void main() {
             expect(
               snapSc['compactAriaTree'] as String,
               contains('[ref=e2] button "Tải hóa đơn PDF"'),
-            );
-
-            // 8. FRONTIER-1..4: Living Overlay Drop-Zone, Bio-Acoustic Vocalizer, ChronoGraph & Mindful Rituals
-            final dropResp = await sym1Dispatcher.dispatch(
-              requestId: 1235,
-              params: const ToolsCallParams(
-                name: 'companion.overlay_and_drop',
-                arguments: <String, Object?>{
-                  'mode': 'feed_drop_item',
-                  'anchor': 'mac_notch',
-                  'droppedItemName': 'hoa_don_thang_11.csv',
-                  'droppedContent': 'HD01,1500000,token=sk-proj-secret1234567890abcdef',
-                },
-                invocationId: '12350000-0000-4000-8000-000000000035',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final dropSc =
-                dropResp.result['structuredContent'] as Map<String, Object?>;
-            expect(dropSc['overlayVisible'], isTrue);
-            expect(dropSc['anchor'], equals('mac_notch'));
-            expect(dropSc['munchAnimation'], equals('munch_sparkle'));
-            expect(dropSc['routedTarget'], equals('omniforge_invoice_pipeline'));
-            expect(dropSc['redactedSecretsCount'], greaterThanOrEqualTo(1));
-
-            final vocalResp = await sym1Dispatcher.dispatch(
-              requestId: 1236,
-              params: const ToolsCallParams(
-                name: 'acoustic.vocalize_and_sense',
-                arguments: <String, Object?>{
-                  'mode': 'synthesize_vocal',
-                  'vocalKind': 'happy_chirp',
-                  'speechRateWpm': 95,
-                  'rmsEnergyDb': -26,
-                },
-                invocationId: '12360000-0000-4000-8000-000000000036',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final vocalSc =
-                vocalResp.result['structuredContent'] as Map<String, Object?>;
-            expect(vocalSc['sampleRateHz'], equals(16000));
-            expect(vocalSc['pcmByteCount'], equals(5760));
-            expect((vocalSc['wavSha256'] as String).length, equals(64));
-            expect(vocalSc['detectedOwnerTone'], equals('tired_low_energy'));
-
-            final graphResp = await sym1Dispatcher.dispatch(
-              requestId: 1237,
-              params: const ToolsCallParams(
-                name: 'memory.temporal_graph',
-                arguments: <String, Object?>{
-                  'mode': 'upsert_temporal_edge',
-                  'subject': 'Chủ nhân',
-                  'predicate': 'đang_tập_trung_dự_án',
-                  'object': 'XUNA Frontier 2026',
-                },
-                invocationId: '12370000-0000-4000-8000-000000000037',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final graphSc =
-                graphResp.result['structuredContent'] as Map<String, Object?>;
-            expect(graphSc['activeEdgesCount'], greaterThanOrEqualTo(2));
-            expect(graphSc['historicalEdgesCount'], greaterThanOrEqualTo(2));
-            expect(graphSc['supersededEdgeId'], equals('edge_02'));
-
-            final ritualResp = await sym1Dispatcher.dispatch(
-              requestId: 1238,
-              params: const ToolsCallParams(
-                name: 'ritual.mindful_and_playdate',
-                arguments: <String, Object?>{
-                  'mode': 'send_neighbor_playdate',
-                  'neighborShortId': 'XUNA9F2A',
-                  'giftMessage': 'Tặng bạn hạt nắng xanh!',
-                },
-                invocationId: '12380000-0000-4000-8000-000000000038',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final ritualSc =
-                ritualResp.result['structuredContent'] as Map<String, Object?>;
-            expect(ritualSc['activeRitual'], equals('neighbor_playdate'));
-            expect(
-              ritualSc['playdateSummaryVi'] as String,
-              contains('XUNA9F2A'),
             );
 
             // UIA-2: Zero-Screenshot Native OS UI Automation (inspect_window, invoke_ref, set_value_ref)
