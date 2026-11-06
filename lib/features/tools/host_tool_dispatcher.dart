@@ -390,7 +390,8 @@ class HostToolDispatcher {
     try {
       perms = await channel.permissions();
     } catch (_) {
-      perms = const HostPermissionSnapshot();
+      // A failed read is not a grant: advertise the state as undetermined.
+      perms = const HostPermissionSnapshot.unknown();
     }
     final mvp = buildMvpToolCatalog(
       defaultPermission: perms.accessibility,

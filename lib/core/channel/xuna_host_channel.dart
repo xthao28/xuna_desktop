@@ -44,6 +44,13 @@ class HostPermissionSnapshot {
     this.automation = const <String, XtpPermissionState>{},
   });
 
+  /// Used when the OS permission state could not be read. Reports
+  /// `not_determined` instead of assuming access was granted.
+  const HostPermissionSnapshot.unknown()
+    : accessibility = XtpPermissionState.notDetermined,
+      notifications = XtpPermissionState.notDetermined,
+      automation = const <String, XtpPermissionState>{};
+
   final XtpPermissionState accessibility;
   final XtpPermissionState notifications;
   final Map<String, XtpPermissionState> automation;
@@ -441,7 +448,14 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
   Future<bool> displayWake() async {
     final map = await _invokeMap('displayWake');
     final woken = map['woken'] ?? map['awake'];
-    return woken is bool ? woken : true;
+    if (woken is! bool) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'displayWake returned no awake/woken result.',
+      );
+    }
+    return woken;
   }
 
   @override
@@ -455,7 +469,14 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
   Future<bool> lockScreen() async {
     final map = await _invokeMap('lockScreen');
     final locked = map['locked'];
-    return locked is bool ? locked : true;
+    if (locked is! bool) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'lockScreen returned no locked result.',
+      );
+    }
+    return locked;
   }
 
   @override
@@ -667,13 +688,19 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           'hostname': Platform.localHostname,
         };
       case 'permissions':
+        // No Linux permission probe exists, so report that nothing was
+        // determined rather than claiming access.
         return <String, Object?>{
-          'accessibility': 'granted',
-          'notifications': 'granted',
+          'accessibility': 'not_determined',
+          'notifications': 'not_determined',
           'automation': const <String, String>{},
         };
       case 'requestPermission':
-        return <String, Object?>{'state': 'granted'};
+        throw const XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'platform_unsupported',
+          message: 'Requesting OS permissions is not implemented on Linux.',
+        );
       case 'media':
         final cmd = (args['cmd'] as String? ?? 'play_pause').toLowerCase();
         final pcmd = switch (cmd) {
@@ -800,7 +827,13 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           'nodes': const <Map<String, Object?>>[],
         };
       default:
-        return const <String, Object?>{};
+        // Methods without a Linux implementation (lockScreen, displayWake, ...)
+        // must not report an empty success.
+        throw XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'platform_unsupported',
+          message: '"$method" is not implemented on Linux.',
+        );
     }
   }
 }

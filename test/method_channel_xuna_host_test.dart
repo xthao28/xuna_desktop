@@ -329,4 +329,82 @@ void main() {
       expect(npMeta['xuna/status'], 'needs_permission');
     },
   );
+
+  test(
+    'lockScreen and displayWake report the native result and fail instead of inventing success when it is missing',
+    () async {
+      var reply = <String, Object?>{'locked': false, 'awake': false};
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async => reply);
+
+      // A real "not locked" answer is passed through, not turned into true.
+      expect(await hostChannel.lockScreen(), isFalse);
+      expect(await hostChannel.displayWake(), isFalse);
+
+      reply = <String, Object?>{};
+      for (final call in <Future<Object?> Function()>[
+        hostChannel.lockScreen,
+        hostChannel.displayWake,
+      ]) {
+        await expectLater(
+          call(),
+          throwsA(
+            isA<XunaHostChannelException>()
+                .having((e) => e.status, 'status', XtpStatus.failed)
+                .having((e) => e.errorCode, 'errorCode', 'os_error'),
+          ),
+        );
+      }
+    },
+  );
+
+  test(
+    'a failed OS permission read is advertised as not_determined, never granted',
+    () async {
+      final tempDir = await Directory.systemTemp.createTemp('xuna_perm_test_');
+      addTearDown(() => tempDir.delete(recursive: true));
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            if (call.method == 'permissions') {
+              throw PlatformException(code: 'failed', message: 'probe failed');
+            }
+            return <String, Object?>{};
+          });
+
+      final logger = ContentFreeLogger();
+      final policyStore = HostPolicyStore(
+        policyFile: File('${tempDir.path}/host-policy.json'),
+        logger: logger,
+      );
+      await policyStore.writeDefaultPolicy();
+      final stopController = EmergencyStopController(logger: logger);
+      final dispatcher = HostToolDispatcher(
+        policyStore: policyStore,
+        channel: hostChannel,
+        auditStore: AuditLogStore(auditDir: tempDir),
+        stopController: stopController,
+        logger: logger,
+      );
+      addTearDown(() async {
+        dispatcher.dispose();
+        await stopController.dispose();
+        await policyStore.dispose();
+      });
+
+      final manifest = await dispatcher.buildManifest();
+      final ui = manifest.firstWhere((t) => t.name == 'ui.accessibility_tree');
+      expect(ui.policy.permission, XtpPermissionState.notDetermined);
+      expect(
+        manifest.any((t) => t.policy.permission == XtpPermissionState.granted),
+        isFalse,
+      );
+      expect(
+        const HostPermissionSnapshot.unknown().toWireMap(),
+        <String, String>{
+          'accessibility': 'not_determined',
+          'notifications': 'not_determined',
+        },
+      );
+    },
+  );
 }
