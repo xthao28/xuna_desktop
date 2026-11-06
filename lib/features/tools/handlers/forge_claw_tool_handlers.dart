@@ -767,12 +767,7 @@ class UiAccessibilityTreeTool implements HostToolHandler {
     }
 
     final res = context.symbioticService.uiAccessibility
-        .executeUiAccessibilityTree(
-          action: 'inspect_window',
-          windowTitle: effectiveWindowTitle,
-          maxNodes: maxNodes,
-          preserveNativeNodes: hasNativeSnapshot,
-        );
+        .executeUiAccessibilityTree(windowTitle: effectiveWindowTitle);
 
     return ToolHandlerOutput(
       text: res.summaryVi,
@@ -789,7 +784,7 @@ class UiAccessibilityTreeTool implements HostToolHandler {
         'summaryVi': res.summaryVi,
       },
       toastBody:
-          'OS UIA [${res.windowTitle}]: ${res.nodeCount} controls (0 ảnh · -${res.tokenSavingsPercent}% token)',
+          'OS UIA [${res.windowTitle}]: ${res.nodeCount} controls (0 ảnh)',
     );
   }
 }

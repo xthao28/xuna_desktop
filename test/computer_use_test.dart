@@ -1192,14 +1192,14 @@ void main() {
       expect(
         uia.validateAndResolveRefKey(
           '@$activeSnapId:e3',
-          defaultRefId: 'ui_1',
+          action: 'invoke_ref',
         ),
         equals('ui_3'),
       );
       expect(
         () => uia.validateAndResolveRefKey(
           '@s00000099:e3',
-          defaultRefId: 'ui_1',
+          action: 'invoke_ref',
         ),
         throwsA(
           isA<XunaHostChannelException>().having(

@@ -414,68 +414,6 @@ class DesktopAgentController extends BaseGetxController {
     return snap;
   }
 
-  String? runZeroScreenshotUiAutomationFromUi({
-    String? windowTitle,
-    String refId = 'ui_1',
-  }) {
-    final svc = symbioticService;
-    if (svc == null) return null;
-    final resolvedTitle =
-        (windowTitle != null && windowTitle.trim().isNotEmpty)
-        ? windowTitle.trim()
-        : activeFocusedAppName.value;
-    final inspectRes = svc.executeUiAccessibilityTree(
-      action: 'inspect_window',
-      windowTitle: resolvedTitle,
-    );
-    final invokeRes = svc.executeUiAccessibilityTree(
-      action: 'invoke_ref',
-      windowTitle: resolvedTitle,
-      refId: refId,
-    );
-    frontierStatusSummaryVi.value =
-        '${inspectRes.summaryVi}\n${invokeRes.summaryVi}';
-    refreshSymbioticState();
-    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      unawaited(_runNativeZeroScreenshotUiAutomation(resolvedTitle, refId));
-    }
-    return frontierStatusSummaryVi.value;
-  }
-
-  Future<void> _runNativeZeroScreenshotUiAutomation(
-    String windowTitle,
-    String refId,
-  ) async {
-    try {
-      final snap = await channel.inspectWindowUiTree(
-        windowTitle: windowTitle,
-        maxNodes: 30,
-      );
-      if (snap.nodes.isNotEmpty) {
-        symbioticService?.uiAccessibility.applyNativeWindowUiTree(
-          windowTitle: snap.windowTitle.isNotEmpty
-              ? snap.windowTitle
-              : windowTitle,
-          nodes: snap.nodes,
-        );
-      }
-      final actRes = await channel.invokeWindowUiControl(
-        action: 'invoke_ref',
-        windowTitle: windowTitle,
-        refId: refId,
-      );
-      if (actRes.nodes.isNotEmpty) {
-        symbioticService?.uiAccessibility.applyNativeWindowUiTree(
-          windowTitle: actRes.windowTitle.isNotEmpty
-              ? actRes.windowTitle
-              : windowTitle,
-          nodes: actRes.nodes,
-        );
-      }
-      refreshSymbioticState();
-    } catch (_) {}
-  }
-
   String resolveRealSkillDirectory(String rawFolder) =>
       DesktopSkillRunner.resolveRealSkillDirectoryStatic(rawFolder);
 

@@ -9,10 +9,9 @@ import 'symbiotic_models.dart';
 /// UIA-1..2: Zero-Screenshot Native OS UI Automation (`ui.accessibility_tree`).
 ///
 /// Inspects native desktop windows (`Windows IUIAutomation` / `macOS AXUIElement`)
-/// into compact `[ref=ui_1]..[ref=ui_N]` semantic control nodes, redacts password
-/// fields (`[REDACTED_PASSWORD_CONTROL]`), and executes `invoke_ref` (`InvokePattern` / `AXPress`)
-/// or `set_value_ref` (`ValuePattern` / `AXValue`) with **0 screenshot bytes** and
-/// **0 mouse cursor hijacking**.
+/// into compact `[ref=ui_1]..[ref=ui_N]` semantic control nodes and redacts
+/// password fields (`[REDACTED_PASSWORD_CONTROL]`). It only describes a tree that
+/// was applied from a live native scan; it does not click, type or invent nodes.
 class UiAccessibilityTreeService {
   UiAccessibilityTreeService({
     required HeartbeatCanvasService canvasService,
@@ -26,7 +25,6 @@ class UiAccessibilityTreeService {
   HumanHandoverSnapshot? _activeHandover;
   String _activeFocusedAppName = 'Visual Studio Code';
   String _lastWindowTitle = 'Active Desktop Window';
-  String _lastInvokedRefId = 'none';
   bool _hasLiveNativeTree = false;
   int _snapshotCounter = 0;
   String _activeSnapshotId = 's00000001';
@@ -68,21 +66,17 @@ class UiAccessibilityTreeService {
   /// element in the active snapshot.
   String validateAndResolveRefKey(
     String? rawRef, {
-    required String defaultRefId,
-    String? action,
+    required String action,
   }) {
     if (rawRef == null || rawRef.trim().isEmpty) {
-      if (action != null && elementTargetingUiActions.contains(action)) {
-        // Never guess a target element: the first button in an AX tree is often the
-        // window close button, and `AXStaticText` is not editable. Ask the model to
-        // pick a ref from the live snapshot instead.
-        throw XunaHostChannelException(
-          status: XtpStatus.failed,
-          errorCode: 'missing_ref',
-          message: _missingRefMessage(action),
-        );
-      }
-      return defaultRefId;
+      // Never guess a target element: the first button in an AX tree is often the
+      // window close button, and `AXStaticText` is not editable. Ask the model to
+      // pick a ref from the live snapshot instead.
+      throw XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'missing_ref',
+        message: _missingRefMessage(action),
+      );
     }
     final trimmed = rawRef.trim();
     final parsed = parseSnapshotElementRef(trimmed);
@@ -118,18 +112,6 @@ class UiAccessibilityTreeService {
     }
     return _resolveCanonicalRefKey(trimmed);
   }
-
-  /// UI actions that act on one specific element and therefore require a `refId`.
-  static const Set<String> elementTargetingUiActions = <String>{
-    'invoke_ref',
-    'set_value_ref',
-    'double_click',
-    'triple_click',
-    'right_click',
-    'middle_click',
-    'browser_click',
-    'browser_type',
-  };
 
   /// Bounded `missing_ref` diagnostic listing up to 6 candidate refs from the live snapshot
   /// (editable fields for `set_value_ref`, any non-secret control otherwise).
@@ -464,84 +446,19 @@ class UiAccessibilityTreeService {
     List<Map<String, Object?>> nodes,
     String summaryVi,
   })
-  executeUiAccessibilityTree({
-    required String action,
-    String? windowTitle,
-    String? refId,
-    String? valueText,
-    int maxNodes = 30,
-    bool preserveNativeNodes = false,
-    String? nativeActionDetail,
-  }) {
+  executeUiAccessibilityTree({String? windowTitle}) {
     final cleanTitle = (windowTitle != null && windowTitle.trim().isNotEmpty)
         ? windowTitle.trim()
         : _lastWindowTitle;
     _lastWindowTitle = cleanTitle;
 
-    if (!preserveNativeNodes &&
-        (_activeUiNodes.isEmpty || action == 'inspect_window')) {
-      _seedWindowUiNodes(cleanTitle, maxNodes: maxNodes.clamp(1, 80));
-    }
-
-    var redactedCount = _activeUiNodes.values
+    // Reports only the tree last applied from a live native scan
+    // ([applyNativeWindowUiTree]); it never invents controls or acts on them.
+    final redactedCount = _activeUiNodes.values
         .where((n) => n['isPassword'] == true)
         .length;
-
-    final detailSuffix =
-        (nativeActionDetail != null && nativeActionDetail.trim().isNotEmpty)
-        ? ' (${nativeActionDetail.trim()})'
-        : '';
-
-    String summaryVi;
-    if (action == 'invoke_ref') {
-      final rawRef = (refId ?? 'ui_3').trim();
-      final targetRef = _resolveCanonicalRefKey(rawRef);
-      _lastInvokedRefId = rawRef;
-      final targetNode = _activeUiNodes[targetRef] ??
-          <String, Object?>{
-            'refId': targetRef,
-            'snapshotRef': '@$_activeSnapshotId:e1',
-            'role': 'button',
-            'label': 'Nút chức năng ($rawRef)',
-            'pattern': 'InvokePattern / AXPress',
-            'status': 'invoked',
-          };
-      targetNode['status'] = 'invoked_0_screenshot';
-      _activeUiNodes[targetRef] = targetNode;
-      summaryVi =
-          'Đã bấm trực tiếp [${targetNode['refId']}] "${targetNode['label']}" trên cửa sổ "$cleanTitle" qua OS UIA (InvokePattern / AXPress)$detailSuffix — 0 chụp màn hình, 0 chiếm chuột!';
-    } else if (action == 'set_value_ref') {
-      final rawRef = (refId ?? 'ui_1').trim();
-      final targetRef = _resolveCanonicalRefKey(rawRef);
-      final redacted = redactSensitiveSelectionText(valueText ?? '');
-      final cleanVal = redacted.text;
-      if (redacted.redactedCount > 0) {
-        redactedCount += redacted.redactedCount;
-      }
-      _lastInvokedRefId = rawRef;
-      final targetNode = _activeUiNodes[targetRef] ??
-          <String, Object?>{
-            'refId': targetRef,
-            'snapshotRef': '@$_activeSnapshotId:e1',
-            'role': 'edit',
-            'label': 'Ô nhập liệu ($rawRef)',
-            'pattern': 'ValuePattern / AXValue',
-            'value': cleanVal,
-          };
-      targetNode['value'] = cleanVal;
-      targetNode['status'] = 'value_set_0_screenshot';
-      _activeUiNodes[targetRef] = targetNode;
-      summaryVi =
-          'Đã điền giá trị vào [$rawRef] "${targetNode['label']}" trên "$cleanTitle" qua ValuePattern$detailSuffix — 0 chụp màn hình!';
-    } else if (action != 'inspect_window') {
-      final targetRef = (refId ?? 'ui_1').trim();
-      _lastInvokedRefId = targetRef;
-      summaryVi =
-          'Đã thực thi thao tác [$action] trên cửa sổ "$cleanTitle"$detailSuffix — 0 chụp màn hình!';
-    } else {
-      summaryVi =
-          'Quét cây UI Automation "$cleanTitle" ($_activeSnapshotId): ${_activeUiNodes.length} phần tử ([ref=ui_1]..[ref=ui_${_activeUiNodes.length}]), che $redactedCount ô mật khẩu, 0 byte ảnh chụp màn hình (tiết kiệm 92% token).';
-    }
+    final summaryVi =
+        'Quét cây UI Automation "$cleanTitle" ($_activeSnapshotId): ${_activeUiNodes.length} phần tử, che $redactedCount ô mật khẩu, 0 byte ảnh chụp màn hình.';
 
     final nodesList = _activeUiNodes.values.toList(growable: false);
     final compactLines = nodesList.map((n) {
@@ -568,7 +485,7 @@ class UiAccessibilityTreeService {
       LiveCanvasSurfaceSnapshot(
         canvasId: 'cnv-uia-${DateTime.now().millisecondsSinceEpoch % 100000}',
         surfaceKind: 'data_table',
-        titleVi: 'OS UI Automation: $cleanTitle (0-Screenshot · -92% Token)',
+        titleVi: 'OS UI Automation: $cleanTitle (0-Screenshot)',
         columns: const <String>[
           'Mã Ref UI',
           'Kiểu & Giao thức OS',
@@ -576,76 +493,22 @@ class UiAccessibilityTreeService {
           'Trạng thái',
         ],
         rows: rows,
-        actions: const <String>['invoke_ref', 'export_csv', 'undo_last'],
+        actions: const <String>['export_csv', 'undo_last'],
         summaryVi: summaryVi,
       ),
     );
 
     return (
-      action: action,
+      action: 'inspect_window',
       windowTitle: cleanTitle,
       nodeCount: nodesList.length,
-      tokenSavingsPercent: 92,
+      tokenSavingsPercent: 0,
       screenshotBytesUsed: 0,
       compactUiTree: compactLines,
-      invokedRefId: _lastInvokedRefId,
+      invokedRefId: '',
       redactedControlsCount: redactedCount,
       nodes: nodesList,
       summaryVi: summaryVi,
     );
-  }
-
-  void _seedWindowUiNodes(String windowTitle, {required int maxNodes}) {
-    _activeUiNodes.clear();
-    _hasLiveNativeTree = false;
-    final snapId = _mintNextSnapshotId();
-    final cleanWin = windowTitle.trim().isEmpty
-        ? 'Cửa sổ đang mở'
-        : windowTitle.trim();
-    final seed = <Map<String, Object?>>[
-      <String, Object?>{
-        'refId': 'ui_1',
-        'snapshotRef': '@$snapId:e1',
-        'role': 'edit',
-        'label': 'Ô nhập liệu / Tìm kiếm ($cleanWin)',
-        'pattern': 'ValuePattern / AXValue',
-        'value': '',
-        'isPassword': false,
-        'status': 'ready',
-      },
-      <String, Object?>{
-        'refId': 'ui_2',
-        'snapshotRef': '@$snapId:e2',
-        'role': 'password_edit',
-        'label': '[REDACTED_PASSWORD_CONTROL]',
-        'pattern': 'Protected / Blocked',
-        'value': '[REDACTED]',
-        'isPassword': true,
-        'status': 'redacted',
-      },
-      <String, Object?>{
-        'refId': 'ui_3',
-        'snapshotRef': '@$snapId:e3',
-        'role': 'button',
-        'label': 'Nút thực thi chính ($cleanWin)',
-        'pattern': 'InvokePattern / AXPress',
-        'value': '',
-        'isPassword': false,
-        'status': 'ready',
-      },
-      <String, Object?>{
-        'refId': 'ui_4',
-        'snapshotRef': '@$snapId:e4',
-        'role': 'checkbox',
-        'label': 'Tùy chọn xác nhận ($cleanWin)',
-        'pattern': 'TogglePattern / AXValue',
-        'value': 'checked',
-        'isPassword': false,
-        'status': 'ready',
-      },
-    ];
-    for (final item in seed.take(maxNodes)) {
-      _activeUiNodes[item['refId'] as String] = item;
-    }
   }
 }

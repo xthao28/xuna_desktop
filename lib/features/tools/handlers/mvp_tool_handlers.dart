@@ -156,16 +156,11 @@ class AppLaunchTool extends HostToolHandler {
           nodes: snap.nodes,
         );
         final treeRes = context.symbioticService.uiAccessibility
-            .executeUiAccessibilityTree(
-              action: 'inspect_window',
-              windowTitle: snap.windowTitle,
-              maxNodes: 25,
-              preserveNativeNodes: true,
-            );
+            .executeUiAccessibilityTree(windowTitle: snap.windowTitle);
         payload['windowTitle'] = treeRes.windowTitle;
         payload['compactUiTree'] = treeRes.compactUiTree;
         payload['nextStepHint'] =
-            'Gọi ui__accessibility_tree (action="set_value_ref" hoặc "invoke_ref") với refId trong compactUiTree nếu cần thao tác tiếp bên trong $appName.';
+            'Dùng ui__accessibility_tree (action="inspect_window") để đọc lại cửa sổ; thao tác bên trong $appName cần phiên computer-use và các tool input.*.';
       }
     } catch (_) {
       // Best-effort initial UI inspection on app launch

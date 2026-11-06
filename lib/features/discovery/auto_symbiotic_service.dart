@@ -590,34 +590,6 @@ class AutoSymbioticService {
     maxElements: maxElements,
   );
 
-  // ── UIA-2: Zero-Screenshot Native OS UI Automation (UIA / AXUIElement) ────
-
-  ({
-    String action,
-    String windowTitle,
-    int nodeCount,
-    int tokenSavingsPercent,
-    int screenshotBytesUsed,
-    String compactUiTree,
-    String invokedRefId,
-    int redactedControlsCount,
-    List<Map<String, Object?>> nodes,
-    String summaryVi,
-  })
-  executeUiAccessibilityTree({
-    required String action,
-    String? windowTitle,
-    String? refId,
-    String? valueText,
-    int maxNodes = 30,
-  }) => uiAccessibility.executeUiAccessibilityTree(
-    action: action,
-    windowTitle: windowTitle,
-    refId: refId,
-    valueText: valueText,
-    maxNodes: maxNodes,
-  );
-
   // ── CLAW-APP-ENGINE: 3-Tier App Router, App Playbooks & Human Handover ────
 
   List<AppPlaybookEntry> listAppPlaybooks() =>

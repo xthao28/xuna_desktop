@@ -52,7 +52,6 @@ void main() {
       expect(
         () => uia.validateAndResolveRefKey(
           null,
-          defaultRefId: 'ui_3',
           action: 'invoke_ref',
         ),
         _missingRef(has: 'candidates'),
@@ -65,7 +64,6 @@ void main() {
       expect(
         () => uia.validateAndResolveRefKey(
           '  ',
-          defaultRefId: 'ui_1',
           action: 'set_value_ref',
         ),
         _missingRef(has: 'Tìm kiếm', lacks: 'Thư viện'),
@@ -73,7 +71,6 @@ void main() {
       expect(
         () => uia.validateAndResolveRefKey(
           null,
-          defaultRefId: 'ui_1',
           action: 'set_value_ref',
         ),
         _missingRef(lacks: 'REDACTED'),
@@ -85,23 +82,22 @@ void main() {
       expect(
         () => uia.validateAndResolveRefKey(
           null,
-          defaultRefId: 'ui_1',
           action: 'double_click',
         ),
         _missingRef(has: 'inspect_window'),
       );
     });
 
-    test('window-level actions keep their default ref', () {
+    test('no action falls back to a default ref, window-level ones included', () {
       final uia = AutoSymbioticService().uiAccessibility;
-      expect(
-        uia.validateAndResolveRefKey(
-          null,
-          defaultRefId: 'ui_3',
-          action: 'scroll_down',
-        ),
-        'ui_3',
-      );
+      uia.applyNativeWindowUiTree(windowTitle: 'Music', nodes: _macSnapshot());
+      for (final action in const <String>['scroll_down', 'shortcut', 'drag']) {
+        expect(
+          () => uia.validateAndResolveRefKey(null, action: action),
+          _missingRef(),
+          reason: action,
+        );
+      }
     });
 
     test('an explicit ref is still resolved', () {
@@ -110,11 +106,33 @@ void main() {
       expect(
         uia.validateAndResolveRefKey(
           'ui_4',
-          defaultRefId: 'ui_1',
           action: 'set_value_ref',
         ),
         'ui_4',
       );
+    });
+  });
+
+  group('executeUiAccessibilityTree only describes a tree that was really scanned', () {
+    test('with no native scan applied it reports zero controls and invents none', () {
+      final uia = AutoSymbioticService().uiAccessibility;
+      final res = uia.executeUiAccessibilityTree(windowTitle: 'Music');
+      expect(res.action, 'inspect_window');
+      expect(res.nodeCount, 0);
+      expect(res.nodes, isEmpty);
+      expect(res.compactUiTree, isEmpty);
+      expect(res.invokedRefId, isEmpty);
+      expect(res.tokenSavingsPercent, 0, reason: 'savings are not measured');
+    });
+
+    test('after a native scan it lists exactly the scanned controls', () {
+      final uia = AutoSymbioticService().uiAccessibility;
+      uia.applyNativeWindowUiTree(windowTitle: 'Music', nodes: _macSnapshot());
+      final res = uia.executeUiAccessibilityTree(windowTitle: 'Music');
+      expect(res.nodeCount, greaterThan(0));
+      expect(res.compactUiTree, contains('Tìm kiếm'));
+      expect(res.compactUiTree, isNot(contains('Nút thực thi chính')));
+      expect(res.compactUiTree, isNot(contains('Tùy chọn xác nhận')));
     });
   });
 }
