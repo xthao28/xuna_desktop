@@ -1215,6 +1215,23 @@ void main() {
       await tempDir.delete(recursive: true);
     });
 
+    test('NativeHostChannelComputerUseProvider never inspects more controls than the native layer can act on', () async {
+      final channel = FakeXunaHostChannel();
+      final provider = NativeHostChannelComputerUseProvider(channel: channel);
+      expect(NativeHostChannelComputerUseProvider.nativeActionableNodeCap, 60);
+
+      // The session manager asks for up to 300 nodes; native refs 61..80 could be
+      // listed but never invoked, so the request is capped at 60.
+      await provider.inspectActiveWindow(maxNodes: 300);
+      await provider.inspectActiveWindow(maxNodes: 80);
+      await provider.inspectActiveWindow(maxNodes: 20);
+      final inspected = channel.invokedMethods
+          .where((m) => m.startsWith('inspectWindowUiTree:'))
+          .map((m) => int.parse(m.split(':').last))
+          .toList();
+      expect(inspected, <int>[60, 60, 20]);
+    });
+
     test('NativeHostChannelComputerUseProvider never guesses a target: no element, coordinates only or an unparseable ref fail without touching the native channel', () async {
       final channel = FakeXunaHostChannel();
       final provider = NativeHostChannelComputerUseProvider(channel: channel);

@@ -672,6 +672,15 @@ class AgentDesktopComputerUseProvider implements ComputerUseProvider {
 /// or Linux X11 fallback), with optional delegation to an external
 /// `agent-desktop` MCP binary when `XUNA_AGENT_DESKTOP_BIN` is configured.
 class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
+  /// Largest number of controls the native layer can act on by `ui_N` ref.
+  ///
+  /// Native refs are ordinals in a list that `invokeWindowUiControl` rebuilds
+  /// with a cap of 60 (`xuna_win_uia_engine.h`, `ExecuteInvokeWindowUiControl`).
+  /// `inspectWindowUiTree` can list up to 80, so refs 61..80 would be offered to
+  /// the model but could never be invoked. Inspecting no more than this cap keeps
+  /// every offered ref actionable. Keep it equal to the native invoke cap.
+  static const int nativeActionableNodeCap = 60;
+
   NativeHostChannelComputerUseProvider({
     required this.channel,
     this.agentDesktopBinaryPath,
@@ -731,7 +740,7 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     }
     final ctx = await channel.readActiveWindowContext(maxChars: 600);
     final tree = await channel.inspectWindowUiTree(
-      maxNodes: maxNodes.clamp(1, 80),
+      maxNodes: maxNodes.clamp(1, nativeActionableNodeCap),
     );
     final rawProc =
         (ctx.processName.trim().isNotEmpty && ctx.processName != 'unknown')
