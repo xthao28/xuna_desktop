@@ -153,14 +153,14 @@ class SelectionReadTool extends HostToolHandler {
     final redacted = redactSensitiveSelectionText(raw, maxChars: maxChars);
     return ToolHandlerOutput(
       text: redacted.text.isEmpty
-          ? 'Không có văn bản đang chọn trong bộ nhớ tạm.'
-          : 'Đã đọc đoạn văn bản đang chọn (${redacted.text.length} ký tự, ẩn ${redacted.redactedCount} mã nhạy cảm).',
+          ? 'Bộ nhớ tạm đang trống (tool này chỉ đọc bộ nhớ tạm, không đọc vùng đang bôi đen; hãy sao chép trước).'
+          : 'Đã đọc văn bản trong bộ nhớ tạm (${redacted.text.length} ký tự, ẩn ${redacted.redactedCount} mã nhạy cảm).',
       structuredContent: <String, Object?>{
         'text': redacted.text,
         'truncated': redacted.truncated,
         'redactedCount': redacted.redactedCount,
       },
-      toastBody: 'đã đọc đoạn văn bản đang chọn',
+      toastBody: 'đã đọc văn bản trong bộ nhớ tạm',
     );
   }
 }

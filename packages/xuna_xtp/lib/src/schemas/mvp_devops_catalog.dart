@@ -583,7 +583,7 @@ List<ToolDescriptor> buildDeskCopilotTools({
     ToolDescriptor(
       name: 'selection.read',
       description:
-          'Read selected or clipboard text (<= 1200 chars) with automatic secret/token redaction.',
+          'Read the text currently in the system clipboard (<= 1200 chars) with automatic secret/token redaction. It does not read the active selection: the owner must copy it first.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
