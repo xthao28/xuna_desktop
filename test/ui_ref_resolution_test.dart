@@ -134,5 +134,21 @@ void main() {
       expect(res.compactUiTree, isNot(contains('Nút thực thi chính')));
       expect(res.compactUiTree, isNot(contains('Tùy chọn xác nhận')));
     });
+
+    test('a control with no native ref is skipped, never given an invented ref', () {
+      final uia = AutoSymbioticService().uiAccessibility;
+      uia.applyNativeWindowUiTree(
+        windowTitle: 'Music',
+        nodes: const <Map<String, Object?>>[
+          <String, Object?>{'role': 'button', 'label': 'Khong co ref'},
+          <String, Object?>{'refId': 'ui_7', 'role': 'button', 'label': 'Co ref'},
+        ],
+      );
+      final res = uia.executeUiAccessibilityTree(windowTitle: 'Music');
+      expect(res.nodeCount, 1);
+      expect(res.compactUiTree, contains('Co ref'));
+      expect(res.compactUiTree, isNot(contains('Khong co ref')));
+      expect(res.compactUiTree, contains('[ref=ui_7]'));
+    });
   });
 }

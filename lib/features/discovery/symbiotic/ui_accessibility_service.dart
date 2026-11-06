@@ -404,8 +404,12 @@ class UiAccessibilityTreeService {
       })) {
         continue;
       }
+      // A control the native layer did not give a ref for cannot be addressed
+      // later, so it is skipped rather than given an invented `ui_<idx>` ref.
+      final rawRefId = raw['refId'];
+      if (rawRefId is! String || rawRefId.trim().isEmpty) continue;
       idx++;
-      final refId = (raw['refId'] as String?) ?? 'ui_$idx';
+      final refId = rawRefId;
       final snapshotRef = qualifySnapshotElementRef(
         snapshotId: snapId,
         rawId: refId,
