@@ -1819,7 +1819,7 @@ List<ToolDescriptor> buildComputerUseTools({
           'text': <String, Object?>{
             'type': 'string',
             'minLength': 1,
-            'maxLength': 200,
+            'maxLength': 4000,
           },
           'headed': <String, Object?>{'type': 'boolean'},
           'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
@@ -1845,23 +1845,10 @@ List<ToolDescriptor> buildComputerUseTools({
         'properties': <String, Object?>{
           'combo': <String, Object?>{
             'type': 'string',
-            'enum': <String>[
-              'Enter',
-              'Tab',
-              'Esc',
-              'Ctrl+S',
-              'Cmd+S',
-              '⌘S',
-              'Ctrl+F',
-              'Cmd+F',
-              '⌘F',
-              'ArrowUp',
-              'ArrowDown',
-              'ArrowLeft',
-              'ArrowRight',
-              'PageUp',
-              'PageDown',
-            ],
+            'minLength': 1,
+            'maxLength': 40,
+            'description':
+                'One key with optional Cmd/Ctrl/Alt/Shift modifiers joined by +, e.g. Enter, Cmd+L, Cmd+Shift+P, Ctrl+Tab, F5. Quit, log-out, lock, force-quit and delete combos are rejected.',
           },
           'inForm': <String, Object?>{'type': 'boolean'},
           'headed': <String, Object?>{'type': 'boolean'},

@@ -319,6 +319,57 @@ extension XunaHostPlugin {
     }
   }
 
+  /// Labels of synthetic controls advertised by `collectScriptableAppUiNodes`; the executor
+  /// matches on the same constants so advertising and acting cannot drift apart.
+  static let notesCreateNodeLabel = "Tạo ghi chú mới / Nhập nội dung ghi chú"
+  static let remindersCreateNodeLabel = "Tạo lời nhắc mới (New Reminder)"
+
+  /// True when the element advertises the `AXPress` action.
+  func axSupportsPress(_ element: AXUIElement) -> Bool {
+    var namesRef: CFArray?
+    guard AXUIElementCopyActionNames(element, &namesRef) == .success,
+          let names = namesRef as? [String]
+    else { return false }
+    return names.contains(kAXPressAction as String)
+  }
+
+  /// Chromium-based shells (Electron, CEF) only build their accessibility tree after a
+  /// client asks for it. Detected from the bundle's frameworks, not from app names.
+  func isChromiumShellApp(_ app: NSRunningApplication) -> Bool {
+    guard let bundleURL = app.bundleURL else { return false }
+    let frameworks = bundleURL.appendingPathComponent("Contents/Frameworks")
+    let markers = [
+      "Electron Framework.framework",
+      "Chromium Embedded Framework.framework",
+    ]
+    return markers.contains {
+      FileManager.default.fileExists(atPath: frameworks.appendingPathComponent($0).path)
+    }
+  }
+
+  /// Asks a web-based app to expose its accessibility tree.
+  /// Returns true when this call switched it on (the tree then needs a moment to build).
+  @discardableResult
+  func enableAssistiveAccessibility(app: NSRunningApplication, axApp: AXUIElement) -> Bool {
+    var current: CFTypeRef?
+    if AXUIElementCopyAttributeValue(axApp, "AXManualAccessibility" as CFString, &current) == .success,
+       (current as? Bool) == true
+    {
+      return false
+    }
+    let manualErr = AXUIElementSetAttributeValue(
+      axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    var flipped = manualErr == .success
+    if isChromiumShellApp(app) {
+      // CEF shells honour this one instead; it is limited to Chromium bundles because
+      // it can change window-animation behaviour in native apps.
+      let enhancedErr = AXUIElementSetAttributeValue(
+        axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+      flipped = flipped || enhancedErr == .success
+    }
+    return flipped
+  }
+
   func collectInteractiveAxNodes(
     from root: AXUIElement,
     maxNodes: Int,
@@ -345,12 +396,25 @@ extension XunaHostPlugin {
       "AXStaticText",
       "AXSlider",
     ]
+    // Roles that are only worth reporting when they are actually clickable
+    // (Chromium/Electron exposes many clickable `div`s as labelled AXGroup/AXImage).
+    let pressOnlyRoles: Set<String> = ["AXGroup", "AXImage", "AXHeading", "AXListItem"]
+    // Text inputs are reported even without a label: chat boxes in web-based apps
+    // frequently have no title/description/placeholder, and hiding them blocks typing.
+    let textInputRoles: Set<String> = ["AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"]
     var queue: [(element: AXUIElement, depth: Int)] = [(root, 0)]
+    var queueHead = 0
     var visited = 0
-    let maxVisited = 500
+    // Web-based UIs nest far deeper than native ones, so allow a deep walk but bound it by time.
+    let maxVisited = 2500
+    let maxDepth = 22
+    let deadline = Date().addingTimeInterval(2.5)
 
-    while !queue.isEmpty && nodes.count < maxNodes && visited < maxVisited {
-      let (current, depth) = queue.removeFirst()
+    while queueHead < queue.count && nodes.count < maxNodes && visited < maxVisited
+      && Date() < deadline
+    {
+      let (current, depth) = queue[queueHead]
+      queueHead += 1
       visited += 1
 
       let role = extractAxString(current, kAXRoleAttribute as String) ?? "AXElement"
@@ -368,7 +432,11 @@ extension XunaHostPlugin {
       if let keyChar = cmdChar, !keyChar.isEmpty, !rawLabel.isEmpty {
         rawLabel = "\(rawLabel) [⌘\(keyChar.uppercased())]"
       }
-      if isSecure || (!rawLabel.isEmpty && interactiveRoles.contains(role)) {
+      let isTextInput = textInputRoles.contains(role)
+      let isLabelledInteractive = !rawLabel.isEmpty && interactiveRoles.contains(role)
+      let isPressableGeneric =
+        !rawLabel.isEmpty && pressOnlyRoles.contains(role) && axSupportsPress(current)
+      if isSecure || isLabelledInteractive || isTextInput || isPressableGeneric {
         if isSecure {
           redactedCount += 1
         }
@@ -387,6 +455,10 @@ extension XunaHostPlugin {
             : "AXPress",
           "status": "ready",
         ]
+        if cleanLabel.isEmpty {
+          // Honest marker: the control exists but exposes no accessible name.
+          nodeDict["unlabeled"] = true
+        }
         if let val = value, !val.isEmpty, val != cleanLabel {
           nodeDict["value"] = String(val.prefix(80))
         }
@@ -399,12 +471,12 @@ extension XunaHostPlugin {
         }
       }
 
-      if depth < 8 {
+      if depth < maxDepth {
         var childrenRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(current, kAXChildrenAttribute as CFString, &childrenRef) == .success,
            let children = childrenRef as? [AXUIElement]
         {
-          for child in children.prefix(45) {
+          for child in children.prefix(80) {
             queue.append((child, depth + 1))
           }
         }
@@ -424,6 +496,12 @@ extension XunaHostPlugin {
     var redactedCount = 0
 
     let axApp = AXUIElementCreateApplication(app.processIdentifier)
+    // Keep one slow/hung process from stalling the whole scan.
+    AXUIElementSetMessagingTimeout(axApp, 1.0)
+    let justEnabledAx = enableAssistiveAccessibility(app: app, axApp: axApp)
+    if justEnabledAx {
+      Thread.sleep(forTimeInterval: 0.7)
+    }
     cachedUiPid = app.processIdentifier
     var winRef: CFTypeRef?
     var targetWindow: AXUIElement?
@@ -454,6 +532,22 @@ extension XunaHostPlugin {
         centerMap: &centerMap,
         redactedCount: &redactedCount
       )
+      if justEnabledAx && nodes.count < 3 {
+        // The web tree can still be building right after it was switched on: one honest retry.
+        Thread.sleep(forTimeInterval: 0.9)
+        nodes.removeAll()
+        elementMap.removeAll()
+        centerMap.removeAll()
+        redactedCount = 0
+        collectInteractiveAxNodes(
+          from: win,
+          maxNodes: maxNodes,
+          into: &nodes,
+          elementMap: &elementMap,
+          centerMap: &centerMap,
+          redactedCount: &redactedCount
+        )
+      }
     }
 
     if nodes.count < maxNodes {
@@ -697,7 +791,7 @@ extension XunaHostPlugin {
     if bundleId == "com.apple.notes" || appName == "notes" {
       appendNode(
         role: "AXTextArea",
-        label: "Tạo ghi chú mới / Nhập nội dung ghi chú",
+        label: Self.notesCreateNodeLabel,
         pattern: "AXValue / AppleEvents"
       )
       let script = """
@@ -725,7 +819,7 @@ extension XunaHostPlugin {
     if bundleId == "com.apple.reminders" || appName == "reminders" {
       appendNode(
         role: "AXTextField",
-        label: "Tạo lời nhắc mới (New Reminder)",
+        label: Self.remindersCreateNodeLabel,
         pattern: "AXValue / AppleEvents"
       )
       return
@@ -766,15 +860,6 @@ extension XunaHostPlugin {
           }
         }
       }
-      return
-    }
-
-    if bundleId == "com.apple.terminal" || appName == "terminal" {
-      appendNode(
-        role: "AXTextField",
-        label: "Chạy lệnh trong cửa sổ Terminal",
-        pattern: "AXValue / AppleEvents"
-      )
       return
     }
   }

@@ -2737,4 +2737,73 @@ void main() {
       expect(resolveToolFamilyForName('unknown.tool'), isNull);
     });
   });
+
+  group('input.key combos and input.type_text length', () {
+    test('accepts single keys and modifier combos for any app', () {
+      for (final combo in <String>[
+        'Enter',
+        'Esc',
+        'Cmd+L',
+        'cmd+shift+p',
+        'Ctrl+Tab',
+        'Alt+Shift+ArrowLeft',
+        'F5',
+        'Cmd+-',
+        'Cmd+/',
+        '⌘K',
+      ]) {
+        expect(isAllowedInputKeyCombo(combo), isTrue, reason: combo);
+      }
+    });
+
+    test('rejects destructive, malformed and injected combos', () {
+      for (final combo in <String>[
+        'Cmd+Q',
+        'cmd+shift+q',
+        'Option+Cmd+Esc',
+        'Cmd+Backspace',
+        'Cmd+Shift+Delete',
+        'Ctrl+Alt+Delete',
+        'Alt+F4',
+        'Cmd+Shift',
+        'Super+L',
+        'Cmd+Shift+P; rm -rf /',
+        'Cmd+LL',
+        '',
+        'Cmd+',
+      ]) {
+        expect(isAllowedInputKeyCombo(combo), isFalse, reason: combo);
+      }
+    });
+
+    test('input.type_text accepts a long prompt but not above the cap', () {
+      const policyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {"cu": "allow", "ui": "allow", "input": "allow"},
+  "apps": [],
+  "urlDomains": [],
+  "workflows": [],
+  "players": []
+}
+''';
+      final evaluator = HostPolicyEvaluator.fromJsonString(policyJson);
+      PolicyEvaluationResult typeOf(int length) => evaluator.evaluateInvocation(
+        toolName: 'input.type_text',
+        arguments: <String, Object?>{
+          'elementId': '@s00000001:e1',
+          'text': 'a' * length,
+        },
+        isInApprovedCuSession: true,
+      );
+      expect(
+        typeOf(maxInputTypeTextLength).errorCode,
+        equals('approval_required'),
+      );
+      expect(
+        typeOf(maxInputTypeTextLength + 1).errorCode,
+        equals('schema_mismatch'),
+      );
+    });
+  });
 }

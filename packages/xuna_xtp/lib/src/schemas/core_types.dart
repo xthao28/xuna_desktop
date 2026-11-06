@@ -446,6 +446,125 @@ const Set<String> allowedInputKeyCombos = <String>{
   'PageDown',
 };
 
+/// Longest text accepted by `input.type_text` (still always R3 phone-signed).
+const int maxInputTypeTextLength = 4000;
+
+const Set<String> _comboModifiers = <String>{
+  'cmd',
+  'command',
+  'ctrl',
+  'control',
+  'alt',
+  'opt',
+  'option',
+  'shift',
+};
+
+const Set<String> _comboNamedKeys = <String>{
+  'enter',
+  'return',
+  'tab',
+  'esc',
+  'escape',
+  'space',
+  'backspace',
+  'delete',
+  'arrowup',
+  'arrowdown',
+  'arrowleft',
+  'arrowright',
+  'up',
+  'down',
+  'left',
+  'right',
+  'pageup',
+  'pagedown',
+  'home',
+  'end',
+  'f1',
+  'f2',
+  'f3',
+  'f4',
+  'f5',
+  'f6',
+  'f7',
+  'f8',
+  'f9',
+  'f10',
+  'f11',
+  'f12',
+};
+
+/// Canonical (sorted modifiers, lower-case key) combos that quit apps, log out,
+/// lock, force-quit, power off or delete data. Rejected even though they are
+/// syntactically valid.
+const Set<String> _deniedInputKeyCombos = <String>{
+  'cmd+q',
+  'cmd+shift+q',
+  'cmd+alt+q',
+  'cmd+alt+shift+q',
+  'cmd+ctrl+q',
+  'cmd+alt+escape',
+  'cmd+alt+shift+escape',
+  'cmd+shift+backspace',
+  'cmd+alt+shift+backspace',
+  'cmd+backspace',
+  'cmd+delete',
+  'cmd+shift+delete',
+  'cmd+alt+shift+delete',
+  'ctrl+alt+delete',
+  'ctrl+shift+escape',
+  'alt+f4',
+};
+
+String? _canonicalInputKeyCombo(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty || trimmed.length > 40) return null;
+  var spec = trimmed;
+  final modifiers = <String>{};
+  if (spec.startsWith('⌘')) {
+    modifiers.add('cmd');
+    spec = spec.substring(1);
+    if (spec.startsWith('+')) spec = spec.substring(1);
+  }
+  // Split on '+' only, so '-' stays usable as the key (e.g. `Cmd+-`).
+  final tokens = spec.split('+');
+  final key = tokens.last.trim().toLowerCase();
+  for (final token in tokens.sublist(0, tokens.length - 1)) {
+    final m = token.trim().toLowerCase();
+    if (!_comboModifiers.contains(m)) return null;
+    modifiers.add(switch (m) {
+      'command' => 'cmd',
+      'control' => 'ctrl',
+      'opt' || 'option' => 'alt',
+      _ => m,
+    });
+  }
+  final isSingleChar =
+      key.length == 1 && RegExp(r'^[a-z0-9\[\]\\;,./=`\-]$').hasMatch(key);
+  if (!isSingleChar && !_comboNamedKeys.contains(key)) return null;
+  final order = <String>['cmd', 'ctrl', 'alt', 'shift'];
+  final sorted = order.where(modifiers.contains).toList();
+  final normalizedKey = switch (key) {
+    'esc' => 'escape',
+    'return' => 'enter',
+    _ => key,
+  };
+  return <String>[...sorted, normalizedKey].join('+');
+}
+
+/// True when [combo] is a syntactically valid `input.key` combination
+/// (optional `Cmd/Ctrl/Alt/Shift` modifiers plus one key) that is not on the
+/// system-destructive deny list. Replaces the former fixed allowlist
+/// ([allowedInputKeyCombos], kept for compatibility) so command palettes and
+/// app shortcuts work in any app.
+bool isAllowedInputKeyCombo(String combo) {
+  if (allowedInputKeyCombos.contains(combo)) return true;
+  final canonical = _canonicalInputKeyCombo(combo);
+  if (canonical == null) return false;
+  return !_deniedInputKeyCombos.contains(canonical);
+}
+
 /// Supported host operating system platforms.
 enum HostPlatform {
   windows('windows'),

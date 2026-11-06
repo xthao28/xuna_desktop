@@ -80,6 +80,15 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       "securityagent",
       "coreautha",
       " CleanMyMac",
+      // Terminal emulators: typing into them is arbitrary command execution, which
+      // desktop/AGENTS.md §3 forbids. Matched by bundle id, not by display name.
+      "com.apple.terminal",
+      "com.googlecode.iterm2",
+      "dev.warp.warp",
+      "com.mitchellh.ghostty",
+      "io.alacritty",
+      "net.kovidgoyal.kitty",
+      "com.github.wez.wezterm",
     ]
     for token in deniedTokens {
       if combined.contains(token.trimmingCharacters(in: .whitespaces)) {

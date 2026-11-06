@@ -362,7 +362,9 @@ extension XunaHostPlugin {
         .replacingOccurrences(of: "\\", with: "\\\\")
         .replacingOccurrences(of: "\"", with: "\\\"")
         .trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !safeSearch.isEmpty && !safeSearch.hasPrefix("ui_") else { return nil }
+      // Clicking a node must never be rewritten into "search the node's label and play the
+      // first hit"; only an explicit typed query searches the library.
+      guard action != "invoke_ref", !valueText.isEmpty, !safeSearch.isEmpty else { return nil }
       let script = """
       tell application "Music"
         activate
@@ -382,16 +384,6 @@ extension XunaHostPlugin {
             end if
           end try
         end repeat
-        try
-          if "\(safeSearch.lowercased())" is in {"play", "nhạc", "music", "bật nhạc", "phát nhạc", "mở nhạc", "chill"} then
-            repeat with p in every user playlist
-              if (count of tracks of p) > 0 then
-                play p
-                return "APPLE_MUSIC_PLAYED_DEFAULT_PLAYLIST:" & (name of p)
-              end if
-            end repeat
-          end if
-        end try
       end tell
       return ""
       """
@@ -423,8 +415,10 @@ extension XunaHostPlugin {
           return "SPOTIFY_PREVIOUS_TRACK"
         }
       }
-      let q = valueText.isEmpty ? rawQuery : valueText
-      if !q.isEmpty && !q.hasPrefix("ui_"),
+      // Only a typed search term opens the search page. A click (`invoke_ref`) on a result row
+      // must reach the generic AX press path instead of being turned into a new search.
+      let q = valueText
+      if action != "invoke_ref", !q.isEmpty,
          let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
          let url = URL(string: "spotify:search:\(encoded)")
       {
@@ -489,20 +483,13 @@ extension XunaHostPlugin {
         }
       }
 
-      if !valueText.isEmpty && (refId == "ui_1" || lowerLabel.contains("url") || lowerLabel.contains("tìm kiếm") || action == "set_value_ref") {
+      if !valueText.isEmpty && (lowerLabel.contains("url") || lowerLabel.contains("tìm kiếm") || action == "set_value_ref") {
         let trimmed = valueText.trimmingCharacters(in: .whitespacesAndNewlines)
         let targetUrl: String
         if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
           targetUrl = trimmed
         } else if !trimmed.contains(" ") && trimmed.contains(".") {
           targetUrl = "https://\(trimmed)"
-        } else if trimmed.lowercased().hasPrefix("youtube ") || trimmed.lowercased().contains("trên youtube") {
-          let ytQuery = trimmed
-            .replacingOccurrences(of: "trên youtube", with: "", options: .caseInsensitive)
-            .replacingOccurrences(of: "youtube ", with: "", options: .caseInsensitive)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-          let enc = (ytQuery.isEmpty ? trimmed : ytQuery).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-          targetUrl = "https://www.youtube.com/results?search_query=\(enc)"
         } else {
           let enc = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
           targetUrl = "https://www.google.com/search?q=\(enc)"
@@ -556,7 +543,9 @@ extension XunaHostPlugin {
           return out
         }
       }
-      if !valueText.isEmpty {
+      // Only the advertised "new note" control creates a note; text typed into any other
+      // control must reach the editor instead of silently creating a second note.
+      if !valueText.isEmpty && nodeLabel == Self.notesCreateNodeLabel {
         let safeBody = valueText
           .replacingOccurrences(of: "\\", with: "\\\\")
           .replacingOccurrences(of: "\"", with: "\\\"")
@@ -575,7 +564,7 @@ extension XunaHostPlugin {
 
     // 5. Apple Reminders
     if bundleId == "com.apple.reminders" || appName == "reminders" {
-      if !valueText.isEmpty {
+      if !valueText.isEmpty && nodeLabel == Self.remindersCreateNodeLabel {
         let safeRem = valueText
           .replacingOccurrences(of: "\\", with: "\\\\")
           .replacingOccurrences(of: "\"", with: "\\\"")
@@ -594,18 +583,20 @@ extension XunaHostPlugin {
 
     // 6. Finder
     if bundleId == "com.apple.finder" || appName == "finder" {
-      let folderQuery = (!valueText.isEmpty ? valueText : nodeLabel).lowercased()
-      if folderQuery.contains("downloads") {
-        _ = runAppleScript("tell application \"Finder\" to activate\ntell application \"Finder\" to open path to downloads folder", timeoutSeconds: 2.5)
-        return "FINDER_OPENED_DOWNLOADS"
-      }
-      if folderQuery.contains("desktop") {
-        _ = runAppleScript("tell application \"Finder\" to activate\ntell application \"Finder\" to open path to desktop folder", timeoutSeconds: 2.5)
-        return "FINDER_OPENED_DESKTOP"
-      }
-      if folderQuery.contains("documents") {
-        _ = runAppleScript("tell application \"Finder\" to activate\ntell application \"Finder\" to open path to documents folder", timeoutSeconds: 2.5)
-        return "FINDER_OPENED_DOCUMENTS"
+      // Shortcut buttons advertised by the scanner carry their real path in the label,
+      // "Folder: <name> (<path>)"; open exactly that path, never a name guessed from free text.
+      if nodeLabel.hasPrefix("Folder: "),
+         let open = nodeLabel.lastIndex(of: "("),
+         let close = nodeLabel.lastIndex(of: ")"),
+         open < close
+      {
+        let rawPath = String(nodeLabel[nodeLabel.index(after: open)..<close])
+        let expanded = (rawPath as NSString).expandingTildeInPath
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue {
+          NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: expanded)
+          return "FINDER_OPENED_PATH:\(expanded)"
+        }
       }
       if nodeLabel.hasPrefix("Mục Finder: ") {
         let itemName = String(nodeLabel.dropFirst("Mục Finder: ".count))
@@ -635,29 +626,6 @@ extension XunaHostPlugin {
       }
     }
 
-    // 7. Terminal
-    if bundleId == "com.apple.terminal" || appName == "terminal" {
-      if !valueText.isEmpty {
-        let safeCmd = valueText
-          .replacingOccurrences(of: "\\", with: "\\\\")
-          .replacingOccurrences(of: "\"", with: "\\\"")
-        let script = """
-        tell application "Terminal"
-          activate
-          if (count of windows) = 0 then
-            do script "\(safeCmd)"
-          else
-            do script "\(safeCmd)" in front window
-          end if
-          return "TERMINAL_COMMAND_EXECUTED"
-        end tell
-        """
-        if let out = runAppleScript(script, timeoutSeconds: 2.5), !out.isEmpty {
-          return out
-        }
-      }
-    }
-
     return nil
   }
 
@@ -678,22 +646,34 @@ extension XunaHostPlugin {
   }
 
   func sendShortcutByName(_ rawShortcut: String) -> Bool {
-    let lower = rawShortcut.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    var lower = rawShortcut.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
     var flags: CGEventFlags = []
-    if lower.contains("cmd") || lower.contains("command") || lower.contains("⌘") {
+    // Modifiers are whole `+`-separated tokens (a `-` key must stay usable, e.g. `cmd+-`).
+    if lower.hasPrefix("⌘") {
       flags.insert(.maskCommand)
+      lower.removeFirst()
+      if lower.hasPrefix("+") { lower.removeFirst() }
     }
-    if lower.contains("shift") || lower.contains("⇧") {
-      flags.insert(.maskShift)
+    var tokens = lower.split(separator: "+", omittingEmptySubsequences: false).map {
+      $0.trimmingCharacters(in: .whitespaces)
     }
-    if lower.contains("alt") || lower.contains("opt") || lower.contains("⌥") {
-      flags.insert(.maskAlternate)
-    }
-    if lower.contains("ctrl") || lower.contains("control") || lower.contains("⌃") {
-      flags.insert(.maskControl)
+    guard let lastToken = tokens.popLast(), !lastToken.isEmpty else { return false }
+    for modifier in tokens {
+      switch modifier {
+      case "cmd", "command": flags.insert(.maskCommand)
+      case "shift": flags.insert(.maskShift)
+      case "alt", "opt", "option": flags.insert(.maskAlternate)
+      case "ctrl", "control": flags.insert(.maskControl)
+      default: return false
+      }
     }
 
     let keyMap: [String: CGKeyCode] = [
+      "/": 44, "\\": 42, "'": 39, ",": 43,
+      "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
+      "arrowup": 126, "arrowdown": 125, "arrowleft": 123, "arrowright": 124,
+      "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
+      "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
       "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9,
       "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19,
       "3": 20, "4": 21, "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28,
@@ -702,12 +682,7 @@ extension XunaHostPlugin {
       "tab": 48, "space": 49, "`": 50, "delete": 51, "backspace": 51, "escape": 53,
       "esc": 53, "left": 123, "right": 124, "down": 125, "up": 126,
     ]
-    let tokens = lower
-      .replacingOccurrences(of: "+", with: " ")
-      .replacingOccurrences(of: "-", with: " ")
-      .split(separator: " ")
-      .map(String.init)
-    guard let lastToken = tokens.last, let code = keyMap[lastToken] else {
+    guard let code = keyMap[lastToken] else {
       return false
     }
     postKeyboardShortcut(keyCode: code, flags: flags)
@@ -1067,11 +1042,17 @@ extension XunaHostPlugin {
           }
         }
       } else {
-        targetApp?.activate(options: [.activateIgnoringOtherApps])
-        postKeyboardShortcut(keyCode: 3, flags: .maskCommand)
-        Thread.sleep(forTimeInterval: 0.22)
-        pasteTextAndOptionallySubmit(valueText, selectAllFirst: true, submit: submit)
-        detail = detail == "CLIPBOARD_PASTED" ? "SEARCH_OPENED_AND_PASTED" : "\(detail)+SEARCH_PASTED"
+        // No resolvable target: do not guess a shortcut and paste blindly, and do not claim success.
+        let snap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+        replySuccess(result, [
+          "ok": false,
+          "invokedRefId": refId,
+          "detail": "NO_EDITABLE_TARGET",
+          "windowTitle": snap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
+          "nodes": snap?.nodes ?? [],
+          "screenshotBytesUsed": 0,
+        ])
+        return
       }
 
       Thread.sleep(forTimeInterval: 0.45)

@@ -1,6 +1,10 @@
 #ifndef RUNNER_XUNA_WIN_UIA_ENGINE_H_
 #define RUNNER_XUNA_WIN_UIA_ENGINE_H_
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+
 #include "xuna_win_apps_browser.h"
 
 namespace xuna_win {
@@ -563,62 +567,106 @@ inline bool SendKeyboardShortcutSpec(const std::string& raw_spec) {
   if (lower.rfind("shortcut:", 0) == 0) {
     lower = lower.substr(9);
   }
-  WORD mod1 = 0;
-  WORD mod2 = 0;
-  WORD vk = 0;
+  bool ctrl = false;
+  bool alt = false;
+  bool shift = false;
+  // "⌘K" form: the Command glyph maps to Ctrl on Windows.
+  static const std::string kCommandGlyph = "\xE2\x8C\x98";
+  if (lower.rfind(kCommandGlyph, 0) == 0) {
+    ctrl = true;
+    lower = lower.substr(kCommandGlyph.size());
+    if (!lower.empty() && lower[0] == '+') lower.erase(0, 1);
+  }
+  // Split on '+' only so '-' stays usable as the key (e.g. "ctrl+-").
   std::vector<std::string> parts;
   std::string cur;
   for (char c : lower) {
-    if (c == '+' || c == '-') {
-      if (!cur.empty()) {
-        parts.push_back(cur);
-        cur.clear();
-      }
+    if (c == '+') {
+      parts.push_back(cur);
+      cur.clear();
     } else if (!std::isspace(static_cast<unsigned char>(c))) {
       cur.push_back(c);
     }
   }
-  if (!cur.empty()) parts.push_back(cur);
+  parts.push_back(cur);
+  const std::string key = parts.back();
+  parts.pop_back();
+  if (key.empty()) return false;
   for (const auto& p : parts) {
     if (p == "ctrl" || p == "control" || p == "cmd" || p == "command") {
-      if (mod1 == 0)
-        mod1 = VK_CONTROL;
-      else
-        mod2 = VK_CONTROL;
+      ctrl = true;
     } else if (p == "alt" || p == "opt" || p == "option") {
-      if (mod1 == 0)
-        mod1 = VK_MENU;
-      else
-        mod2 = VK_MENU;
+      alt = true;
     } else if (p == "shift") {
-      if (mod1 == 0)
-        mod1 = VK_SHIFT;
-      else
-        mod2 = VK_SHIFT;
-    } else if (p == "enter" || p == "return") {
-      vk = VK_RETURN;
-    } else if (p == "space") {
-      vk = VK_SPACE;
-    } else if (p == "esc" || p == "escape") {
-      vk = VK_ESCAPE;
-    } else if (p == "tab") {
-      vk = VK_TAB;
-    } else if (p == "backspace" || p == "delete") {
-      vk = VK_BACK;
-    } else if (p == "up") {
-      vk = VK_UP;
-    } else if (p == "down") {
-      vk = VK_DOWN;
-    } else if (p == "left") {
-      vk = VK_LEFT;
-    } else if (p == "right") {
-      vk = VK_RIGHT;
-    } else if (p.size() == 1 && std::isalnum(static_cast<unsigned char>(p[0]))) {
-      vk = static_cast<WORD>(std::toupper(static_cast<unsigned char>(p[0])));
+      shift = true;
+    } else {
+      return false;  // Unknown modifier: never send a partial chord.
+    }
+  }
+
+  WORD vk = 0;
+  if (key == "enter" || key == "return") {
+    vk = VK_RETURN;
+  } else if (key == "space") {
+    vk = VK_SPACE;
+  } else if (key == "esc" || key == "escape") {
+    vk = VK_ESCAPE;
+  } else if (key == "tab") {
+    vk = VK_TAB;
+  } else if (key == "backspace") {
+    vk = VK_BACK;
+  } else if (key == "delete") {
+    vk = VK_DELETE;
+  } else if (key == "up" || key == "arrowup") {
+    vk = VK_UP;
+  } else if (key == "down" || key == "arrowdown") {
+    vk = VK_DOWN;
+  } else if (key == "left" || key == "arrowleft") {
+    vk = VK_LEFT;
+  } else if (key == "right" || key == "arrowright") {
+    vk = VK_RIGHT;
+  } else if (key == "home") {
+    vk = VK_HOME;
+  } else if (key == "end") {
+    vk = VK_END;
+  } else if (key == "pageup") {
+    vk = VK_PRIOR;
+  } else if (key == "pagedown") {
+    vk = VK_NEXT;
+  } else if (key.size() >= 2 && key.size() <= 3 && key[0] == 'f' &&
+             std::all_of(key.begin() + 1, key.end(), [](char c) {
+               return std::isdigit(static_cast<unsigned char>(c)) != 0;
+             })) {
+    const int n = std::atoi(key.c_str() + 1);
+    if (n >= 1 && n <= 12) vk = static_cast<WORD>(VK_F1 + (n - 1));
+  } else if (key.size() == 1) {
+    const unsigned char ch = static_cast<unsigned char>(key[0]);
+    if (std::isalnum(ch)) {
+      vk = static_cast<WORD>(std::toupper(ch));
+    } else {
+      const SHORT scan = VkKeyScanA(static_cast<CHAR>(ch));
+      if (scan != -1) vk = static_cast<WORD>(scan & 0xFF);
     }
   }
   if (vk == 0) return false;
-  SendKeyChord(mod1, mod2, vk);
+
+  std::vector<INPUT> inputs;
+  auto push_key = [&](WORD k, DWORD flags) {
+    INPUT in = {};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wVk = k;
+    in.ki.dwFlags = flags;
+    inputs.push_back(in);
+  };
+  if (ctrl) push_key(VK_CONTROL, 0);
+  if (alt) push_key(VK_MENU, 0);
+  if (shift) push_key(VK_SHIFT, 0);
+  push_key(vk, 0);
+  push_key(vk, KEYEVENTF_KEYUP);
+  if (shift) push_key(VK_SHIFT, KEYEVENTF_KEYUP);
+  if (alt) push_key(VK_MENU, KEYEVENTF_KEYUP);
+  if (ctrl) push_key(VK_CONTROL, KEYEVENTF_KEYUP);
+  SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
   return true;
 }
 
@@ -1252,15 +1300,15 @@ inline void ExecuteInvokeWindowUiControl(
     uia->Release();
   }
 
-  // Fallback for set_value_ref when ValuePattern is unsupported
-  if (!applied && detail != "REFUSED_PASSWORD_CONTROL" && !value_text.empty()) {
-    if (target_cx >= 0 && target_cy >= 0) {
-      ClickScreenPoint(target_cx, target_cy);
-      Sleep(100);
-    } else {
-      SendKeyChord(VK_CONTROL, 0, 'F');
-      Sleep(200);
-    }
+  // Fallback for set_value_ref when ValuePattern is unsupported. It needs a
+  // resolved on-screen target; with none, fail closed instead of guessing a shortcut.
+  if (!applied && detail != "REFUSED_PASSWORD_CONTROL" && !value_text.empty() &&
+      (target_cx < 0 || target_cy < 0)) {
+    detail = "NO_EDITABLE_TARGET";
+  } else if (!applied && detail != "REFUSED_PASSWORD_CONTROL" &&
+             !value_text.empty()) {
+    ClickScreenPoint(target_cx, target_cy);
+    Sleep(100);
     SendKeyChord(VK_CONTROL, 0, 'A');
     Sleep(50);
     SendKeyChord(0, 0, VK_BACK);

@@ -2164,7 +2164,7 @@ PolicyEvaluationResult validateToolArguments({
           elementId.length > 64 ||
           text is! String ||
           text.isEmpty ||
-          text.length > 200 ||
+          text.length > maxInputTypeTextLength ||
           (elementName != null && elementName is! String) ||
           (headed != null && headed is! bool) ||
           (waitFor != null && waitForGone != null) ||
@@ -2209,7 +2209,7 @@ PolicyEvaluationResult validateToolArguments({
       };
       if (arguments.keys.any((k) => !allowedKeyKeys.contains(k)) ||
           combo is! String ||
-          !allowedInputKeyCombos.contains(combo) ||
+          !isAllowedInputKeyCombo(combo) ||
           (inForm != null && inForm is! bool) ||
           (headed != null && headed is! bool) ||
           (waitFor != null && waitForGone != null) ||

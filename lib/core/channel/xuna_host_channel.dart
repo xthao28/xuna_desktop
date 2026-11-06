@@ -746,40 +746,18 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           'isElevated': false,
         };
       case 'inspectWindowUiTree':
-        final reqTitle = (args['windowTitle'] as String? ?? '').trim();
-        if (reqTitle.isNotEmpty) {
-          await Process.run('wmctrl', <String>['-a', reqTitle]);
-        }
-        final winName = await Process.run('xdotool', <String>[
-          'getactivewindow',
-          'getwindowname',
-        ]);
-        final activeTitle = winName.stdout.toString().trim();
-        return <String, Object?>{
-          'windowTitle': activeTitle.isEmpty ? reqTitle : activeTitle,
-          'appName': activeTitle.isEmpty ? reqTitle : activeTitle,
-          'redactedControlsCount': 0,
-          'nodes': <Map<String, Object?>>[
-            <String, Object?>{
-              'refId': 'ui_1',
-              'role': 'AXSearchField',
-              'label': 'Search / Input Field',
-              'isPassword': false,
-            },
-            <String, Object?>{
-              'refId': 'ui_2',
-              'role': 'AXButton',
-              'label': 'Primary Action / Submit',
-              'isPassword': false,
-            },
-          ],
-        };
+        // No Linux accessibility (AT-SPI) reader exists: report that instead of
+        // returning an invented control tree the model would then act on.
+        throw const XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'ui_tree_unavailable',
+          message: 'UI tree inspection is not implemented on Linux.',
+        );
       case 'invokeWindowUiControl':
         final action = (args['action'] as String? ?? 'invoke_ref').toLowerCase();
         final refId = (args['refId'] as String? ?? 'ui_1');
         final valueText = (args['valueText'] as String? ?? '');
         final reqTitle = (args['windowTitle'] as String? ?? '').trim();
-        final submit = args['submit'] as bool? ?? true;
         if (reqTitle.isNotEmpty) {
           await Process.run('wmctrl', <String>['-a', reqTitle]);
         }
@@ -805,46 +783,14 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
               : '5';
           await Process.run('xdotool', <String>['click', '--repeat', '4', btn]);
           detail = 'LINUX_SCROLLED:$action';
-        } else if (action == 'double_click') {
-          await Process.run('xdotool', <String>['click', '--repeat', '2', '1']);
-          detail = 'LINUX_DOUBLE_CLICK';
-        } else if (action == 'triple_click') {
-          await Process.run('xdotool', <String>['click', '--repeat', '3', '1']);
-          detail = 'LINUX_TRIPLE_CLICK';
-        } else if (action == 'right_click') {
-          await Process.run('xdotool', <String>['click', '3']);
-          detail = 'LINUX_RIGHT_CLICK';
-        } else if (action == 'middle_click') {
-          await Process.run('xdotool', <String>['click', '2']);
-          detail = 'LINUX_MIDDLE_CLICK';
-        } else if (action == 'drag') {
-          await Process.run('xdotool', <String>[
-            'mousedown',
-            '1',
-            'mousemove_relative',
-            '--',
-            '140',
-            '0',
-            'mouseup',
-            '1',
-          ]);
-          detail = 'LINUX_DRAG';
-        } else if (action == 'set_value_ref' && valueText.isNotEmpty) {
-          if (reqTitle.toLowerCase().contains('spotify')) {
-            final uri = 'spotify:search:${Uri.encodeComponent(valueText)}';
-            await Process.run('xdg-open', <String>[uri]);
-            detail = 'LINUX_SPOTIFY_URI:$valueText';
-          } else {
-            await Process.run('xdotool', <String>['key', 'ctrl+f']);
-            await Process.run('xdotool', <String>['type', '--clearmodifiers', valueText]);
-            if (submit) {
-              await Process.run('xdotool', <String>['key', 'Return']);
-            }
-            detail = 'LINUX_TYPED:$valueText';
-          }
         } else {
-          await Process.run('xdotool', <String>['click', '1']);
-          detail = 'LINUX_CLICKED:$refId';
+          // Click/type/drag actions would land on the current pointer position and
+          // ignore the requested element, so refuse instead of reporting success.
+          throw XunaHostChannelException(
+            status: XtpStatus.unsupported,
+            errorCode: 'platform_unsupported',
+            message: 'Element-targeted action "$action" is not implemented on Linux.',
+          );
         }
         return <String, Object?>{
           'ok': true,
