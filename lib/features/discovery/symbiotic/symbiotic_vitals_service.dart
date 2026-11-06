@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 import 'symbiotic_models.dart';
@@ -204,7 +205,8 @@ class SymbioticVitalsService {
         active.add(
           DevPortEntry(
             port: port,
-            process: _guessDevProcessForPort(port),
+            // The OS owner of the port is not probed; do not invent one from the number.
+            process: 'unknown',
             url: 'http://$lanIp:$port',
           ),
         );
@@ -213,60 +215,85 @@ class SymbioticVitalsService {
     return (lanIp: lanIp, activePorts: active);
   }
 
-  /// Reads host battery, RAM, disk, and thermal vitals (`UDC-15` S15.4).
+  /// Reads host battery, RAM and free-disk vitals (`UDC-15` S15.4).
+  ///
+  /// Only values that were really measured are returned; a metric the host cannot
+  /// read (for example the battery of a desktop) stays `null`. When nothing could be
+  /// measured the call fails with `unsupported` instead of reporting placeholders.
   Future<SystemVitalsSnapshot> readSystemVitals() async {
     if (_vitalsReader != null) {
       return _vitalsReader();
     }
-    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      final nativeVitals = await _readNativeSystemVitals();
-      if (nativeVitals != null) {
-        return nativeVitals;
-      }
+    final snapshot = await _readNativeSystemVitals();
+    if (snapshot == null || !snapshot.hasAnyMeasurement) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'vitals_unavailable',
+        message: 'This host could not measure battery, memory or disk.',
+      );
     }
-    return const SystemVitalsSnapshot(
-      batteryPercent: 85,
-      isCharging: true,
-      memoryUsedPercent: 52,
-      diskFreeGb: 120,
-      thermalState: 'nominal',
-      healthStatus: 'healthy',
-    );
+    return snapshot;
+  }
+
+  static int? _percentOrNull(int? value) => value?.clamp(0, 100);
+
+  Future<int?> _freeDiskGbViaDf(String dfExecutable) async {
+    try {
+      final dfRes = await Process.run(
+        dfExecutable,
+        const <String>['-k', '/'],
+        runInShell: false,
+      ).timeout(const Duration(seconds: 2));
+      final lines = (dfRes.stdout?.toString() ?? '')
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .toList();
+      if (lines.length >= 2) {
+        final cols = lines[1].split(RegExp(r'\s+'));
+        if (cols.length >= 4) {
+          final availKb = int.tryParse(cols[3]);
+          if (availKb != null && availKb > 0) {
+            return (availKb ~/ (1024 * 1024)).clamp(0, 99999);
+          }
+        }
+      }
+    } catch (_) {
+      // A failed probe means "not measured", reported as null by the caller.
+    }
+    return null;
   }
 
   Future<SystemVitalsSnapshot?> _readNativeSystemVitals() async {
-    try {
-      int batteryPercent = 100;
-      bool isCharging = true;
-      int memoryUsedPercent = 50;
-      int diskFreeGb = 100;
+    int? batteryPercent;
+    bool? isCharging;
+    int? memoryUsedPercent;
+    int? diskFreeGb;
 
+    try {
       if (Platform.isWindows) {
-        final psScript =
+        const psScript =
             r'$b = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1; '
             r'$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue; '
             r'$d = Get-PSDrive -Name C -ErrorAction SilentlyContinue; '
-            r'$batPct = if ($b -and $null -ne $b.EstimatedChargeRemaining) { [int]$b.EstimatedChargeRemaining } else { 100 }; '
-            r'$chg = if ($b -and $b.BatteryStatus -eq 1) { 0 } else { 1 }; '
-            r'$memPct = if ($os -and $os.TotalVisibleMemorySize -gt 0) { [int][math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) * 100.0) / $os.TotalVisibleMemorySize) } else { 50 }; '
-            r'$diskGb = if ($d -and $null -ne $d.Free) { [int][math]::Floor($d.Free / 1GB) } else { 100 }; '
+            r'$batPct = if ($b -and $null -ne $b.EstimatedChargeRemaining) { [int]$b.EstimatedChargeRemaining } else { "" }; '
+            r'$chg = if ($b -and $null -ne $b.BatteryStatus) { if ($b.BatteryStatus -eq 1) { 0 } else { 1 } } else { "" }; '
+            r'$memPct = if ($os -and $os.TotalVisibleMemorySize -gt 0) { [int][math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) * 100.0) / $os.TotalVisibleMemorySize) } else { "" }; '
+            r'$diskGb = if ($d -and $null -ne $d.Free) { [int][math]::Floor($d.Free / 1GB) } else { "" }; '
             r'Write-Output "$batPct|$chg|$memPct|$diskGb"';
         final res = await Process.run(
           'powershell.exe',
-          <String>['-NoProfile', '-NonInteractive', '-Command', psScript],
+          const <String>['-NoProfile', '-NonInteractive', '-Command', psScript],
           runInShell: false,
         ).timeout(const Duration(seconds: 3));
-        final line = (res.stdout?.toString() ?? '').trim();
-        final parts = line.split('|');
-        if (parts.length >= 4) {
-          batteryPercent = (int.tryParse(parts[0].trim()) ?? 100).clamp(0, 100);
-          isCharging = parts[1].trim() != '0';
-          memoryUsedPercent =
-              (int.tryParse(parts[2].trim()) ?? 50).clamp(0, 100);
-          diskFreeGb = (int.tryParse(parts[3].trim()) ?? 100).clamp(0, 99999);
-        } else {
-          return null;
-        }
+        final parts = (res.stdout?.toString() ?? '').trim().split('|');
+        if (parts.length < 4) return null;
+        batteryPercent = _percentOrNull(int.tryParse(parts[0].trim()));
+        final chg = int.tryParse(parts[1].trim());
+        isCharging = batteryPercent == null || chg == null ? null : chg != 0;
+        memoryUsedPercent = _percentOrNull(int.tryParse(parts[2].trim()));
+        final disk = int.tryParse(parts[3].trim());
+        diskFreeGb = disk?.clamp(0, 99999);
       } else if (Platform.isMacOS) {
         try {
           final battRes = await Process.run(
@@ -277,34 +304,15 @@ class SymbioticVitalsService {
           final battOut = battRes.stdout?.toString() ?? '';
           final pctMatch = RegExp(r'(\d+)%').firstMatch(battOut);
           if (pctMatch != null) {
-            batteryPercent =
-                (int.tryParse(pctMatch.group(1)!) ?? 100).clamp(0, 100);
+            batteryPercent = _percentOrNull(int.tryParse(pctMatch.group(1)!));
+            isCharging = batteryPercent == null
+                ? null
+                : !battOut.toLowerCase().contains('discharging');
           }
-          isCharging = !battOut.toLowerCase().contains('discharging');
-        } catch (_) {}
-
-        try {
-          final dfRes = await Process.run(
-            '/bin/df',
-            const <String>['-k', '/'],
-            runInShell: false,
-          ).timeout(const Duration(seconds: 2));
-          final lines = (dfRes.stdout?.toString() ?? '')
-              .split('\n')
-              .map((l) => l.trim())
-              .where((l) => l.isNotEmpty)
-              .toList();
-          if (lines.length >= 2) {
-            final cols = lines[1].split(RegExp(r'\s+'));
-            if (cols.length >= 4) {
-              final availKb = int.tryParse(cols[3]) ?? 0;
-              if (availKb > 0) {
-                diskFreeGb = (availKb ~/ (1024 * 1024)).clamp(0, 99999);
-              }
-            }
-          }
-        } catch (_) {}
-
+        } catch (_) {
+          // No battery information: leave null.
+        }
+        diskFreeGb = await _freeDiskGbViaDf('/bin/df');
         try {
           final vmRes = await Process.run(
             '/usr/bin/vm_stat',
@@ -322,24 +330,25 @@ class SymbioticVitalsService {
           final activePages = extractPages('Pages active') +
               extractPages('Pages wired down') +
               extractPages('Pages occupied by compressor');
-          final totalPages = freePages +
-              activePages +
-              extractPages('Pages inactive');
+          final totalPages =
+              freePages + activePages + extractPages('Pages inactive');
           if (totalPages > 0) {
             memoryUsedPercent =
                 ((activePages * 100) / totalPages).round().clamp(1, 99);
           }
-        } catch (_) {}
+        } catch (_) {
+          // vm_stat unavailable: leave null.
+        }
       } else if (Platform.isLinux) {
         try {
           for (final bat in const <String>['BAT0', 'BAT1']) {
             final capFile = File('/sys/class/power_supply/$bat/capacity');
             if (capFile.existsSync()) {
-              batteryPercent =
-                  (int.tryParse(capFile.readAsStringSync().trim()) ?? 100)
-                      .clamp(0, 100);
+              batteryPercent = _percentOrNull(
+                int.tryParse(capFile.readAsStringSync().trim()),
+              );
               final statusFile = File('/sys/class/power_supply/$bat/status');
-              if (statusFile.existsSync()) {
+              if (batteryPercent != null && statusFile.existsSync()) {
                 isCharging = !statusFile
                     .readAsStringSync()
                     .toLowerCase()
@@ -348,79 +357,50 @@ class SymbioticVitalsService {
               break;
             }
           }
-        } catch (_) {}
-
+        } catch (_) {
+          // No battery information: leave null.
+        }
         try {
           final memFile = File('/proc/meminfo');
           if (memFile.existsSync()) {
             final content = memFile.readAsStringSync();
-            final totalMatch =
-                RegExp(r'MemTotal:\s+(\d+)').firstMatch(content);
+            final totalMatch = RegExp(r'MemTotal:\s+(\d+)').firstMatch(content);
             final availMatch =
                 RegExp(r'MemAvailable:\s+(\d+)').firstMatch(content);
             if (totalMatch != null && availMatch != null) {
               final totalKb = int.tryParse(totalMatch.group(1)!) ?? 0;
               final availKb = int.tryParse(availMatch.group(1)!) ?? 0;
               if (totalKb > 0) {
-                memoryUsedPercent =
-                    (((totalKb - availKb) * 100) / totalKb).round().clamp(1, 99);
+                memoryUsedPercent = (((totalKb - availKb) * 100) / totalKb)
+                    .round()
+                    .clamp(1, 99);
               }
             }
           }
-        } catch (_) {}
-
-        try {
-          final dfRes = await Process.run(
-            'df',
-            const <String>['-k', '/'],
-            runInShell: false,
-          ).timeout(const Duration(seconds: 2));
-          final lines = (dfRes.stdout?.toString() ?? '')
-              .split('\n')
-              .map((l) => l.trim())
-              .where((l) => l.isNotEmpty)
-              .toList();
-          if (lines.length >= 2) {
-            final cols = lines[1].split(RegExp(r'\s+'));
-            if (cols.length >= 4) {
-              final availKb = int.tryParse(cols[3]) ?? 0;
-              if (availKb > 0) {
-                diskFreeGb = (availKb ~/ (1024 * 1024)).clamp(0, 99999);
-              }
-            }
-          }
-        } catch (_) {}
+        } catch (_) {
+          // /proc/meminfo unreadable: leave null.
+        }
+        diskFreeGb = await _freeDiskGbViaDf('df');
       } else {
         return null;
       }
-
-      final isWarning = (batteryPercent < 20 && !isCharging) ||
-          memoryUsedPercent >= 90 ||
-          diskFreeGb < 10;
-      return SystemVitalsSnapshot(
-        batteryPercent: batteryPercent,
-        isCharging: isCharging,
-        memoryUsedPercent: memoryUsedPercent,
-        diskFreeGb: diskFreeGb,
-        thermalState: memoryUsedPercent >= 92 ? 'fair' : 'nominal',
-        healthStatus: isWarning ? 'warning' : 'healthy',
-      );
     } catch (_) {
       return null;
     }
-  }
 
-  static String _guessDevProcessForPort(int port) {
-    return switch (port) {
-      3000 => 'next-dev',
-      4200 => 'ng-serve',
-      5000 => 'flask-server',
-      5173 || 5174 => 'vite',
-      8000 => 'uvicorn',
-      8080 => 'web-dev-server',
-      8888 => 'jupyter',
-      _ => 'dev-server',
-    };
+    final isWarning =
+        (batteryPercent != null && batteryPercent < 20 && isCharging == false) ||
+            (memoryUsedPercent != null && memoryUsedPercent >= 90) ||
+            (diskFreeGb != null && diskFreeGb < 10);
+    final measured =
+        batteryPercent != null || memoryUsedPercent != null || diskFreeGb != null;
+    return SystemVitalsSnapshot(
+      batteryPercent: batteryPercent,
+      isCharging: isCharging,
+      memoryUsedPercent: memoryUsedPercent,
+      diskFreeGb: diskFreeGb,
+      healthStatus: !measured ? 'unknown' : (isWarning ? 'warning' : 'healthy'),
+    );
   }
 
   Future<bool> _isLocalPortOpen(int port) async {

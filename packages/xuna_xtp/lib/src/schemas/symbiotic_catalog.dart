@@ -161,7 +161,7 @@ List<ToolDescriptor> buildSymbioticCopilotTools({
     ToolDescriptor(
       name: 'system.vitals',
       description:
-          'Read host battery percentage, charging state, memory usage, free disk space, and thermal health.',
+          'Read the host battery, charging state, memory usage and free disk space. Metrics the host cannot measure are omitted.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{},
@@ -182,17 +182,9 @@ List<ToolDescriptor> buildSymbioticCopilotTools({
             'maximum': 100,
           },
           'diskFreeGb': <String, Object?>{'type': 'integer', 'minimum': 0},
-          'thermalState': <String, Object?>{'type': 'string', 'maxLength': 32},
           'healthStatus': <String, Object?>{'type': 'string', 'maxLength': 32},
         },
-        'required': <String>[
-          'batteryPercent',
-          'isCharging',
-          'memoryUsedPercent',
-          'diskFreeGb',
-          'thermalState',
-          'healthStatus',
-        ],
+        'required': <String>['healthStatus'],
         'additionalProperties': false,
       },
       policy: ToolPolicyMeta(

@@ -2603,7 +2603,6 @@ void main() {
               isCharging: true,
               memoryUsedPercent: 61,
               diskFreeGb: 95,
-              thermalState: 'nominal',
               healthStatus: 'healthy',
             ),
           );
@@ -2757,7 +2756,15 @@ void main() {
         'freezes and rehydrates workspace capsules, classifies and redacts Universal Pocket items, and transforms JSON/tasks/facts without logging secrets',
         () async {
           await policyStore.savePolicy(_sampleHealthyPolicy());
-          final symbioticService = AutoSymbioticService();
+          final symbioticService = AutoSymbioticService(
+            vitalsReader: () async => const SystemVitalsSnapshot(
+              batteryPercent: 85,
+              isCharging: true,
+              memoryUsedPercent: 40,
+              diskFreeGb: 120,
+              healthStatus: 'healthy',
+            ),
+          );
           final sym1Dispatcher = HostToolDispatcher(
             policyStore: policyStore,
             channel: channel,
@@ -3949,4 +3956,47 @@ void main() {
       );
     },
   );
+  group('system vitals report only what was measured', () {
+    test('a host without a battery omits it and never invents a value', () {
+      const snap = SystemVitalsSnapshot(
+        memoryUsedPercent: 61,
+        diskFreeGb: 95,
+        healthStatus: 'healthy',
+      );
+      final wire = snap.toWireJson();
+      expect(wire.containsKey('batteryPercent'), isFalse);
+      expect(wire.containsKey('isCharging'), isFalse);
+      expect(wire['memoryUsedPercent'], 61);
+      expect(snap.describeVi(), isNot(contains('Pin')));
+    });
+
+    test('a battery watchdog fails closed when the battery is not measurable',
+        () async {
+      final svc = AutoSymbioticService(
+        vitalsReader: () async => const SystemVitalsSnapshot(
+          memoryUsedPercent: 40,
+          healthStatus: 'healthy',
+        ),
+      );
+      await expectLater(
+        svc.registerResourceWatchdog(metric: 'battery_below', threshold: 90),
+        throwsA(
+          isA<XunaHostChannelException>().having(
+            (e) => e.errorCode,
+            'errorCode',
+            'metric_unavailable',
+          ),
+        ),
+      );
+    });
+
+    test('a snapshot with no measurement says so', () async {
+      final svc = AutoSymbioticService(
+        vitalsReader: () async =>
+            const SystemVitalsSnapshot(healthStatus: 'unknown'),
+      );
+      final snap = await svc.readSystemVitals();
+      expect(snap.hasAnyMeasurement, isFalse);
+    });
+  });
 }

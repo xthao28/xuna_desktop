@@ -103,7 +103,7 @@ class SymbioticQuickStartAndThemeSection extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '💻 Sức khỏe PC: Pin ${vitals.batteryPercent}% (${vitals.isCharging ? "Đang sạc" : "Dùng pin"}) · RAM ${vitals.memoryUsedPercent}% · Ổ cứng trống ${vitals.diskFreeGb} GB',
+                      '💻 Sức khỏe PC: ${vitals.describeVi()}',
                       style: AppTextStyle.font13Bo,
                     ),
                     if (lanIp.isNotEmpty)

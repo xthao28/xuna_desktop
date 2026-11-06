@@ -110,10 +110,8 @@ class SystemVitalsTool extends HostToolHandler {
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final snap = await context.symbioticService.readSystemVitals();
-    final chargeLabel = snap.isCharging ? 'đang sạc' : 'dùng pin';
     return ToolHandlerOutput(
-      text:
-          'Pin ${snap.batteryPercent}% ($chargeLabel), RAM ${snap.memoryUsedPercent}%, trống ${snap.diskFreeGb} GB (${snap.healthStatus}).',
+      text: '${snap.describeVi()} (${snap.healthStatus}).',
       structuredContent: snap.toWireJson(),
     );
   }

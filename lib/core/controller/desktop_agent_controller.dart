@@ -818,7 +818,7 @@ class DesktopAgentController extends BaseGetxController {
     activeDevPorts.assignAll(ports.activePorts);
     detectedLanIp.value = ports.lanIp;
     frontierStatusSummaryVi.value =
-        '💻 Pin ${vitals.batteryPercent}% (${vitals.isCharging ? "Đang sạc" : "Dùng pin"}) · RAM ${vitals.memoryUsedPercent}% · Ổ trống ${vitals.diskFreeGb}GB · ${ports.activePorts.length} cổng Dev đang mở';
+        '💻 ${vitals.describeVi()} · ${ports.activePorts.length} cổng Dev đang mở';
     refreshSymbioticState();
   }
 

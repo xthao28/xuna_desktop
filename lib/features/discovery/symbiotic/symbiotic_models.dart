@@ -42,27 +42,43 @@ class MeetingStatusSnapshot {
 /// Snapshot of host battery, memory, disk, and thermal health (`UDC-15` S15.4).
 class SystemVitalsSnapshot {
   const SystemVitalsSnapshot({
-    required this.batteryPercent,
-    required this.isCharging,
-    required this.memoryUsedPercent,
-    required this.diskFreeGb,
-    required this.thermalState,
+    this.batteryPercent,
+    this.isCharging,
+    this.memoryUsedPercent,
+    this.diskFreeGb,
     required this.healthStatus,
   });
 
-  final int batteryPercent;
-  final bool isCharging;
-  final int memoryUsedPercent;
-  final int diskFreeGb;
-  final String thermalState;
+  /// `null` means "not measured on this host" (e.g. a desktop without a battery),
+  /// never a placeholder value.
+  final int? batteryPercent;
+  final bool? isCharging;
+  final int? memoryUsedPercent;
+  final int? diskFreeGb;
   final String healthStatus;
 
+  /// True when at least one metric was really measured.
+  bool get hasAnyMeasurement =>
+      batteryPercent != null ||
+      memoryUsedPercent != null ||
+      diskFreeGb != null;
+
+  /// Short Vietnamese summary built only from measured values.
+  String describeVi() {
+    final parts = <String>[
+      if (batteryPercent != null)
+        'Pin $batteryPercent%${isCharging == null ? '' : (isCharging! ? ' (đang sạc)' : ' (dùng pin)')}',
+      if (memoryUsedPercent != null) 'RAM $memoryUsedPercent%',
+      if (diskFreeGb != null) 'Ổ trống $diskFreeGb GB',
+    ];
+    return parts.isEmpty ? 'Chưa đọc được thông số máy' : parts.join(' · ');
+  }
+
   Map<String, Object?> toWireJson() => <String, Object?>{
-    'batteryPercent': batteryPercent,
-    'isCharging': isCharging,
-    'memoryUsedPercent': memoryUsedPercent,
-    'diskFreeGb': diskFreeGb,
-    'thermalState': thermalState,
+    if (batteryPercent != null) 'batteryPercent': batteryPercent,
+    if (isCharging != null) 'isCharging': isCharging,
+    if (memoryUsedPercent != null) 'memoryUsedPercent': memoryUsedPercent,
+    if (diskFreeGb != null) 'diskFreeGb': diskFreeGb,
     'healthStatus': healthStatus,
   };
 }

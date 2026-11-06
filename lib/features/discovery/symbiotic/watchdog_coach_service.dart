@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 import 'symbiotic_models.dart';
@@ -109,11 +110,19 @@ class WatchdogCoachService {
     final ts = (nowUtc ?? DateTime.now()).toUtc();
     final wdId = 'wd-$_watchdogSeq';
     final vitals = await _vitalsService.readSystemVitals();
-    final currentVal = switch (metric) {
+    final measured = switch (metric) {
       'battery_below' => vitals.batteryPercent,
       'memory_above' => vitals.memoryUsedPercent,
       _ => vitals.diskFreeGb,
     };
+    if (measured == null) {
+      throw XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'metric_unavailable',
+        message: 'This host cannot measure $metric.',
+      );
+    }
+    final currentVal = measured;
     final isTriggered = switch (metric) {
       'battery_below' => currentVal <= threshold,
       'memory_above' => currentVal >= threshold,
