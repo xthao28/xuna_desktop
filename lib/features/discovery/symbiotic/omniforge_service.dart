@@ -219,8 +219,6 @@ class OmniForgeService {
         : targetFolder.trim();
 
     late final String titleVi;
-    late final int detectedCount;
-    late final String dryRunSample;
     late final List<Map<String, Object?>> paramFields;
     late List<String> scriptSteps;
     late final String surfaceKind;
@@ -228,9 +226,6 @@ class OmniForgeService {
     switch (resolvedCategory) {
       case 'hr_cv_scanner':
         titleVi = 'Sàng Lọc CV Ứng Viên & Xếp Hạng Kỹ Năng';
-        detectedCount = 34;
-        dryRunSample =
-            'Mẫu thử #1: CV_NguyenMinhAnh.pdf -> 3 năm KN (Python, Marketing, SQL) | Điểm khớp: 92/100';
         surfaceKind = 'kanban_board';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -252,9 +247,6 @@ class OmniForgeService {
         ];
       case 'ecommerce_price_radar':
         titleVi = 'Radar Canh Giá Đối Thủ & Cảnh Báo Tồn Kho';
-        detectedCount = 24;
-        dryRunSample =
-            'Mẫu thử #1: Tai nghe X-Pro giảm 12% (390.000 đ -> 345.000 đ) | Tồn kho: Sắp hết';
         surfaceKind = 'metric_cards';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -276,9 +268,6 @@ class OmniForgeService {
         ];
       case 'content_news_digest':
         titleVi = 'Tổng Hợp Tin Tức & Lập Dàn Ý Nội Dung Đa Kênh';
-        detectedCount = 18;
-        dryRunSample =
-            'Mẫu thử #1: 5 xu hướng AI & Thương mại số trong ngày -> BanTin_TongHop.md';
         surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -295,9 +284,6 @@ class OmniForgeService {
         ];
       case 'media_batch_renamer':
         titleVi = 'Đổi Tên & Phân Loại Bộ Sưu Tập Ảnh/Media Hàng Loạt';
-        detectedCount = 86;
-        dryRunSample =
-            'Mẫu thử #1: IMG_8841.JPG -> $folder/2026-11_BoSuuTap_001.jpg (Có Hoàn tác 1 chạm)';
         surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -319,9 +305,6 @@ class OmniForgeService {
         ];
       case 'web_harvest_invoices':
         titleVi = 'Tải Hóa Đơn Hàng Loạt & Lập Bảng Kê';
-        detectedCount = 48;
-        dryRunSample =
-            'Mẫu thử #1: 2026-11_VNPT_HD001248.pdf + .xml (1.650.000 đ) -> $folder/';
         surfaceKind = 'invoice_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -348,9 +331,6 @@ class OmniForgeService {
         ];
       case 'document_to_sheet':
         titleVi = 'Đọc Chứng Từ / Tài Liệu Ra Bảng Tổng Hợp Excel';
-        detectedCount = 35;
-        dryRunSample =
-            'Mẫu thử #1: HD_001248.xml -> MST 0100684378 | Tổng: 1.650.000 đ (VAT 10%)';
         surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -371,9 +351,6 @@ class OmniForgeService {
         ];
       case 'smart_file_janitor':
         titleVi = 'Phân Loại & Dọn Thư Mục Tự Động (Có Hoàn Tác)';
-        detectedCount = 64;
-        dryRunSample =
-            'Mẫu thử #1: TaiLieu_DuAn.pdf -> $folder/TaiLieu_PDF/TaiLieu_DuAn.pdf';
         surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -389,9 +366,6 @@ class OmniForgeService {
         ];
       case 'spreadsheet_reconciler':
         titleVi = 'Đối Soát Đa Bảng (Đơn Hàng / Sao Kê / Vận Chuyển)';
-        detectedCount = 120;
-        dryRunSample =
-            'Mẫu thử #1: Mã #DH8821 khớp 450.000 đ | Phát hiện 2 mã lệch số tiền';
         surfaceKind = 'diff_reconcile';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -407,9 +381,6 @@ class OmniForgeService {
         ];
       case 'lead_harvester':
         titleVi = 'Lọc Hồ Sơ Ứng Viên / Khách Hàng Tiềm Năng';
-        detectedCount = 28;
-        dryRunSample =
-            'Mẫu thử #1: Nguyễn Văn A (Email + SĐT hợp lệ) -> DanhSach_PhuHop.csv';
         surfaceKind = 'kanban_board';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -426,9 +397,6 @@ class OmniForgeService {
       default:
         titleVi =
             'Pipeline Tự Động XUNA: ${cleanGoal.length > 36 ? "${cleanGoal.substring(0, 36)}..." : cleanGoal}';
-        detectedCount = 20;
-        dryRunSample =
-            'Mẫu thử #1: Đã ghép nối chuỗi Nguyên tử Vạn năng -> $folder/';
         surfaceKind = 'data_table';
         paramFields = <Map<String, Object?>>[
           <String, Object?>{
@@ -445,8 +413,12 @@ class OmniForgeService {
     }
 
     final probed = _probeRealFilesForSkill(folder, exts);
-    var realCount = probed != null ? probed.count : detectedCount;
-    var realSample = probed != null ? probed.sample : dryRunSample;
+    // Only what was measured on disk is reported. With no matching files (or an
+    // unreadable folder) the count is 0 and the sample says so; nothing is invented.
+    var realCount = probed != null ? probed.count : 0;
+    var realSample = probed != null
+        ? probed.sample
+        : 'Chưa tìm thấy tệp phù hợp (${exts.join(', ')}) trong "$folder"; kiểm tra thư mục rồi rèn lại.';
 
     final primitives = inferUniversalPrimitivesForGoal(cleanGoal);
     final updateIdx =

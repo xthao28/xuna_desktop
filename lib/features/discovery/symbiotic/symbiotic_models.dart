@@ -364,8 +364,8 @@ class ForgedSkillEntry {
         json['fileExtensions'],
         const <String>['.json', '.txt'],
       ),
-      detectedItemsCount: (json['detectedItemsCount'] as num?)?.toInt() ?? 1,
-      dryRunSample: (json['dryRunSample'] as String? ?? 'OK').trim(),
+      detectedItemsCount: (json['detectedItemsCount'] as num?)?.toInt() ?? 0,
+      dryRunSample: (json['dryRunSample'] as String? ?? '').trim(),
       selfDebugIterations: (json['selfDebugIterations'] as num?)?.toInt() ?? 1,
       parameterFields: readParamFields(json['parameterFields']),
       scriptSteps: readStringList(

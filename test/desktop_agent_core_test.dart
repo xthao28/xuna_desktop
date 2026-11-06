@@ -2966,6 +2966,11 @@ void main() {
             synthSc['summaryVi'] as String,
             isNot(contains('sk-proj-secret')),
           );
+          // Nothing exists in "HoaDon_T11": only measured values may be reported,
+          // never a canned count or a made-up sample file.
+          expect(synthSc['detectedItemsCount'], equals(0));
+          expect(synthSc['dryRunSample'] as String, contains('Chưa tìm thấy'));
+          expect(synthSc['dryRunSample'] as String, isNot(contains('HD_001248')));
 
           final runSkillArgs = <String, Object?>{
             'skillId': forgedId,
@@ -2990,7 +2995,9 @@ void main() {
           );
           final runSkillSc =
               runSkillResp.result['structuredContent'] as Map<String, Object?>;
-          expect(runSkillSc['processedCount'], equals(15));
+          // The skill targets a folder that does not exist, so nothing real can
+          // be processed: it must report 0, not the requested maxItems.
+          expect(runSkillSc['processedCount'], equals(0));
           expect(runSkillSc['undoSnapshotId'], isNotEmpty);
 
           final invoiceResp = await sym1Dispatcher.dispatch(
