@@ -24,55 +24,6 @@ class ClipboardWriteTool extends HostToolHandler {
   }
 }
 
-class MeetingStatusTool extends HostToolHandler {
-  const MeetingStatusTool();
-
-  @override
-  String get name => 'meeting.status';
-
-  @override
-  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final snap = await context.symbioticService.getMeetingStatus();
-    final micDesc = snap.micMuted ? 'đã tắt mic' : 'mic đang bật';
-    final text = snap.inMeeting
-        ? 'Đang họp trên ${snap.app} ($micDesc).'
-        : 'Không có cuộc họp nào ($micDesc).';
-    return ToolHandlerOutput(text: text, structuredContent: snap.toWireJson());
-  }
-}
-
-class MeetingControlTool extends HostToolHandler {
-  const MeetingControlTool();
-
-  @override
-  String get name => 'meeting.control';
-
-  @override
-  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final action = context.arguments['action'] as String;
-    final res = await context.symbioticService.controlMeeting(action);
-    context.actionLedger.pushEntry(
-      ReversibleActionEntry(
-        originalTool: 'meeting.control',
-        inverseTool: 'meeting.control',
-        inverseArgs: <String, Object?>{'action': res.inverseAction},
-        description: res.previousMicMuted ? 'tắt lại mic' : 'bật lại mic',
-        recordedAt: context.nowUtc,
-      ),
-    );
-    final label = res.micMuted ? 'Đã tắt mic' : 'Đã bật mic';
-    return ToolHandlerOutput(
-      text: '$label (${res.app}).',
-      structuredContent: <String, Object?>{
-        'action': res.action,
-        'micMuted': res.micMuted,
-        'app': res.app,
-      },
-      toastBody: res.micMuted ? 'đã tắt mic' : 'đã bật mic',
-    );
-  }
-}
-
 class DevPortsTool extends HostToolHandler {
   const DevPortsTool();
 
@@ -430,32 +381,6 @@ class CoachDecomposeOverwhelmTool extends HostToolHandler {
   }
 }
 
-class MeetingDeskWhisperDigestTool extends HostToolHandler {
-  const MeetingDeskWhisperDigestTool();
-
-  @override
-  String get name => 'meeting.desk_whisper_digest';
-
-  @override
-  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final topic = context.arguments['topic'] as String;
-    final contextHint = context.arguments['contextHint'] as String?;
-    final res = context.symbioticService.buildDeskWhisperDigest(
-      topic: topic,
-      contextHint: contextHint,
-    );
-    return ToolHandlerOutput(
-      text: res.whisperLine,
-      structuredContent: <String, Object?>{
-        'topic': res.topic,
-        'whisperLine': res.whisperLine,
-        'bulletPoints': res.bulletPoints,
-        'silentMode': res.silentMode,
-      },
-    );
-  }
-}
-
 class HabitProposeWorkflowTool extends HostToolHandler {
   const HabitProposeWorkflowTool();
 
@@ -477,8 +402,6 @@ class HabitProposeWorkflowTool extends HostToolHandler {
 
 const List<HostToolHandler> defaultSymbioticToolHandlers = <HostToolHandler>[
   ClipboardWriteTool(),
-  MeetingStatusTool(),
-  MeetingControlTool(),
   DevPortsTool(),
   SystemVitalsTool(),
   WorkspaceCaptureCapsuleTool(),
@@ -491,6 +414,5 @@ const List<HostToolHandler> defaultSymbioticToolHandlers = <HostToolHandler>[
   WatchdogWatchResourceThresholdTool(),
   WatchdogListAndClearTool(),
   CoachDecomposeOverwhelmTool(),
-  MeetingDeskWhisperDigestTool(),
   HabitProposeWorkflowTool(),
 ];

@@ -6,7 +6,7 @@ import 'package:xuna_xtp/xuna_xtp.dart';
 import 'symbiotic_models.dart';
 import 'symbiotic_vitals_service.dart';
 
-/// Autonomous Watchdog Sentinel, Executive Function Coach, Desk Whisper, and Habit Miner (`SYM-2` S2.1).
+/// Autonomous Watchdog Sentinel, Executive Function Coach, and Habit Miner (`SYM-2` S2.1).
 class WatchdogCoachService {
   WatchdogCoachService({required SymbioticVitalsService vitalsService})
     : _vitalsService = vitalsService;
@@ -202,33 +202,6 @@ class WatchdogCoachService {
           : firstStep.substring(0, 160),
       followUpSteps: followUps,
       encouragementVi: encouragement,
-    );
-  }
-
-  /// Formats a silent <= 120-char meeting whisper digest for the XUNA desk screen (`SYM-2` S2.1).
-  ({
-    String topic,
-    String whisperLine,
-    List<String> bulletPoints,
-    bool silentMode,
-  })
-  buildDeskWhisperDigest({required String topic, String? contextHint}) {
-    final cleanTopic = redactSensitiveSelectionText(
-      topic.trim(),
-      maxChars: 120,
-    ).text;
-    final cleanHint = (contextHint == null || contextHint.trim().isEmpty)
-        ? 'Giữ nhịp ngắn gọn, nêu kết quả chính trước'
-        : redactSensitiveSelectionText(contextHint.trim(), maxChars: 120).text;
-    final rawWhisper = '💡 $cleanTopic: $cleanHint';
-    final whisperLine = rawWhisper.length <= 120
-        ? rawWhisper
-        : '${rawWhisper.substring(0, 117)}...';
-    return (
-      topic: cleanTopic,
-      whisperLine: whisperLine,
-      bulletPoints: <String>[cleanTopic, cleanHint],
-      silentMode: true,
     );
   }
 

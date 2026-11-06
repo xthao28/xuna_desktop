@@ -42,27 +42,17 @@ export 'symbiotic/workspace_pocket_service.dart';
 class AutoSymbioticService {
   AutoSymbioticService({
     Future<void> Function(String text)? clipboardWriter,
-    Future<MeetingStatusSnapshot> Function()? meetingDetector,
-    Future<bool> Function(bool mute)? micMuteSetter,
     Future<List<({int port, String process})>> Function(List<int> ports)?
     portProbe,
     Future<String> Function()? lanIpResolver,
     Future<SystemVitalsSnapshot> Function()? vitalsReader,
     SandboxedToolRunner? sandboxRunner,
-    bool initialInMeeting = false,
-    String initialMeetingApp = 'none',
-    bool initialMicMuted = false,
   }) {
     vitals = SymbioticVitalsService(
       clipboardWriter: clipboardWriter,
-      meetingDetector: meetingDetector,
-      micMuteSetter: micMuteSetter,
       portProbe: portProbe,
       lanIpResolver: lanIpResolver,
       vitalsReader: vitalsReader,
-      initialInMeeting: initialInMeeting,
-      initialMeetingApp: initialMeetingApp,
-      initialMicMuted: initialMicMuted,
     );
     workspacePocket = WorkspacePocketService();
     watchdogCoach = WatchdogCoachService(vitalsService: vitals);
@@ -189,24 +179,11 @@ class AutoSymbioticService {
   static List<String> suggestActionsForKind(String kind) =>
       WorkspacePocketService.suggestActionsForKind(kind);
 
-  // ── UDC-15: Clipboard, Meeting, Dev Ports & System Vitals ─────────────────
+  // ── UDC-15: Clipboard, Dev Ports & System Vitals ─────────────────
 
   Future<({bool written, int charCount, int redactedCount})> writeClipboardText(
     String rawText,
   ) => vitals.writeClipboardText(rawText);
-
-  Future<MeetingStatusSnapshot> getMeetingStatus() => vitals.getMeetingStatus();
-
-  Future<
-    ({
-      String action,
-      bool micMuted,
-      bool previousMicMuted,
-      String inverseAction,
-      String app,
-    })
-  >
-  controlMeeting(String action) => vitals.controlMeeting(action);
 
   Future<({String lanIp, List<DevPortEntry> activePorts})> scanDevPorts({
     List<int>? ports,
@@ -214,7 +191,7 @@ class AutoSymbioticService {
 
   Future<SystemVitalsSnapshot> readSystemVitals() => vitals.readSystemVitals();
 
-  // ── SYM-2: Watchdogs, Coach, Desk Whisper & Habit Miner ───────────────────
+  // ── SYM-2: Watchdogs, Coach & Habit Miner ───────────────────
 
   Future<
     ({
@@ -272,18 +249,6 @@ class AutoSymbioticService {
   })
   decomposeOverwhelm({required String goal, String? project}) =>
       watchdogCoach.decomposeOverwhelm(goal: goal, project: project);
-
-  ({
-    String topic,
-    String whisperLine,
-    List<String> bulletPoints,
-    bool silentMode,
-  })
-  buildDeskWhisperDigest({required String topic, String? contextHint}) =>
-      watchdogCoach.buildDeskWhisperDigest(
-        topic: topic,
-        contextHint: contextHint,
-      );
 
   void recordToolExecution(String toolName) =>
       watchdogCoach.recordToolExecution(toolName);

@@ -638,7 +638,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(71));
+        expect(toolsList, hasLength(68));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -2571,27 +2571,17 @@ void main() {
   );
 
   group(
-    'UDC-15 S15.1–S15.4: Live Symbiotic Co-Pilot (clipboard.write, meeting.status/control, dev.ports, system.vitals)',
+    'UDC-15 S15.1–S15.4: Live Symbiotic Co-Pilot (clipboard.write, dev.ports, system.vitals)',
     () {
       test(
-        'executes clipboard.write with secret redaction, meeting.status, meeting.control (+ undo), dev.ports, and system.vitals without logging secrets',
+        'executes clipboard.write with secret redaction, dev.ports, and system.vitals without logging secrets',
         () async {
           await policyStore.savePolicy(_sampleHealthyPolicy());
           final writtenClipboards = <String>[];
-          bool fakeMicMuted = false;
 
           final symbioticService = AutoSymbioticService(
             clipboardWriter: (text) async {
               writtenClipboards.add(text);
-            },
-            meetingDetector: () async => MeetingStatusSnapshot(
-              inMeeting: true,
-              app: 'zoom',
-              micMuted: fakeMicMuted,
-            ),
-            micMuteSetter: (mute) async {
-              fakeMicMuted = mute;
-              return fakeMicMuted;
             },
             lanIpResolver: () async => '192.168.1.42',
             portProbe: (ports) async => <({int port, String process})>[
@@ -2649,54 +2639,6 @@ void main() {
             writtenClipboards.single,
             isNot(contains('sk-proj-1234567890abcdef')),
           );
-
-          // 2. S15.2: meeting.status & meeting.control (R1) + action.undo
-          final meetStatusResp = await udc15Dispatcher.dispatch(
-            requestId: 1102,
-            params: const ToolsCallParams(
-              name: 'meeting.status',
-              arguments: <String, Object?>{},
-              invocationId: '11020000-0000-4000-8000-000000000002',
-              deadlineMs: 5000,
-            ),
-            nowUtc: now,
-          );
-          final meetStatusSc =
-              meetStatusResp.result['structuredContent']
-                  as Map<String, Object?>;
-          expect(meetStatusSc['inMeeting'], isTrue);
-          expect(meetStatusSc['app'], equals('zoom'));
-          expect(meetStatusSc['micMuted'], isFalse);
-
-          final muteResp = await udc15Dispatcher.dispatch(
-            requestId: 1103,
-            params: const ToolsCallParams(
-              name: 'meeting.control',
-              arguments: <String, Object?>{'action': 'mute_mic'},
-              invocationId: '11030000-0000-4000-8000-000000000003',
-              deadlineMs: 5000,
-            ),
-            nowUtc: now,
-          );
-          expect(
-            (muteResp.result['structuredContent']
-                as Map<String, Object?>)['micMuted'],
-            isTrue,
-          );
-          expect(fakeMicMuted, isTrue);
-
-          // Undo restores microphone back to unmuted!
-          await udc15Dispatcher.dispatch(
-            requestId: 1104,
-            params: const ToolsCallParams(
-              name: 'action.undo',
-              arguments: <String, Object?>{},
-              invocationId: '11040000-0000-4000-8000-000000000004',
-              deadlineMs: 5000,
-            ),
-            nowUtc: now.add(const Duration(seconds: 10)),
-          );
-          expect(fakeMicMuted, isFalse);
 
           // 3. S15.3: dev.ports (R1) returns LAN IP and active localhost dev ports
           final devPortsResp = await udc15Dispatcher.dispatch(
@@ -2983,27 +2925,6 @@ void main() {
           expect(
             coachSc['firstFiveMinuteStep'] as String,
             contains('Trong 5 phút tới'),
-          );
-
-          final whisperResp = await sym1Dispatcher.dispatch(
-            requestId: 1211,
-            params: const ToolsCallParams(
-              name: 'meeting.desk_whisper_digest',
-              arguments: <String, Object?>{
-                'topic': 'Báo cáo SYM-2',
-                'contextHint': 'Nhấn mạnh 50 XTP tools và 0B firmware delta',
-              },
-              invocationId: '12110000-0000-4000-8000-000000000011',
-              deadlineMs: 5000,
-            ),
-            nowUtc: now,
-          );
-          final whisperSc =
-              whisperResp.result['structuredContent'] as Map<String, Object?>;
-          expect(whisperSc['silentMode'], isTrue);
-          expect(
-            (whisperSc['whisperLine'] as String).length,
-            lessThanOrEqualTo(120),
           );
 
           final habitResp = await sym1Dispatcher.dispatch(

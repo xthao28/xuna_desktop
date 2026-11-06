@@ -364,7 +364,6 @@ class HostToolDispatcher {
     'mcp.list_servers',
     'tv.list_devices',
     'smarthome.list_entities',
-    'meeting.status',
     'dev.ports',
     'system.vitals',
     'pocket.list_items',

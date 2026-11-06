@@ -20,26 +20,7 @@ class DevPortEntry {
   };
 }
 
-/// Snapshot of meeting & microphone state (`UDC-15` S15.2).
-class MeetingStatusSnapshot {
-  const MeetingStatusSnapshot({
-    required this.inMeeting,
-    required this.app,
-    required this.micMuted,
-  });
-
-  final bool inMeeting;
-  final String app;
-  final bool micMuted;
-
-  Map<String, Object?> toWireJson() => <String, Object?>{
-    'inMeeting': inMeeting,
-    'app': app,
-    'micMuted': micMuted,
-  };
-}
-
-/// Snapshot of host battery, memory, disk, and thermal health (`UDC-15` S15.4).
+/// Snapshot of measured host battery, memory and disk (`UDC-15` S15.4).
 class SystemVitalsSnapshot {
   const SystemVitalsSnapshot({
     this.batteryPercent,

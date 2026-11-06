@@ -5,8 +5,6 @@ import 'core_types.dart';
 
 /// Builds the 5 `UDC-15` Live Symbiotic Co-Pilot tool descriptors (`S15.1`–`S15.4`):
 /// - `clipboard.write` (`R2`, `reversible: false`, family `app`)
-/// - `meeting.status` (`R1`, `observes: true`, family `media`)
-/// - `meeting.control` (`R1`, `reversible: true`, family `media`)
 /// - `dev.ports` (`R1`, `observes: true`, family `app`)
 /// - `system.vitals` (`R1`, `observes: true`, family `host`)
 List<ToolDescriptor> buildSymbioticCopilotTools({
@@ -48,66 +46,6 @@ List<ToolDescriptor> buildSymbioticCopilotTools({
         risk: RiskTier.r2,
         observes: false,
         reversible: false,
-        permission: defaultPermission,
-      ),
-    ),
-    ToolDescriptor(
-      name: 'meeting.status',
-      description:
-          'Check active video/voice conferencing session (Zoom, Teams, Meet, Discord, FaceTime) and microphone mute state.',
-      inputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{},
-        'additionalProperties': false,
-      },
-      outputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{
-          'inMeeting': <String, Object?>{'type': 'boolean'},
-          'app': <String, Object?>{'type': 'string', 'maxLength': 40},
-          'micMuted': <String, Object?>{'type': 'boolean'},
-        },
-        'required': <String>['inMeeting', 'app', 'micMuted'],
-        'additionalProperties': false,
-      },
-      policy: ToolPolicyMeta(
-        family: ToolFamily.media,
-        risk: RiskTier.r1,
-        observes: true,
-        reversible: true,
-        permission: defaultPermission,
-      ),
-    ),
-    ToolDescriptor(
-      name: 'meeting.control',
-      description:
-          'Mute, unmute, or toggle the host microphone during a meeting or call.',
-      inputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{
-          'action': <String, Object?>{
-            'type': 'string',
-            'enum': <String>['mute_mic', 'unmute_mic', 'toggle_mic'],
-          },
-        },
-        'required': <String>['action'],
-        'additionalProperties': false,
-      },
-      outputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{
-          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
-          'micMuted': <String, Object?>{'type': 'boolean'},
-          'app': <String, Object?>{'type': 'string', 'maxLength': 40},
-        },
-        'required': <String>['action', 'micMuted', 'app'],
-        'additionalProperties': false,
-      },
-      policy: ToolPolicyMeta(
-        family: ToolFamily.media,
-        risk: RiskTier.r1,
-        observes: false,
-        reversible: true,
         permission: defaultPermission,
       ),
     ),
@@ -575,7 +513,6 @@ List<ToolDescriptor> buildSymbioticEvolutionTools({
 /// - `watchdog.watch_resource_threshold` (`R1`, `observes: true`, family `app`)
 /// - `watchdog.list_and_clear` (`R1`, `reversible: true`, family `app`)
 /// - `coach.decompose_overwhelm` (`R1`, `reversible: true`, family `app`)
-/// - `meeting.desk_whisper_digest` (`R1`, `reversible: true`, family `media`)
 /// - `habit.propose_workflow` (`R1`, `observes: true`, family `workflow`)
 List<ToolDescriptor> buildSymbioticSentinelTools({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
@@ -767,53 +704,6 @@ List<ToolDescriptor> buildSymbioticSentinelTools({
       },
       policy: ToolPolicyMeta(
         family: ToolFamily.app,
-        risk: RiskTier.r1,
-        observes: false,
-        reversible: true,
-        permission: defaultPermission,
-      ),
-    ),
-    ToolDescriptor(
-      name: 'meeting.desk_whisper_digest',
-      description:
-          'Prepare a silent <= 120-char cue card for the physical XUNA desk screen during a meeting without showing any PC popup.',
-      inputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{
-          'topic': <String, Object?>{
-            'type': 'string',
-            'minLength': 1,
-            'maxLength': 120,
-          },
-          'contextHint': <String, Object?>{
-            'type': 'string',
-            'maxLength': 240,
-          },
-        },
-        'required': <String>['topic'],
-        'additionalProperties': false,
-      },
-      outputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{
-          'topic': <String, Object?>{'type': 'string', 'maxLength': 120},
-          'whisperLine': <String, Object?>{'type': 'string', 'maxLength': 120},
-          'bulletPoints': <String, Object?>{
-            'type': 'array',
-            'items': <String, Object?>{'type': 'string', 'maxLength': 120},
-          },
-          'silentMode': <String, Object?>{'type': 'boolean'},
-        },
-        'required': <String>[
-          'topic',
-          'whisperLine',
-          'bulletPoints',
-          'silentMode',
-        ],
-        'additionalProperties': false,
-      },
-      policy: ToolPolicyMeta(
-        family: ToolFamily.media,
         risk: RiskTier.r1,
         observes: false,
         reversible: true,

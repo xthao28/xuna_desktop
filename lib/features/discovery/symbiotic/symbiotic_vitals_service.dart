@@ -7,40 +7,25 @@ import 'package:xuna_xtp/xuna_xtp.dart';
 
 import 'symbiotic_models.dart';
 
-/// Symbiotic Co-Pilot service for Clipboard, Meeting & Mic, Dev Ports, and System Vitals (`UDC-15` S15.1–S15.4).
+/// Symbiotic Co-Pilot service for Clipboard, Dev Ports, and System Vitals (`UDC-15`).
 class SymbioticVitalsService {
   SymbioticVitalsService({
     Future<void> Function(String text)? clipboardWriter,
-    Future<MeetingStatusSnapshot> Function()? meetingDetector,
-    Future<bool> Function(bool mute)? micMuteSetter,
     Future<List<({int port, String process})>> Function(List<int> ports)?
     portProbe,
     Future<String> Function()? lanIpResolver,
     Future<SystemVitalsSnapshot> Function()? vitalsReader,
-    bool initialInMeeting = false,
-    String initialMeetingApp = 'none',
-    bool initialMicMuted = false,
   }) : _clipboardWriter = clipboardWriter,
-       _meetingDetector = meetingDetector,
-       _micMuteSetter = micMuteSetter,
        _portProbe = portProbe,
        _lanIpResolver = lanIpResolver,
-       _vitalsReader = vitalsReader,
-       _inMeeting = initialInMeeting,
-       _meetingApp = initialMeetingApp,
-       _micMuted = initialMicMuted;
+       _vitalsReader = vitalsReader;
 
   final Future<void> Function(String text)? _clipboardWriter;
-  final Future<MeetingStatusSnapshot> Function()? _meetingDetector;
-  final Future<bool> Function(bool mute)? _micMuteSetter;
   final Future<List<({int port, String process})>> Function(List<int> ports)?
   _portProbe;
   final Future<String> Function()? _lanIpResolver;
   final Future<SystemVitalsSnapshot> Function()? _vitalsReader;
 
-  bool _inMeeting;
-  String _meetingApp;
-  bool _micMuted;
   String _lastWrittenClipboard = '';
 
   /// Last text written to the clipboard in memory (for test verification; never logged).
@@ -66,107 +51,6 @@ class SymbioticVitalsService {
       written: true,
       charCount: cleanText.length,
       redactedCount: redacted.redactedCount,
-    );
-  }
-
-  /// Queries current meeting and microphone state (`UDC-15` S15.2).
-  Future<MeetingStatusSnapshot> getMeetingStatus() async {
-    if (_meetingDetector != null) {
-      final detected = await _meetingDetector();
-      _inMeeting = detected.inMeeting;
-      _meetingApp = detected.app;
-      _micMuted = detected.micMuted;
-      return detected;
-    }
-    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      final nativeDetected = await _detectNativeMeetingProcess();
-      if (nativeDetected != null) {
-        _inMeeting = nativeDetected.inMeeting;
-        _meetingApp = nativeDetected.app;
-      }
-    }
-    return MeetingStatusSnapshot(
-      inMeeting: _inMeeting,
-      app: _meetingApp,
-      micMuted: _micMuted,
-    );
-  }
-
-  Future<({bool inMeeting, String app})?> _detectNativeMeetingProcess() async {
-    try {
-      String output = '';
-      if (Platform.isWindows) {
-        final res = await Process.run(
-          'tasklist',
-          const <String>['/FO', 'CSV', '/NH'],
-          runInShell: false,
-        ).timeout(const Duration(seconds: 2));
-        output = (res.stdout?.toString() ?? '').toLowerCase();
-      } else if (Platform.isMacOS || Platform.isLinux) {
-        final res = await Process.run(
-          'ps',
-          const <String>['-ax', '-o', 'comm='],
-          runInShell: false,
-        ).timeout(const Duration(seconds: 2));
-        output = (res.stdout?.toString() ?? '').toLowerCase();
-      }
-      if (output.isEmpty) return null;
-      if (output.contains('zoom.us') ||
-          output.contains('zoom.exe') ||
-          output.contains('cpthost')) {
-        return (inMeeting: true, app: 'zoom');
-      }
-      if (output.contains('ms-teams') || output.contains('teams.exe')) {
-        return (inMeeting: true, app: 'teams');
-      }
-      if (output.contains('webex') || output.contains('atmgr')) {
-        return (inMeeting: true, app: 'webex');
-      }
-      if (output.contains('discord')) {
-        return (inMeeting: true, app: 'discord');
-      }
-      if (output.contains('facetime')) {
-        return (inMeeting: true, app: 'meet');
-      }
-      return (inMeeting: false, app: 'none');
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Mutes, unmutes, or toggles the host microphone (`UDC-15` S15.2).
-  Future<
-    ({
-      String action,
-      bool micMuted,
-      bool previousMicMuted,
-      String inverseAction,
-      String app,
-    })
-  >
-  controlMeeting(String action) async {
-    if (!allowedMeetingActions.contains(action)) {
-      throw ArgumentError.value(action, 'action', 'Unsupported meeting action');
-    }
-    final prevMuted = _micMuted;
-    final targetMuted = switch (action) {
-      'mute_mic' => true,
-      'unmute_mic' => false,
-      _ => !_micMuted,
-    };
-    if (_micMuteSetter != null) {
-      _micMuted = await _micMuteSetter(targetMuted);
-    } else {
-      await _setNativeMicMute(targetMuted);
-      _micMuted = targetMuted;
-    }
-    final inverseAction = prevMuted ? 'mute_mic' : 'unmute_mic';
-    return (
-      action: action,
-      micMuted: _micMuted,
-      previousMicMuted: prevMuted,
-      inverseAction: inverseAction,
-      app: _meetingApp,
     );
   }
 
@@ -486,48 +370,4 @@ class SymbioticVitalsService {
       // Best-effort in headless environments
     }
   }
-
-  Future<void> _setNativeMicMute(bool mute) async {
-    try {
-      if (Platform.isMacOS) {
-        final vol = mute ? 0 : 80;
-        await Process.run('/usr/bin/osascript', <String>[
-          '-e',
-          'set volume input volume $vol',
-        ], runInShell: false).timeout(const Duration(seconds: 2));
-      } else if (Platform.isWindows) {
-        // Send WM_APPCOMMAND APPCOMMAND_MIC_ON_OFF_TOGGLE (24 << 16 = 0x180000) to foreground window
-        const psToggleMic =
-            r'$sig = "[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\"user32.dll\")] public static extern IntPtr SendMessageW(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);"; '
-            r'$t = Add-Type -MemberDefinition $sig -Name "Win32Mic" -Namespace "Xuna" -PassThru -ErrorAction SilentlyContinue; '
-            r'if ($t) { $h = $t::GetForegroundWindow(); [void]$t::SendMessageW($h, 0x0319, $h, [IntPtr]0x180000); }';
-        await Process.run(
-          'powershell.exe',
-          <String>['-NoProfile', '-NonInteractive', '-Command', psToggleMic],
-          runInShell: false,
-        ).timeout(const Duration(seconds: 2));
-      } else if (Platform.isLinux) {
-        try {
-          await Process.run(
-            'pactl',
-            <String>[
-              'set-source-mute',
-              '@DEFAULT_SOURCE@',
-              mute ? '1' : '0',
-            ],
-            runInShell: false,
-          ).timeout(const Duration(seconds: 2));
-        } catch (_) {
-          await Process.run(
-            'amixer',
-            <String>['set', 'Capture', mute ? 'nocap' : 'cap'],
-            runInShell: false,
-          ).timeout(const Duration(seconds: 2));
-        }
-      }
-    } catch (_) {
-      // Best-effort in headless environments
-    }
-  }
 }
-

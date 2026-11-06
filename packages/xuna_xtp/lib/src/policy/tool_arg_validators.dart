@@ -346,22 +346,8 @@ PolicyEvaluationResult validateToolArguments({
         );
       }
       effectiveRisk = RiskTier.r2;
-    case 'meeting.status':
     case 'system.vitals':
       if (arguments.isNotEmpty) {
-        return const PolicyEvaluationResult(
-          allowed: false,
-          status: XtpStatus.invalidArgs,
-          effectiveRisk: RiskTier.r1,
-          errorCode: 'schema_mismatch',
-        );
-      }
-      effectiveRisk = RiskTier.r1;
-    case 'meeting.control':
-      final action = arguments['action'];
-      if (arguments.length != 1 ||
-          action is! String ||
-          !allowedMeetingActions.contains(action)) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -681,27 +667,6 @@ PolicyEvaluationResult validateToolArguments({
           !isSafeAgentPrompt(goal) ||
           (project != null &&
               (project is! String || !isValidWorkspaceQuery(project)))) {
-        return const PolicyEvaluationResult(
-          allowed: false,
-          status: XtpStatus.invalidArgs,
-          effectiveRisk: RiskTier.r1,
-          errorCode: 'schema_mismatch',
-        );
-      }
-      effectiveRisk = RiskTier.r1;
-    case 'meeting.desk_whisper_digest':
-      final topic = arguments['topic'];
-      final contextHint = arguments['contextHint'];
-      const allowedWhisperKeys = <String>{'topic', 'contextHint'};
-      if (arguments.keys.any((k) => !allowedWhisperKeys.contains(k)) ||
-          topic is! String ||
-          topic.trim().isEmpty ||
-          topic.length > 120 ||
-          !isSafeAgentPrompt(topic) ||
-          (contextHint != null &&
-              (contextHint is! String ||
-                  contextHint.length > 240 ||
-                  !isSafeAgentPrompt(contextHint)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,

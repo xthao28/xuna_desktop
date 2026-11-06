@@ -1589,7 +1589,7 @@ void main() {
     });
 
     test(
-        'evaluates UDC-15 S15.1–S15.4 Symbiotic Co-Pilot tools (clipboard.write, meeting.status/control, dev.ports, system.vitals)',
+        'evaluates UDC-15 S15.1–S15.4 Symbiotic Co-Pilot tools (clipboard.write, dev.ports, system.vitals)',
         () {
       const symPolicyJson = '''
 {
@@ -1610,13 +1610,11 @@ void main() {
       final now = DateTime.utc(2026, 10, 31, 16, 15, 0);
 
       final symTools = buildSymbioticCopilotTools();
-      expect(symTools, hasLength(5));
+      expect(symTools, hasLength(3));
       expect(
         symTools.map((t) => t.name).toList(),
         equals(<String>[
           'clipboard.write',
-          'meeting.status',
-          'meeting.control',
           'dev.ports',
           'system.vitals',
         ]),
@@ -1630,7 +1628,7 @@ void main() {
         includeSmartTvHomeTools: true,
         includeSymbioticCopilotTools: true,
       );
-      expect(fullCatalog, hasLength(38));
+      expect(fullCatalog, hasLength(36));
 
       // S15.1: clipboard.write requires R2 approval and safe text
       const clipArgs = <String, Object?>{
@@ -1657,28 +1655,6 @@ void main() {
       );
       expect(clipApproved.allowed, isTrue);
       expect(clipApproved.effectiveRisk, equals(RiskTier.r2));
-
-      // S15.2: meeting.status & meeting.control (R1)
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'meeting.status',
-              arguments: const <String, Object?>{},
-              nowUtc: now,
-            )
-            .allowed,
-        isTrue,
-      );
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'meeting.control',
-              arguments: const <String, Object?>{'action': 'mute_mic'},
-              nowUtc: now,
-            )
-            .allowed,
-        isTrue,
-      );
 
       // S15.3: dev.ports (R1, bounded port range 1024..65535)
       expect(
@@ -1763,7 +1739,7 @@ void main() {
         includeSymbioticCopilotTools: true,
         includeSymbioticEvolutionTools: true,
       );
-      expect(fullCatalog, hasLength(44));
+      expect(fullCatalog, hasLength(42));
 
       // R1 workspace.capture_capsule & workspace.list_capsules
       expect(
@@ -1861,7 +1837,7 @@ void main() {
       );
 
       final sentinelTools = buildSymbioticSentinelTools();
-      expect(sentinelTools, hasLength(6));
+      expect(sentinelTools, hasLength(5));
       expect(
         sentinelTools.map((t) => t.name).toList(),
         equals(<String>[
@@ -1869,7 +1845,6 @@ void main() {
           'watchdog.watch_resource_threshold',
           'watchdog.list_and_clear',
           'coach.decompose_overwhelm',
-          'meeting.desk_whisper_digest',
           'habit.propose_workflow',
         ]),
       );
@@ -1884,7 +1859,7 @@ void main() {
         includeSymbioticEvolutionTools: true,
         includeSymbioticSentinelTools: true,
       );
-      expect(fullCatalog50, hasLength(50));
+      expect(fullCatalog50, hasLength(47));
 
       expect(
         evaluator
@@ -1939,19 +1914,6 @@ void main() {
       expect(
         evaluator
             .evaluateInvocation(
-              toolName: 'meeting.desk_whisper_digest',
-              arguments: const <String, Object?>{
-                'topic': 'Báo cáo tiến độ SYM-2',
-                'contextHint': 'Nhấn mạnh 50 XTP tools và 0B firmware delta',
-              },
-              nowUtc: now,
-            )
-            .allowed,
-        isTrue,
-      );
-      expect(
-        evaluator
-            .evaluateInvocation(
               toolName: 'habit.propose_workflow',
               arguments: const <String, Object?>{'minOccurrences': 2},
               nowUtc: now,
@@ -1984,7 +1946,7 @@ void main() {
         includeSymbioticSentinelTools: true,
         includeOmniForgeTools: true,
       );
-      expect(fullCatalog55, hasLength(55));
+      expect(fullCatalog55, hasLength(52));
 
       expect(
         evaluator
@@ -2115,7 +2077,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(71));
+      expect(fullCatalog71, hasLength(68));
 
       expect(
         evaluator
@@ -2704,7 +2666,7 @@ void main() {
     });
 
     test(
-        'every tool in the full 71-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
+        'every tool in the full 68-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
         () {
       final fullCatalog71 = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
@@ -2718,7 +2680,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(71));
+      expect(fullCatalog71, hasLength(68));
       for (final tool in fullCatalog71) {
         final resolvedFamily = resolveToolFamilyForName(tool.name);
         expect(

@@ -122,13 +122,6 @@ const Set<String> allowedSmartHomeActions = <String>{
   'activate_scene',
 };
 
-/// Allowed microphone/meeting actions for `meeting.control` (`UDC-15` S15.2).
-const Set<String> allowedMeetingActions = <String>{
-  'mute_mic',
-  'unmute_mic',
-  'toggle_mic',
-};
-
 /// Default localhost development ports inspected by `dev.ports` (`UDC-15` S15.3).
 const List<int> defaultAllowedDevPorts = <int>[
   3000,
@@ -924,7 +917,6 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   }
   if (toolName == 'tv.list_devices' ||
       toolName == 'tv.control' ||
-      prefix == 'meeting' ||
       prefix == 'acoustic') {
     return ToolFamily.media;
   }
