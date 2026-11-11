@@ -185,6 +185,9 @@ class DesktopAgentController extends BaseGetxController {
   Future<void> initializeAgent() async {
     await enrollmentStore.load();
     await policyStore.reload();
+    if (policyStore.isHealthy) {
+      await policyStore.migrateMissingDesktopFamilies();
+    }
     _syncFromStores();
     scanInstalledApps();
     scanWorkspaces();
@@ -293,11 +296,10 @@ class DesktopAgentController extends BaseGetxController {
   Future<Map<String, Object?>> replayRecordedTrajectoryFromUi({
     int delayMs = 450,
     bool stopOnError = false,
-  }) =>
-      _appAutomationRunner.replayRecordedTrajectory(
-        delayMs: delayMs,
-        stopOnError: stopOnError,
-      );
+  }) => _appAutomationRunner.replayRecordedTrajectory(
+    delayMs: delayMs,
+    stopOnError: stopOnError,
+  );
 
   void removeAppPlaybookFromUi(String appId) {
     final svc = symbioticService;
@@ -421,12 +423,11 @@ class DesktopAgentController extends BaseGetxController {
     required String goal,
     String? targetFolder,
     List<String>? fileExtensions,
-  }) =>
-      _skillRunner.forgeSkill(
-        goal: goal,
-        targetFolder: targetFolder,
-        fileExtensions: fileExtensions,
-      );
+  }) => _skillRunner.forgeSkill(
+    goal: goal,
+    targetFolder: targetFolder,
+    fileExtensions: fileExtensions,
+  );
 
   Map<String, Object?>? runForgedSkillFromUi(String skillId) =>
       _skillRunner.runForgedSkill(skillId);
@@ -438,7 +439,8 @@ class DesktopAgentController extends BaseGetxController {
     final svc = symbioticService;
     if (svc == null) return;
     svc.listAndManageForgedSkills(action: 'delete_one', skillId: skillId);
-    frontierStatusSummaryVi.value = '🗑️ Đã xóa công cụ $skillId khỏi OmniForge';
+    frontierStatusSummaryVi.value =
+        '🗑️ Đã xóa công cụ $skillId khỏi OmniForge';
     refreshSymbioticState();
   }
 
@@ -458,10 +460,7 @@ class DesktopAgentController extends BaseGetxController {
         skillTitle: 'Công cụ học từ thao tác mẫu',
       );
     }
-    svc.handleTeachSession(
-      mode: 'record_action',
-      demonstratedAction: clean,
-    );
+    svc.handleTeachSession(mode: 'record_action', demonstratedAction: clean);
     teachRecordedSteps.add(clean);
     frontierStatusSummaryVi.value = '🎥 Đã ghi nhận bước mẫu: $clean';
     refreshSymbioticState();
@@ -478,10 +477,7 @@ class DesktopAgentController extends BaseGetxController {
           (customTitle != null && customTitle.trim().isNotEmpty)
           ? customTitle.trim()
           : 'Tự động hóa thao tác trên $activeApp';
-      svc.handleTeachSession(
-        mode: 'start',
-        skillTitle: initialTitle,
-      );
+      svc.handleTeachSession(mode: 'start', skillTitle: initialTitle);
       teachRecordedSteps.clear();
       if (!Platform.environment.containsKey('FLUTTER_TEST')) {
         unawaited(_captureLiveContextForTeachSession(activeApp));
@@ -592,10 +588,9 @@ class DesktopAgentController extends BaseGetxController {
   Future<UniversalPocketItem?> pasteSystemClipboardToPocket() async {
     String clipText = '';
     try {
-      final data = await Clipboard.getData(Clipboard.kTextPlain).timeout(
-        const Duration(milliseconds: 300),
-        onTimeout: () => null,
-      );
+      final data = await Clipboard.getData(
+        Clipboard.kTextPlain,
+      ).timeout(const Duration(milliseconds: 300), onTimeout: () => null);
       clipText = (data?.text ?? '').trim();
     } catch (_) {}
     if (clipText.isEmpty) {
@@ -614,10 +609,9 @@ class DesktopAgentController extends BaseGetxController {
     if (clean.isEmpty) return;
     try {
       await symbioticService?.writeClipboardText(clean);
-      await Clipboard.setData(ClipboardData(text: clean)).timeout(
-        const Duration(milliseconds: 300),
-        onTimeout: () {},
-      );
+      await Clipboard.setData(
+        ClipboardData(text: clean),
+      ).timeout(const Duration(milliseconds: 300), onTimeout: () {});
     } catch (_) {}
     frontierStatusSummaryVi.value = '📋 Đã sao chép $labelVi vào Clipboard PC!';
   }
@@ -644,8 +638,8 @@ class DesktopAgentController extends BaseGetxController {
     final mode = item.kind == 'json'
         ? 'format_json'
         : (item.suggestedActions.contains('extract_tasks')
-            ? 'extract_tasks'
-            : 'prepare_knowledge_fact');
+              ? 'extract_tasks'
+              : 'prepare_knowledge_fact');
     final res = svc.transformPocketItem(
       itemId: item.itemId,
       rawText: item.text,
@@ -663,10 +657,7 @@ class DesktopAgentController extends BaseGetxController {
     return created;
   }
 
-  Future<void> watchDevPortFromUi(
-    int port, {
-    String? label,
-  }) async {
+  Future<void> watchDevPortFromUi(int port, {String? label}) async {
     final svc = symbioticService;
     if (svc == null) return;
     final res = await svc.registerProcessOrPortWatchdog(
@@ -746,9 +737,7 @@ class DesktopAgentController extends BaseGetxController {
     await policyStore.savePolicy(updated);
   }
 
-  List<DiscoveredApp> scanInstalledApps({
-    bool forceRefresh = false,
-  }) {
+  List<DiscoveredApp> scanInstalledApps({bool forceRefresh = false}) {
     try {
       final apps = _appScanner.discoverApps(forceRefresh: forceRefresh);
       discoveredApps.assignAll(apps);
@@ -777,9 +766,7 @@ class DesktopAgentController extends BaseGetxController {
         : 'app_${DateTime.now().millisecondsSinceEpoch % 100000}';
     final kind = Platform.isMacOS
         ? AppLaunchKind.bundle
-        : (cleanTarget.contains('!')
-              ? AppLaunchKind.aumid
-              : AppLaunchKind.exe);
+        : (cleanTarget.contains('!') ? AppLaunchKind.aumid : AppLaunchKind.exe);
     try {
       final entry = AllowedAppConfig(
         id: validId,

@@ -70,12 +70,12 @@ xuna_desktop/
    - macOS: `~/Library/Application Support/XUNA/host-policy.json` (`0600`).
    - If the policy file is missing, unreadable or invalid JSON/schema, **every tool except `host.status` returns `xuna/status = "denied"`** (`errorCode = "policy_invalid"`) and the tray shows `"Cấu hình lỗi"`.
    - An app or workflow's risk tier in `host-policy.json` may be raised by the owner above the tool default (`app.launch` default `R2`), never lowered below it.
-3. **Strict URL validation (`url.open`):**
+3. **Strict URL validation (`url.open` & `cu.session_start`):**
    - `https` scheme only (case-insensitive); reject `http`, `file`, `javascript`, custom schemes (`invalid_args` / `url_invalid`).
    - No `userinfo` (`user:pass@`).
    - Convert IDN hostnames to ASCII punycode before matching.
-   - Reject IPv4 literals, IPv6 literals, `localhost`, `.local`, `.localhost`.
-   - ASCII host must equal or be a `.`-bounded subdomain of an entry in `host-policy.json` `urlDomains`; otherwise return `denied` (`domain_not_allowed`).
+   - Reject IPv4 literals, IPv6 literals, `localhost`, `.local`, `.localhost`, single-label hosts and numeric TLDs.
+   - Direct `url.open` and `cu.session_start` invocations dispatched by `HostToolDispatcher` (`allowPublicHttpsDomains: true`, owner-approved 2026-11-11) permit any valid public `https://` domain because every invocation requires explicit owner R2/R3 approval on the phone bound to `argsSha256` (and inside a computer-use session, active browser tabs remain restricted to the session's approved `domains`). Composite `workflow.batch_steps` sub-steps continue to require membership in `host-policy.json` `urlDomains`; otherwise return `denied` (`domain_not_allowed`).
 4. **R2+ approval binding:** any tool invocation with effective risk `>= R2` requires a non-expired `_meta["xuna/approval"]` whose `argsSha256` equals `sha256(canonical_json(arguments))`. On mismatch, refuse with `xuna/status = "denied"` and `errorCode = "approval_mismatch"`.
 5. **Emergency stop (`xuna/stop` / global hotkey):** immediately cancels in-flight invocations and suspends new `R2+` tool calls with `xuna/status = "denied"` (`errorCode = "stopped"`) until explicitly resumed by the owner from the tray.
 6. **Zero content in logs and audit:** neither application logs nor the local rotating audit JSONL (`{ts, invocationId, tool, status, durationMs}`) may ever record tool arguments, URLs, media titles, window titles or file paths.

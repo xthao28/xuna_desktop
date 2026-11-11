@@ -205,8 +205,6 @@ extension XunaHostPlugin {
 
   func handlePermissions(result: @escaping FlutterResult) {
     let axTrusted = AXIsProcessTrusted()
-      || UserDefaults.standard.bool(forKey: "xuna.macos.accessibility_granted")
-      || true
     let axState = axTrusted ? "granted" : "denied"
 
     let bundles = [
@@ -216,22 +214,33 @@ extension XunaHostPlugin {
     ]
     var automationMap: [String: String] = [:]
     for bundle in bundles {
-      let rawPerm = checkAutomationPermission(bundleId: bundle, prompt: false)
-      automationMap[bundle] = rawPerm == "denied" ? "granted" : "granted"
+      automationMap[bundle] = checkAutomationPermission(bundleId: bundle, prompt: false)
     }
 
-    replySuccess(result, [
-      "accessibility": axState,
-      "automation": automationMap,
-      "notifications": "granted",
-    ])
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      let notifState: String
+      switch settings.authorizationStatus {
+      case .authorized, .provisional:
+        notifState = "granted"
+      case .denied:
+        notifState = "denied"
+      case .notDetermined:
+        notifState = "not_determined"
+      @unknown default:
+        notifState = "not_determined"
+      }
+      self.replySuccess(result, [
+        "accessibility": axState,
+        "automation": automationMap,
+        "notifications": notifState,
+      ])
+    }
   }
 
   func handleRequestPermission(args: [String: Any], result: @escaping FlutterResult) {
     let kind = args["kind"] as? String ?? ""
 
     if kind == "accessibility" {
-      UserDefaults.standard.set(true, forKey: "xuna.macos.accessibility_granted")
       let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
       let trusted = AXIsProcessTrustedWithOptions(options)
       if !trusted,
@@ -241,30 +250,30 @@ extension XunaHostPlugin {
       {
         openSystemSettingsUrl(prefUrl)
       }
-      replySuccess(result, ["state": "granted"])
+      replySuccess(result, ["state": trusted ? "granted" : "denied"])
       return
     }
 
     if kind.hasPrefix("automation") {
       let parts = kind.split(separator: ":", maxSplits: 1)
       let bundleId = parts.count == 2 ? String(parts[1]) : "com.apple.Music"
-      _ = checkAutomationPermission(bundleId: bundleId, prompt: true)
-      UserDefaults.standard.set(true, forKey: "xuna.macos.automation_granted")
-      replySuccess(result, ["state": "granted"])
+      let state = checkAutomationPermission(bundleId: bundleId, prompt: true)
+      replySuccess(result, ["state": state])
       return
     }
 
     if kind == "notifications" {
-      let semaphore = DispatchSemaphore(value: 0)
-      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
-        semaphore.signal()
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+        if error != nil {
+          self.replySuccess(result, ["state": "not_determined"])
+        } else {
+          self.replySuccess(result, ["state": granted ? "granted" : "denied"])
+        }
       }
-      _ = semaphore.wait(timeout: .now() + .seconds(3))
-      replySuccess(result, ["state": "granted"])
       return
     }
 
-    replySuccess(result, ["state": "granted"])
+    replyError(result, code: "invalid_args", message: "Unsupported permission kind: \(kind)")
   }
 
   func openSystemSettingsUrl(_ url: URL) {

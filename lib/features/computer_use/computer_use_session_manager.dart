@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/computer_use/driver_map.dart';
 import 'package:xuna_desktop/features/computer_use/mcp_stdio_client.dart';
+import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -435,11 +436,9 @@ class AgentDesktopComputerUseProvider implements ComputerUseProvider {
           'id': id,
           'ref': ref.startsWith('@') ? ref : '@$ref',
           'role': (map['role'] as String?) ?? 'unknown',
-          'name':
-              (map['name'] as String?) ?? (map['title'] as String?) ?? '',
+          'name': (map['name'] as String?) ?? (map['title'] as String?) ?? '',
           if (map['value'] != null) 'value': '${map['value']}',
-          'enabled':
-              map['enabled'] != false && !states.contains('disabled'),
+          'enabled': map['enabled'] != false && !states.contains('disabled'),
           if (map['bounds'] is Map)
             'bounds': (map['bounds'] as Map).cast<String, Object?>(),
           if (map['visible'] is bool) 'visible': map['visible'],
@@ -494,9 +493,7 @@ class AgentDesktopComputerUseProvider implements ComputerUseProvider {
       width: (data['width'] as int?) ?? maxEdge,
       height: (data['height'] as int?) ?? ((maxEdge * 9) ~/ 16),
       dataBase64:
-          (data['dataBase64'] as String?) ??
-          (data['base64'] as String?) ??
-          '',
+          (data['dataBase64'] as String?) ?? (data['base64'] as String?) ?? '',
     );
   }
 
@@ -692,14 +689,38 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
 
   static const Set<String> _browserAppIds = <String>{
     'msedge',
+    'microsoft_edge',
     'edge',
     'chrome',
+    'google_chrome',
     'firefox',
     'brave',
+    'brave_browser',
     'safari',
     'arc',
     'browser',
   };
+
+  static const Set<String> _browserBundleIds = <String>{
+    'com.apple.safari',
+    'com.google.chrome',
+    'com.microsoft.edgemac',
+    'org.mozilla.firefox',
+    'com.brave.browser',
+    'company.thebrowser.browser',
+  };
+
+  /// Returns `true` only when an external screen-capture MCP driver binary is
+  /// configured and present on disk (`H6` manifest truthfulness).
+  bool get hasExternalCaptureDriver {
+    if (_externalDelegate != null) return true;
+    final binPath =
+        (agentDesktopBinaryPath ??
+                Platform.environment['XUNA_AGENT_DESKTOP_BIN'] ??
+                '')
+            .trim();
+    return binPath.isNotEmpty && File(binPath).existsSync();
+  }
 
   @override
   Future<void> startSession({
@@ -707,10 +728,11 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     required String capabilityManifestYaml,
   }) async {
     _externalDelegate = null;
-    final binPath = (agentDesktopBinaryPath ??
-            Platform.environment['XUNA_AGENT_DESKTOP_BIN'] ??
-            '')
-        .trim();
+    final binPath =
+        (agentDesktopBinaryPath ??
+                Platform.environment['XUNA_AGENT_DESKTOP_BIN'] ??
+                '')
+            .trim();
     if (binPath.isNotEmpty) {
       try {
         final delegate = AgentDesktopComputerUseProvider(
@@ -744,17 +766,31 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     );
     final rawProc =
         (ctx.processName.trim().isNotEmpty && ctx.processName != 'unknown')
-            ? ctx.processName.trim()
-            : (tree.appName.trim().isNotEmpty
-                ? tree.appName.trim()
-                : 'explorer.exe');
-    final appId = _normalizeAppIdFromProcess(rawProc);
+        ? ctx.processName.trim()
+        : (tree.appName.trim().isNotEmpty ? tree.appName.trim() : 'unknown');
+    final rawAppName =
+        (ctx.appName.trim().isNotEmpty && ctx.appName != 'unknown')
+        ? ctx.appName.trim()
+        : tree.appName.trim();
+    final isReverseDnsBundleId =
+        rawProc.contains('.') &&
+        !rawProc.toLowerCase().endsWith('.exe') &&
+        !rawProc.toLowerCase().endsWith('.app') &&
+        !rawProc.contains('/') &&
+        !rawProc.contains(r'\');
+    final appId = (isReverseDnsBundleId && rawAppName.isNotEmpty)
+        ? AutoAppScanner.normalizeId(rawAppName)
+        : normalizeAppIdFromProcess(rawProc);
     final winTitle = tree.windowTitle.trim().isNotEmpty
         ? tree.windowTitle.trim()
         : ctx.windowTitle.trim();
 
     String? browserUrl;
-    if (_browserAppIds.contains(appId)) {
+    final isBrowser =
+        _browserAppIds.contains(appId) ||
+        _browserBundleIds.contains(rawProc.toLowerCase()) ||
+        _browserAppIds.contains(normalizeAppIdFromProcess(rawProc));
+    if (isBrowser) {
       try {
         final tab = await channel.browserCurrentUrl();
         if (tab.url.trim().isNotEmpty) {
@@ -812,7 +848,8 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     throw const XunaHostChannelException(
       status: XtpStatus.unsupported,
       errorCode: 'screen_capture_unavailable',
-      message: 'No screen-capture driver is configured on this host; use '
+      message:
+          'No screen-capture driver is configured on this host; use '
           'ui.accessibility_tree to read the window instead.',
     );
   }
@@ -925,7 +962,7 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     }
   }
 
-  static String _normalizeAppIdFromProcess(String rawProcess) {
+  static String normalizeAppIdFromProcess(String rawProcess) {
     var lower = rawProcess.trim().toLowerCase();
     final slashIdx = lower.lastIndexOf(RegExp(r'[\\/]'));
     if (slashIdx >= 0 && slashIdx + 1 < lower.length) {
@@ -940,7 +977,7 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
     final clean = lower
         .replaceAll(RegExp(r'[^a-z0-9_]+'), '_')
         .replaceAll(RegExp(r'^_+|_+$'), '');
-    return clean.isEmpty ? 'explorer' : clean;
+    return clean.isEmpty ? 'unknown' : clean;
   }
 
   static String _normalizeNativeRole(String rawRole) {
@@ -983,7 +1020,8 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
       throw const XunaHostChannelException(
         status: XtpStatus.invalidArgs,
         errorCode: 'target_required',
-        message: 'A resolved element ref is required; coordinates are not a target.',
+        message:
+            'A resolved element ref is required; coordinates are not a target.',
       );
     }
     final trimmed = rawElementId.trim();
@@ -1189,19 +1227,34 @@ class ComputerUseSessionState {
     required this.sessionId,
     required this.goal,
     required this.allowedApps,
+    Set<String>? allowedAppIdentifiers,
     required this.allowedDomains,
     required this.maxSteps,
     required this.maxMinutes,
     required this.startedAtUtc,
-  });
+  }) : allowedAppIdentifiers = allowedAppIdentifiers ?? allowedApps;
 
   final String sessionId;
   final String goal;
   final Set<String> allowedApps;
+  final Set<String> allowedAppIdentifiers;
   final List<String> allowedDomains;
   final int maxSteps;
   final int maxMinutes;
   final DateTime startedAtUtc;
+
+  bool isWindowAppAllowed(String appId, String processName) {
+    if (allowedApps.contains(appId)) return true;
+    final appLower = appId.trim().toLowerCase();
+    final procLower = processName.trim().toLowerCase();
+    final normProc =
+        NativeHostChannelComputerUseProvider.normalizeAppIdFromProcess(
+          processName,
+        );
+    return allowedAppIdentifiers.contains(appLower) ||
+        allowedAppIdentifiers.contains(procLower) ||
+        allowedAppIdentifiers.contains(normProc);
+  }
 
   int stepsExecuted = 0;
   int consecutiveNoChange = 0;
@@ -1228,12 +1281,14 @@ class ComputerUseSessionManager {
   ComputerUseSessionManager({
     required this.provider,
     required this.stopController,
+    this.appScanner,
   }) {
     stopController.addCancelListener(_onEmergencyStop);
   }
 
   final ComputerUseProvider provider;
   final EmergencyStopController stopController;
+  final AutoAppScanner? appScanner;
 
   ComputerUseSessionState? _activeSession;
   int _sessionCounter = 0;
@@ -1244,6 +1299,50 @@ class ComputerUseSessionManager {
   bool get hasActiveSession => _activeSession != null;
   Stream<ComputerUseSessionState?> get sessionChanges =>
       _stateController.stream;
+
+  /// Whether the underlying [provider] supports `screen.capture`.
+  bool get supportsScreenCapture {
+    final prov = provider;
+    if (prov is NativeHostChannelComputerUseProvider) {
+      return prov.hasExternalCaptureDriver;
+    }
+    return true;
+  }
+
+  static void _collectAppIdentifiers({
+    required Set<String> out,
+    required String requestedId,
+    required String canonicalId,
+    required String displayName,
+    required String target,
+    String? bundleId,
+  }) {
+    for (final raw in <String>[
+      requestedId,
+      canonicalId,
+      AutoAppScanner.normalizeId(displayName),
+      NativeHostChannelComputerUseProvider.normalizeAppIdFromProcess(target),
+      if (bundleId != null && bundleId.trim().isNotEmpty) ...<String>[
+        bundleId.trim().toLowerCase(),
+        NativeHostChannelComputerUseProvider.normalizeAppIdFromProcess(
+          bundleId,
+        ),
+      ],
+    ]) {
+      final clean = raw.trim().toLowerCase();
+      if (clean.isNotEmpty && clean != 'unknown') {
+        out.add(clean);
+      }
+    }
+    final targetLower = target.trim().toLowerCase();
+    if (targetLower.contains('.') &&
+        !targetLower.contains('/') &&
+        !targetLower.contains(r'\') &&
+        !targetLower.endsWith('.exe') &&
+        !targetLower.endsWith('.app')) {
+      out.add(targetLower);
+    }
+  }
 
   void _onEmergencyStop(StopReason _) {
     final current = _activeSession;
@@ -1260,6 +1359,8 @@ class ComputerUseSessionManager {
     required int maxSteps,
     required int maxMinutes,
     required HostPolicy policy,
+    AutoAppScanner? appScanner,
+    bool allowZeroConfigAppDiscovery = false,
     String? requestedSessionId,
     DateTime? nowUtc,
   }) async {
@@ -1270,6 +1371,12 @@ class ComputerUseSessionManager {
       );
     }
 
+    final effectiveScanner = appScanner ?? this.appScanner;
+    final allowZeroConfig =
+        allowZeroConfigAppDiscovery || effectiveScanner != null;
+    final allowedAppConfigs = <AllowedAppConfig>[];
+    final allowedIdentifiers = <String>{};
+
     for (final appId in apps) {
       if (isHardDeniedAppOrProcess(appId)) {
         throw const XunaHostChannelException(
@@ -1278,30 +1385,70 @@ class ComputerUseSessionManager {
         );
       }
       final cfg = policy.findApp(appId);
-      if (cfg == null) {
+      if (cfg != null) {
+        if (isHardDeniedAppOrProcess(cfg.target) ||
+            isHardDeniedAppOrProcess(cfg.name)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.denied,
+            errorCode: 'denylisted_target_forbidden',
+          );
+        }
+        final discoveredMatch = effectiveScanner?.findApp(appId);
+        allowedAppConfigs.add(cfg);
+        _collectAppIdentifiers(
+          out: allowedIdentifiers,
+          requestedId: appId,
+          canonicalId: cfg.id,
+          displayName: cfg.name,
+          target: cfg.target,
+          bundleId: discoveredMatch?.bundleId,
+        );
+        continue;
+      }
+
+      final discovered = allowZeroConfig
+          ? effectiveScanner?.findApp(appId)
+          : null;
+      if (discovered == null) {
         throw const XunaHostChannelException(
           status: XtpStatus.denied,
           errorCode: 'policy_blocked',
         );
       }
-      if (isHardDeniedAppOrProcess(cfg.target)) {
+      if (isHardDeniedAppOrProcess(discovered.id) ||
+          isHardDeniedAppOrProcess(discovered.name) ||
+          isHardDeniedAppOrProcess(discovered.target) ||
+          (discovered.bundleId != null &&
+              isHardDeniedAppOrProcess(discovered.bundleId!))) {
         throw const XunaHostChannelException(
           status: XtpStatus.denied,
           errorCode: 'denylisted_target_forbidden',
         );
       }
+      allowedAppConfigs.add(
+        AllowedAppConfig(
+          id: discovered.id,
+          name: discovered.name,
+          kind: discovered.kind,
+          target: discovered.bundleId ?? discovered.target,
+          risk: RiskTier.r2,
+        ),
+      );
+      _collectAppIdentifiers(
+        out: allowedIdentifiers,
+        requestedId: appId,
+        canonicalId: discovered.id,
+        displayName: discovered.name,
+        target: discovered.target,
+        bundleId: discovered.bundleId,
+      );
     }
 
     final normalizedDomains = <String>[
       for (final d in domains) normalizeDomainAllowlistEntry(d),
     ];
 
-    final sessionId =
-        requestedSessionId ?? 'cu-session-${++_sessionCounter}';
-    final allowedAppConfigs = <AllowedAppConfig>[
-      for (final appId in apps)
-        if (policy.findApp(appId) != null) policy.findApp(appId)!,
-    ];
+    final sessionId = requestedSessionId ?? 'cu-session-${++_sessionCounter}';
 
     final manifestYaml = CuaDriverMap.buildBoundedCapabilityManifestYaml(
       allowedApps: allowedAppConfigs,
@@ -1318,6 +1465,7 @@ class ComputerUseSessionManager {
       sessionId: sessionId,
       goal: goal,
       allowedApps: apps.toSet(),
+      allowedAppIdentifiers: allowedIdentifiers,
       allowedDomains: normalizedDomains,
       maxSteps: maxSteps.clamp(1, 20),
       maxMinutes: maxMinutes.clamp(1, 10),
@@ -1522,7 +1670,8 @@ class ComputerUseSessionManager {
     final headed = arguments['headed'] == true;
     final hasElementTarget =
         effectiveElementId != null && effectiveElementId.isNotEmpty;
-    final route = (!headed &&
+    final route =
+        (!headed &&
             (toolName == 'input.type_text' ||
                 (toolName == 'input.click' && hasElementTarget) ||
                 (toolName == 'input.scroll' && hasElementTarget)))
@@ -1850,10 +1999,7 @@ class ComputerUseSessionManager {
   /// [waitFor] or [waitForGone] conditions (`role:<r>`, `name:<n>`,
   /// `window:<title>`, `surface:<kind>`, or text substring).
   Future<({ActiveWindowObservation window, bool satisfied})>
-  _pollPostActionWaitCondition({
-    String? waitFor,
-    String? waitForGone,
-  }) async {
+  _pollPostActionWaitCondition({String? waitFor, String? waitForGone}) async {
     const maxAttempts = 4;
     late ActiveWindowObservation latestWindow;
     for (var attempt = 0; attempt < maxAttempts; attempt++) {
@@ -1961,7 +2107,7 @@ class ComputerUseSessionManager {
         errorCode: 'elevated_window_forbidden',
       );
     }
-    if (!session.allowedApps.contains(window.appId)) {
+    if (!session.isWindowAppAllowed(window.appId, window.processName)) {
       throw const XunaHostChannelException(
         status: XtpStatus.denied,
         errorCode: 'target_outside_allowlist',
@@ -2020,6 +2166,8 @@ class CuSessionStartTool extends HostToolHandler {
       maxSteps: maxSteps,
       maxMinutes: maxMinutes,
       policy: context.policy!,
+      appScanner: context.appScanner,
+      allowZeroConfigAppDiscovery: true,
     );
     return ToolHandlerOutput(
       text: 'Đã bắt đầu phiên điều khiển màn hình ($sessionId).',

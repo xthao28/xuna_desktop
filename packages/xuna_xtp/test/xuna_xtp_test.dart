@@ -95,7 +95,8 @@ void main() {
 
     test('rejects a non-boolean value and still rejects unknown keys', () {
       expect(
-        () => ToolPolicyMeta.fromJson(<String, Object?>{...base, 'idempotent': 'no'}),
+        () => ToolPolicyMeta.fromJson(
+            <String, Object?>{...base, 'idempotent': 'no'}),
         throwsFormatException,
       );
       expect(
@@ -2445,7 +2446,8 @@ void main() {
             .errorCode,
         equals('schema_mismatch'),
       );
-      expect(allowedUiAccessibilityActions, equals(const <String>{'inspect_window'}));
+      expect(allowedUiAccessibilityActions,
+          equals(const <String>{'inspect_window'}));
       final uiaDescriptor = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
         includeDevWorkspaceTools: true,
@@ -2458,8 +2460,8 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       ).firstWhere((t) => t.name == 'ui.accessibility_tree');
-      final uiaActionEnum =
-          ((uiaDescriptor.inputSchema['properties']! as Map)['action']! as Map)['enum'];
+      final uiaActionEnum = ((uiaDescriptor.inputSchema['properties']!
+          as Map)['action']! as Map)['enum'];
       expect(uiaActionEnum, equals(const <String>['inspect_window']));
       final uiaProps = uiaDescriptor.inputSchema['properties']! as Map;
       expect(uiaProps.containsKey('refId'), isFalse);
@@ -2565,13 +2567,13 @@ void main() {
 ''';
       final evaluator = HostPolicyEvaluator.fromJsonString(policyJson);
       PolicyEvaluationResult typeOf(int length) => evaluator.evaluateInvocation(
-        toolName: 'input.type_text',
-        arguments: <String, Object?>{
-          'elementId': '@s00000001:e1',
-          'text': 'a' * length,
-        },
-        isInApprovedCuSession: true,
-      );
+            toolName: 'input.type_text',
+            arguments: <String, Object?>{
+              'elementId': '@s00000001:e1',
+              'text': 'a' * length,
+            },
+            isInApprovedCuSession: true,
+          );
       expect(
         typeOf(maxInputTypeTextLength).errorCode,
         equals('approval_required'),
@@ -2581,5 +2583,121 @@ void main() {
         equals('schema_mismatch'),
       );
     });
+
+    test(
+      'cu.session_start and url.open support zero-config app discovery and public https domains while enforcing denylist and non-public URL blocks',
+      () {
+        const policyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {"cu": "allow", "url": "allow", "workflow": "allow"},
+  "apps": [],
+  "urlDomains": ["github.com"],
+  "workflows": [],
+  "players": []
+}
+''';
+        final evaluator = HostPolicyEvaluator.fromJsonString(policyJson);
+        final now = DateTime.utc(2026, 11, 11, 12, 0);
+
+        // Without zero-config discovery, apps: ["notes"] is policy_blocked.
+        final strictStart = evaluator.evaluateInvocation(
+          toolName: 'cu.session_start',
+          arguments: const <String, Object?>{
+            'goal': 'Ghi chú mới',
+            'apps': <String>['notes'],
+            'domains': <String>[],
+            'maxSteps': 6,
+            'maxMinutes': 3,
+          },
+          nowUtc: now,
+        );
+        expect(strictStart.allowed, isFalse);
+        expect(strictStart.errorCode, equals('policy_blocked'));
+
+        // With zero-config discovery + public https domains, reaches R3 approval gate.
+        final zeroConfigStart = evaluator.evaluateInvocation(
+          toolName: 'cu.session_start',
+          arguments: const <String, Object?>{
+            'goal': 'Ghi chú mới',
+            'apps': <String>['notes'],
+            'domains': <String>['notion.so'],
+            'maxSteps': 6,
+            'maxMinutes': 3,
+          },
+          allowZeroConfigAppDiscovery: true,
+          allowPublicHttpsDomains: true,
+          nowUtc: now,
+        );
+        expect(zeroConfigStart.allowed, isFalse);
+        expect(zeroConfigStart.effectiveRisk, equals(RiskTier.r3));
+        expect(zeroConfigStart.errorCode, equals('approval_required'));
+
+        // Denylisted apps are still hard-denied even with zero-config discovery.
+        for (final deniedApp in const <String>['terminal', '1password']) {
+          final denied = evaluator.evaluateInvocation(
+            toolName: 'cu.session_start',
+            arguments: <String, Object?>{
+              'goal': 'Mở ứng dụng cấm',
+              'apps': <String>[deniedApp],
+              'domains': const <String>[],
+              'maxSteps': 4,
+              'maxMinutes': 2,
+            },
+            allowZeroConfigAppDiscovery: true,
+            allowPublicHttpsDomains: true,
+            nowUtc: now,
+          );
+          expect(denied.allowed, isFalse);
+          expect(denied.errorCode, equals('denylisted_target_forbidden'));
+        }
+
+        // Public https URL requires R2 approval and succeeds when approved.
+        const publicUrlArgs = <String, Object?>{
+          'url': 'https://docs.flutter.dev/get-started',
+        };
+        final urlNoApproval = evaluator.evaluateInvocation(
+          toolName: 'url.open',
+          arguments: publicUrlArgs,
+          allowPublicHttpsDomains: true,
+          nowUtc: now,
+        );
+        expect(urlNoApproval.allowed, isFalse);
+        expect(urlNoApproval.errorCode, equals('approval_required'));
+
+        final urlApproved = evaluator.evaluateInvocation(
+          toolName: 'url.open',
+          arguments: publicUrlArgs,
+          approval: ApprovalToken(
+            approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c88',
+            argsSha256: argsSha256(publicUrlArgs),
+            expiresAt: now.add(const Duration(minutes: 2)),
+          ),
+          allowPublicHttpsDomains: true,
+          nowUtc: now,
+        );
+        expect(urlApproved.allowed, isTrue);
+        expect(urlApproved.effectiveRisk, equals(RiskTier.r2));
+
+        // Non-https, localhost, .local, IP literals and userinfo stay blocked.
+        for (final badUrl in const <String>[
+          'http://docs.flutter.dev',
+          'https://localhost:8000/admin',
+          'https://nas.local/files',
+          'https://192.168.1.1/router',
+          'https://[::1]/loopback',
+          'https://user:pass@docs.flutter.dev/',
+        ]) {
+          final rejected = evaluator.evaluateInvocation(
+            toolName: 'url.open',
+            arguments: <String, Object?>{'url': badUrl},
+            allowPublicHttpsDomains: true,
+            nowUtc: now,
+          );
+          expect(rejected.allowed, isFalse, reason: badUrl);
+          expect(rejected.errorCode, equals('url_invalid'), reason: badUrl);
+        }
+      },
+    );
   });
 }

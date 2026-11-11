@@ -415,7 +415,12 @@ class HostToolDispatcher {
     return <ToolDescriptor>[
       ...mvp,
       ...dynamicForged,
-      ...buildComputerUseTools(defaultPermission: perms.accessibility),
+      ...buildComputerUseTools(
+        defaultPermission: perms.accessibility,
+        screenCapturePermission: computerUseManager!.supportsScreenCapture
+            ? perms.accessibility
+            : XtpPermissionState.notDetermined,
+      ),
     ];
   }
 
@@ -471,6 +476,7 @@ class HostToolDispatcher {
           enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
       isInApprovedCuSession: computerUseManager?.hasActiveSession ?? false,
       allowZeroConfigAppDiscovery: true,
+      allowPublicHttpsDomains: true,
       nowUtc: nowUtc,
     );
 
@@ -694,8 +700,7 @@ class HostToolDispatcher {
       structuredContent = <String, Object?>{
         'errorCode': error.errorCode,
         if (message != null && message.isNotEmpty)
-          'message':
-              message.length > 600 ? message.substring(0, 600) : message,
+          'message': message.length > 600 ? message.substring(0, 600) : message,
       };
     } catch (_) {
       status = XtpStatus.failed;

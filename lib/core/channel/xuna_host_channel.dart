@@ -397,10 +397,10 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     return HostPermissionSnapshot(
       accessibility: accRaw is String
           ? XtpPermissionState.fromWire(accRaw)
-          : XtpPermissionState.granted,
+          : XtpPermissionState.notDetermined,
       notifications: notifRaw is String
           ? XtpPermissionState.fromWire(notifRaw)
-          : XtpPermissionState.granted,
+          : XtpPermissionState.notDetermined,
       automation: autoMap,
     );
   }

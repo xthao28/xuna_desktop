@@ -18,6 +18,7 @@ typedef EvaluateStepCallback = PolicyEvaluationResult Function({
   required List<Uint8List> pinnedPhonePublicKeys,
   required bool isInApprovedCuSession,
   required bool allowZeroConfigAppDiscovery,
+  bool allowPublicHttpsDomains,
 });
 
 /// Validates tool arguments and resolves the effective [RiskTier] (plus any
@@ -37,6 +38,7 @@ PolicyEvaluationResult validateToolArguments({
   required List<Uint8List> pinnedPhonePublicKeys,
   required bool isInApprovedCuSession,
   required bool allowZeroConfigAppDiscovery,
+  bool allowPublicHttpsDomains = false,
   required EvaluateStepCallback evaluateStep,
 }) {
   late final RiskTier effectiveRisk;
@@ -468,8 +470,7 @@ PolicyEvaluationResult validateToolArguments({
       final nextStepHint = arguments['nextStepHint'];
       const allowedCaptureKeys = <String>{'project', 'nextStepHint'};
       if (arguments.keys.any((k) => !allowedCaptureKeys.contains(k)) ||
-          (proj != null &&
-              (proj is! String || !isValidWorkspaceQuery(proj))) ||
+          (proj != null && (proj is! String || !isValidWorkspaceQuery(proj))) ||
           (nextStepHint != null &&
               (nextStepHint is! String ||
                   nextStepHint.length > 240 ||
@@ -1343,7 +1344,7 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: urlCheck.errorCode ?? 'url_invalid',
         );
       }
-      if (!urlCheck.domainAllowed) {
+      if (!urlCheck.domainAllowed && !allowPublicHttpsDomains) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.denied,
@@ -1471,7 +1472,8 @@ PolicyEvaluationResult validateToolArguments({
             errorCode: 'schema_mismatch',
           );
         }
-        final stepArgs = castPolicyObjectMap(rawStep['arguments'], 'batch_step');
+        final stepArgs =
+            castPolicyObjectMap(rawStep['arguments'], 'batch_step');
         final syntheticApproval = ApprovalToken(
           approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c99',
           scope: 'once',
@@ -1574,7 +1576,8 @@ PolicyEvaluationResult validateToolArguments({
             errorCode: 'denylisted_target_forbidden',
           );
         }
-        if (activePolicy.findApp(appItem) == null) {
+        if (activePolicy.findApp(appItem) == null &&
+            !allowZeroConfigAppDiscovery) {
           return const PolicyEvaluationResult(
             allowed: false,
             status: XtpStatus.denied,
@@ -1607,7 +1610,7 @@ PolicyEvaluationResult validateToolArguments({
           (allowed) =>
               asciiDomain == allowed || asciiDomain.endsWith('.$allowed'),
         );
-        if (!domainAllowed) {
+        if (!domainAllowed && !allowPublicHttpsDomains) {
           return const PolicyEvaluationResult(
             allowed: false,
             status: XtpStatus.denied,

@@ -83,16 +83,26 @@ class HostPolicyStore {
     return reload();
   }
 
+  static const List<ToolFamily> _defaultDesktopFamilies = <ToolFamily>[
+    ToolFamily.media,
+    ToolFamily.app,
+    ToolFamily.url,
+    ToolFamily.workflow,
+    ToolFamily.host,
+    ToolFamily.cu,
+    ToolFamily.screen,
+    ToolFamily.ui,
+    ToolFamily.input,
+  ];
+
   /// Writes a safe default `host-policy.json` if the file does not exist yet
   /// and the owner triggers "Khôi phục mặc định" in the settings window.
   Future<HostPolicyEvaluator> writeDefaultPolicy() {
     final defaultPolicy = HostPolicy(
       schemaVersion: 1,
-      families: const <ToolFamily, FamilyPolicyDecision>{
-        ToolFamily.media: FamilyPolicyDecision.allow,
-        ToolFamily.app: FamilyPolicyDecision.allow,
-        ToolFamily.url: FamilyPolicyDecision.allow,
-        ToolFamily.workflow: FamilyPolicyDecision.allow,
+      families: <ToolFamily, FamilyPolicyDecision>{
+        for (final family in _defaultDesktopFamilies)
+          family: FamilyPolicyDecision.allow,
       },
       apps: const <AllowedAppConfig>[],
       urlDomains: const <String>['github.com'],
@@ -100,6 +110,38 @@ class HostPolicyStore {
       players: const <String>['spotify', 'music'],
     );
     return savePolicy(defaultPolicy);
+  }
+
+  /// Populates `allow` ONLY for desktop tool families missing from an older
+  /// healthy `host-policy.json` file; never overwrites an explicit `block`.
+  Future<HostPolicyEvaluator> migrateMissingDesktopFamilies() async {
+    final current = _evaluator.policy;
+    if (!_evaluator.isHealthy || current == null) {
+      return _evaluator;
+    }
+    final updatedFamilies = <ToolFamily, FamilyPolicyDecision>{
+      ...current.families,
+    };
+    var addedAny = false;
+    for (final family in _defaultDesktopFamilies) {
+      if (!updatedFamilies.containsKey(family)) {
+        updatedFamilies[family] = FamilyPolicyDecision.allow;
+        addedAny = true;
+      }
+    }
+    if (!addedAny) {
+      return _evaluator;
+    }
+    return savePolicy(
+      HostPolicy(
+        schemaVersion: current.schemaVersion,
+        families: updatedFamilies,
+        apps: current.apps,
+        urlDomains: current.urlDomains,
+        workflows: current.workflows,
+        players: current.players,
+      ),
+    );
   }
 
   Future<void> dispose() async {

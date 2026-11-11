@@ -10,6 +10,7 @@ import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/single_instance/single_instance_guard.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
+import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
@@ -52,9 +53,11 @@ Future<void> main() async {
   );
   final auditStore = AuditLogStore(auditDir: paths.auditDir);
   final stopController = EmergencyStopController(logger: logger);
+  final appScanner = AutoAppScanner();
   final computerUseManager = ComputerUseSessionManager(
     provider: NativeHostChannelComputerUseProvider(channel: channel),
     stopController: stopController,
+    appScanner: appScanner,
   );
 
   final dispatcher = HostToolDispatcher(
@@ -65,6 +68,7 @@ Future<void> main() async {
     logger: logger,
     enrollmentStore: enrollmentStore,
     computerUseManager: computerUseManager,
+    appScanner: appScanner,
   );
 
   final lanServer = LanOfflineServer(

@@ -1064,6 +1064,7 @@ List<ToolDescriptor> buildClawPulseTools({
 /// Builds the 8 computer-use tool descriptors (`UDC-8` §4.2).
 List<ToolDescriptor> buildComputerUseTools({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
+  XtpPermissionState? screenCapturePermission,
 }) {
   const effectOutputSchema = <String, Object?>{
     'type': 'object',
@@ -1186,7 +1187,7 @@ List<ToolDescriptor> buildComputerUseTools({
         risk: RiskTier.r2,
         observes: true,
         reversible: true,
-        permission: defaultPermission,
+        permission: screenCapturePermission ?? defaultPermission,
       ),
     ),
     ToolDescriptor(

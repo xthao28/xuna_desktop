@@ -9,6 +9,7 @@ class DiscoveredApp {
     required this.name,
     required this.kind,
     required this.target,
+    this.bundleId,
     this.isCodingAgent = false,
   });
 
@@ -16,6 +17,7 @@ class DiscoveredApp {
   final String name;
   final AppLaunchKind kind;
   final String target;
+  final String? bundleId;
   final bool isCodingAgent;
 }
 
@@ -31,9 +33,9 @@ class AutoAppScanner {
     List<DiscoveredApp>? seedApps,
     Map<String, String>? seedAgentBinaries,
     bool scanFileSystem = true,
-  })  : _seedApps = seedApps ?? const <DiscoveredApp>[],
-        _seedAgentBinaries = seedAgentBinaries ?? const <String, String>{},
-        _scanFileSystem = scanFileSystem;
+  }) : _seedApps = seedApps ?? const <DiscoveredApp>[],
+       _seedAgentBinaries = seedAgentBinaries ?? const <String, String>{},
+       _scanFileSystem = scanFileSystem;
 
   final List<DiscoveredApp> _seedApps;
   final Map<String, String> _seedAgentBinaries;
@@ -64,7 +66,8 @@ class AutoAppScanner {
     void register(DiscoveredApp app) {
       if (isHardDeniedAppOrProcess(app.id) ||
           isHardDeniedAppOrProcess(app.name) ||
-          isHardDeniedAppOrProcess(app.target)) {
+          isHardDeniedAppOrProcess(app.target) ||
+          (app.bundleId != null && isHardDeniedAppOrProcess(app.bundleId!))) {
         return;
       }
       byId.putIfAbsent(app.id, () => app);
@@ -107,6 +110,7 @@ class AutoAppScanner {
     for (final app in apps) {
       final idLower = app.id.toLowerCase();
       final nameLower = app.name.toLowerCase();
+      final bundleLower = (app.bundleId ?? '').toLowerCase();
       final compactName = nameLower.replaceAll(RegExp(r'[^a-z0-9]+'), '');
       final targetStem = app.target
           .split(RegExp(r'[/\\]'))
@@ -127,6 +131,8 @@ class AutoAppScanner {
       var score = 0;
       if (idLower == norm ||
           nameLower == clean ||
+          (bundleLower.isNotEmpty &&
+              (bundleLower == clean || normalizeId(bundleLower) == norm)) ||
           compactName == compactQuery ||
           compactStem == compactQuery) {
         score = 100;
@@ -232,12 +238,14 @@ class AutoAppScanner {
       return result;
     }
 
-    final home = Platform.environment['HOME'] ??
+    final home =
+        Platform.environment['HOME'] ??
         Platform.environment['USERPROFILE'] ??
         '';
     final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
     final appData = Platform.environment['APPDATA'] ?? '';
-    final programFiles = Platform.environment['ProgramFiles'] ?? r'C:\Program Files';
+    final programFiles =
+        Platform.environment['ProgramFiles'] ?? r'C:\Program Files';
     final programFilesX86 =
         Platform.environment['ProgramFiles(x86)'] ?? r'C:\Program Files (x86)';
     final nvmSymlink = Platform.environment['NVM_SYMLINK'] ?? '';
@@ -253,12 +261,13 @@ class AutoAppScanner {
       try {
         final nvmNodeDir = Directory('$home/.nvm/versions/node');
         if (nvmNodeDir.existsSync()) {
-          final versions = nvmNodeDir
-              .listSync()
-              .whereType<Directory>()
-              .map((d) => '${d.path}/bin')
-              .toList()
-            ..sort((a, b) => b.compareTo(a));
+          final versions =
+              nvmNodeDir
+                  .listSync()
+                  .whereType<Directory>()
+                  .map((d) => '${d.path}/bin')
+                  .toList()
+                ..sort((a, b) => b.compareTo(a));
           nvmDirs.addAll(versions);
         }
       } catch (_) {}
@@ -272,12 +281,13 @@ class AutoAppScanner {
         try {
           final d = Directory(root);
           if (d.existsSync()) {
-            final versions = d
-                .listSync()
-                .whereType<Directory>()
-                .map((sub) => sub.path)
-                .toList()
-              ..sort((a, b) => b.compareTo(a));
+            final versions =
+                d
+                    .listSync()
+                    .whereType<Directory>()
+                    .map((sub) => sub.path)
+                    .toList()
+                  ..sort((a, b) => b.compareTo(a));
             nvmDirs.addAll(versions);
           }
         } catch (_) {}
@@ -362,7 +372,9 @@ class AutoAppScanner {
       for (final dir in searchDirs) {
         for (final binName in entry.value) {
           final sep = Platform.pathSeparator;
-          final fullPath = dir.endsWith(sep) ? '$dir$binName' : '$dir$sep$binName';
+          final fullPath = dir.endsWith(sep)
+              ? '$dir$binName'
+              : '$dir$sep$binName';
           try {
             if (File(fullPath).existsSync()) {
               result[entry.key] = fullPath;
@@ -427,6 +439,7 @@ class AutoAppScanner {
                 name: base,
                 kind: AppLaunchKind.bundle,
                 target: entity.path,
+                bundleId: _readMacOsBundleId(entity.path),
               ),
             );
           } else if (entity is Directory) {
@@ -445,6 +458,7 @@ class AutoAppScanner {
                       name: base,
                       kind: AppLaunchKind.bundle,
                       target: sub.path,
+                      bundleId: _readMacOsBundleId(sub.path),
                     ),
                   );
                 }
@@ -454,6 +468,36 @@ class AutoAppScanner {
         }
       } catch (_) {}
     }
+  }
+
+  static String? _readMacOsBundleId(String appBundlePath) {
+    try {
+      final plist = File('$appBundlePath/Contents/Info.plist');
+      if (!plist.existsSync()) return null;
+      final bytes = plist.readAsBytesSync();
+      final text = String.fromCharCodes(bytes);
+      final xmlMatch = RegExp(
+        r'<key>\s*CFBundleIdentifier\s*</key>\s*<string>\s*([^<\s]+)\s*</string>',
+      ).firstMatch(text);
+      if (xmlMatch != null) {
+        return xmlMatch.group(1)?.trim();
+      }
+      final keyIdx = text.indexOf('CFBundleIdentifier');
+      if (keyIdx >= 0) {
+        final tail = text.substring(keyIdx + 'CFBundleIdentifier'.length);
+        final binMatch = RegExp(
+          r'([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,})',
+        ).firstMatch(tail);
+        if (binMatch != null) {
+          final candidate = binMatch.group(1)!;
+          final lower = candidate.toLowerCase();
+          if (!lower.endsWith('.plist') && !lower.endsWith('.icns')) {
+            return candidate;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   static bool _isIgnoredWindowsInstallerExe(String lowerFileName) {
@@ -491,7 +535,10 @@ class AutoAppScanner {
       final dir = Directory(root);
       if (!dir.existsSync()) continue;
       try {
-        for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+        for (final entity in dir.listSync(
+          recursive: true,
+          followLinks: false,
+        )) {
           if (entity is File && entity.path.toLowerCase().endsWith('.lnk')) {
             final fileName = entity.uri.pathSegments.last;
             final base = fileName.substring(0, fileName.length - 4).trim();
@@ -542,10 +589,8 @@ class AutoAppScanner {
                 if (_isIgnoredWindowsInstallerExe(fileName.toLowerCase())) {
                   continue;
                 }
-                final stem =
-                    fileName.substring(0, fileName.length - 4).trim();
-                final displayName =
-                    stem.length >= 3 ? stem : folderName;
+                final stem = fileName.substring(0, fileName.length - 4).trim();
+                final displayName = stem.length >= 3 ? stem : folderName;
                 register(
                   DiscoveredApp(
                     id: normalizeId(displayName),
@@ -562,4 +607,3 @@ class AutoAppScanner {
     }
   }
 }
-

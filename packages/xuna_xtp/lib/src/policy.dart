@@ -72,6 +72,7 @@ class HostPolicyEvaluator {
     List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
     bool isInApprovedCuSession = false,
     bool allowZeroConfigAppDiscovery = false,
+    bool allowPublicHttpsDomains = false,
   }) {
     final now = (nowUtc ?? DateTime.now()).toUtc();
     ToolDescriptor.validateToolName(toolName);
@@ -131,6 +132,7 @@ class HostPolicyEvaluator {
       pinnedPhonePublicKeys: pinnedPhonePublicKeys,
       isInApprovedCuSession: isInApprovedCuSession,
       allowZeroConfigAppDiscovery: allowZeroConfigAppDiscovery,
+      allowPublicHttpsDomains: allowPublicHttpsDomains,
       evaluateStep: evaluateInvocation,
     );
     if (!argResult.allowed) {
