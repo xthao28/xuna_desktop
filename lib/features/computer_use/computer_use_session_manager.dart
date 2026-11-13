@@ -20,6 +20,7 @@ class ActiveWindowObservation {
     this.isElevated = false,
     this.pid = 1000,
     this.windowId = 1,
+    this.focusedRole,
   });
 
   final String appId;
@@ -27,6 +28,13 @@ class ActiveWindowObservation {
   final String windowTitle;
   final List<Map<String, Object?>> nodes;
   final String? browserUrl;
+
+  /// Normalised role of the element holding keyboard focus (`searchfield`,
+  /// `textfield`, `textarea`…), or `null` when the adapter cannot tell it
+  /// exactly. Exact means role *and* subrole are known, so a secure field is
+  /// never reported as a text field. `null` keeps Enter/Space at R3
+  /// (ADR-0015 D2).
+  final String? focusedRole;
   final bool isElevated;
   final int pid;
   final int windowId;
@@ -681,10 +689,16 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
   NativeHostChannelComputerUseProvider({
     required this.channel,
     this.agentDesktopBinaryPath,
-  });
+    bool? isWindowsHost,
+  }) : isWindowsHost = isWindowsHost ?? Platform.isWindows;
 
   final XunaHostChannel channel;
   final String? agentDesktopBinaryPath;
+
+  /// The Windows UIA engine reports a UIA `Document` (a whole web page or a
+  /// document body) as `AXTextArea`. On Windows that role is therefore mapped
+  /// to `document`, which is not a draft text field (ADR-0015 D1).
+  final bool isWindowsHost;
   AgentDesktopComputerUseProvider? _externalDelegate;
 
   static const Set<String> _browserAppIds = <String>{
@@ -806,9 +820,12 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
       final raw = tree.nodes[i];
       final refId = (raw['refId'] as String?) ?? 'ui_${i + 1}';
       final isPwd = raw['isPassword'] == true;
+      final rawRole = (raw['role'] as String?) ?? 'button';
       final role = isPwd
           ? 'password'
-          : _normalizeNativeRole((raw['role'] as String?) ?? 'button');
+          : (isWindowsHost && rawRole.trim().toLowerCase() == 'axtextarea')
+          ? 'document'
+          : _normalizeNativeRole(rawRole);
       final label = (raw['label'] as String?) ?? (raw['name'] as String?) ?? '';
       final val = raw['value']?.toString();
       final editable = raw['editable'] is bool
@@ -833,6 +850,12 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
       browserUrl: browserUrl,
       isElevated: ctx.isElevated,
       nodes: mappedNodes,
+      // Not reported: `readActiveWindowContext` gives only the AX role on
+      // macOS (a search or secure field is `AXTextField` with a subrole) and a
+      // localized control type on Windows. Neither is exact, so Enter/Space
+      // stay R3 until the native readers report role + subrole / control type
+      // id (UDC-17 S17.2, native part).
+      focusedRole: null,
     );
   }
 
@@ -1120,6 +1143,7 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
       pid: currentWindow.pid,
       windowId: currentWindow.windowId,
       nodes: currentWindow.nodes.take(maxNodes).toList(),
+      focusedRole: currentWindow.focusedRole,
     );
   }
 
@@ -1194,6 +1218,7 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
       pid: currentWindow.pid,
       windowId: currentWindow.windowId,
       nodes: currentWindow.nodes,
+      focusedRole: currentWindow.focusedRole,
     );
   }
 }
@@ -1228,25 +1253,47 @@ class ComputerUseSessionState {
     required this.goal,
     required this.allowedApps,
     Set<String>? allowedAppIdentifiers,
+    Map<String, String>? bundleIdByIdentifier,
     required this.allowedDomains,
     required this.maxSteps,
     required this.maxMinutes,
     required this.startedAtUtc,
-  }) : allowedAppIdentifiers = allowedAppIdentifiers ?? allowedApps;
+  }) : allowedAppIdentifiers = allowedAppIdentifiers ?? allowedApps,
+       bundleIdByIdentifier = bundleIdByIdentifier ?? <String, String>{};
 
   final String sessionId;
   final String goal;
   final Set<String> allowedApps;
   final Set<String> allowedAppIdentifiers;
+
+  /// For allowed apps whose bundle id is known (a `bundle` policy entry or a
+  /// discovered macOS app): each of the app's other identifiers mapped to
+  /// that bundle id, lower case (UDC-17 S17.6).
+  final Map<String, String> bundleIdByIdentifier;
   final List<String> allowedDomains;
   final int maxSteps;
   final int maxMinutes;
   final DateTime startedAtUtc;
 
+  /// Whether the active window belongs to an app of this session.
+  ///
+  /// When the window reports a bundle id (macOS gives it as `processName`),
+  /// the bundle id decides: it matches an allowed app's bundle id, or the
+  /// window matches an allowed app only by name **and** that app's bundle id
+  /// is unknown. A window whose display name copies an allowed app but whose
+  /// bundle id differs from the known one is refused (UDC-17 S17.6).
   bool isWindowAppAllowed(String appId, String processName) {
-    if (allowedApps.contains(appId)) return true;
     final appLower = appId.trim().toLowerCase();
     final procLower = processName.trim().toLowerCase();
+    if (looksLikeBundleId(procLower)) {
+      if (allowedAppIdentifiers.contains(procLower)) return true;
+      final nameKeys = <String>{appId, appLower}.where(
+        (k) => allowedApps.contains(k) || allowedAppIdentifiers.contains(k),
+      );
+      return nameKeys.isNotEmpty &&
+          nameKeys.every((k) => !bundleIdByIdentifier.containsKey(k));
+    }
+    if (allowedApps.contains(appId)) return true;
     final normProc =
         NativeHostChannelComputerUseProvider.normalizeAppIdFromProcess(
           processName,
@@ -1257,6 +1304,27 @@ class ComputerUseSessionState {
   }
 
   int stepsExecuted = 0;
+
+  /// Whether [value] (lower case) is a reverse-DNS bundle id such as
+  /// `com.apple.notes`, not an executable or a path.
+  static bool looksLikeBundleId(String value) =>
+      value.contains('.') &&
+      !value.endsWith('.exe') &&
+      !value.endsWith('.app') &&
+      !value.contains('/') &&
+      !value.contains(r'\') &&
+      RegExp(r'^[a-z0-9-]+(\.[a-z0-9-]+)+$').hasMatch(value);
+
+  /// Characters typed in this session without a per-call signature
+  /// (ADR-0015 D1). Consumed only at execution, never by preflight.
+  int draftCharsTyped = 0;
+
+  int get draftCharsRemaining => maxCuSessionDraftChars - draftCharsTyped;
+
+  /// Whether unsigned draft text was typed since the last signed click or key
+  /// (the last possible commit). While it is, unnamed click targets are R3.
+  bool hasUncommittedDraft = false;
+
   int consecutiveNoChange = 0;
   String? lastActionSignature;
   int snapshotCounter = 0;
@@ -1264,10 +1332,15 @@ class ComputerUseSessionState {
   final Map<String, SnapshotElementIdentity> snapshotRefMaps =
       <String, SnapshotElementIdentity>{};
 
+  /// Element number the next ref added to the latest snapshot gets, so refs
+  /// added by `ui.find` or after an action never reuse a number (UDC-17 S17.4).
+  int nextElementNumber = 1;
+
   String mintNextSnapshotId() {
     snapshotCounter++;
     final id = 's${snapshotCounter.toRadixString(16).padLeft(8, '0')}';
     latestSnapshotId = id;
+    nextElementNumber = 1;
     return id;
   }
 
@@ -1371,11 +1444,144 @@ class ComputerUseSessionManager {
       );
     }
 
-    final effectiveScanner = appScanner ?? this.appScanner;
-    final allowZeroConfig =
-        allowZeroConfigAppDiscovery || effectiveScanner != null;
+    final resolved = _resolveSessionApps(
+      apps: apps,
+      policy: policy,
+      scanner: appScanner ?? this.appScanner,
+      allowZeroConfig: allowZeroConfigAppDiscovery,
+    );
+    final allowedAppConfigs = resolved.configs;
+    final allowedIdentifiers = resolved.identifiers;
+
+    final normalizedDomains = <String>[
+      for (final d in domains) normalizeDomainAllowlistEntry(d),
+    ];
+
+    final sessionId = requestedSessionId ?? 'cu-session-${++_sessionCounter}';
+
+    final manifestYaml = CuaDriverMap.buildBoundedCapabilityManifestYaml(
+      allowedApps: allowedAppConfigs,
+      allowedDomains: normalizedDomains,
+      maxMinutes: maxMinutes,
+    );
+
+    await provider.startSession(
+      sessionId: sessionId,
+      capabilityManifestYaml: manifestYaml,
+    );
+
+    final state = ComputerUseSessionState(
+      sessionId: sessionId,
+      goal: goal,
+      allowedApps: apps.toSet(),
+      allowedAppIdentifiers: allowedIdentifiers,
+      bundleIdByIdentifier: resolved.bundleIds,
+      allowedDomains: normalizedDomains,
+      maxSteps: maxSteps.clamp(1, maxCuSessionSteps),
+      maxMinutes: maxMinutes.clamp(1, maxCuSessionMinutes),
+      startedAtUtc: (nowUtc ?? DateTime.now()).toUtc(),
+    );
+    _activeSession = state;
+    _stateController.add(state);
+    return sessionId;
+  }
+
+  /// Adds apps and domains to the running session (`cu.session_extend`,
+  /// UDC-17 S17.3) with the same checks as [startSession]. Budgets and the
+  /// start time do not change.
+  ///
+  /// External MCP drivers received their capability manifest at session start,
+  /// so they may still refuse a newly added app; that fails closed.
+  Future<({List<String> apps, List<String> domains})> extendSession({
+    required String sessionId,
+    required List<String> apps,
+    required List<String> domains,
+    required HostPolicy policy,
+    AutoAppScanner? appScanner,
+    bool allowZeroConfigAppDiscovery = false,
+    DateTime? nowUtc,
+  }) async {
+    final session = _requireActiveSession(nowUtc: nowUtc);
+    if (session.sessionId != sessionId) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'cu_session_required',
+      );
+    }
+    final resolved = _resolveSessionApps(
+      apps: apps,
+      policy: policy,
+      scanner: appScanner ?? this.appScanner,
+      allowZeroConfig: allowZeroConfigAppDiscovery,
+    );
+    final newDomains = <String>[
+      for (final d in domains) normalizeDomainAllowlistEntry(d),
+    ];
+    final nextApps = <String>{...session.allowedApps, ...apps};
+    final nextDomains = <String>{...session.allowedDomains, ...newDomains};
+    if (nextApps.length > maxCuSessionApps ||
+        nextDomains.length > maxCuSessionDomains) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'session_scope_limit',
+      );
+    }
+    session.allowedApps.addAll(apps);
+    session.allowedAppIdentifiers.addAll(resolved.identifiers);
+    session.bundleIdByIdentifier.addAll(resolved.bundleIds);
+    for (final d in newDomains) {
+      if (!session.allowedDomains.contains(d)) session.allowedDomains.add(d);
+    }
+    _stateController.add(session);
+    return (
+      apps: session.allowedApps.toList(growable: false),
+      domains: List<String>.unmodifiable(session.allowedDomains),
+    );
+  }
+
+  /// Resolves requested app ids to allowlisted configs and window identifiers,
+  /// refusing denylisted targets and, unless zero-config discovery is allowed,
+  /// apps missing from `host-policy.json`. Shared by start and extend.
+  ({
+    List<AllowedAppConfig> configs,
+    Set<String> identifiers,
+    Map<String, String> bundleIds,
+  })
+  _resolveSessionApps({
+    required List<String> apps,
+    required HostPolicy policy,
+    required AutoAppScanner? scanner,
+    required bool allowZeroConfig,
+  }) {
+    final effectiveScanner = scanner;
     final allowedAppConfigs = <AllowedAppConfig>[];
     final allowedIdentifiers = <String>{};
+    final bundleIds = <String, String>{};
+
+    void addApp({
+      required String requestedId,
+      required String canonicalId,
+      required String displayName,
+      required String target,
+      String? bundleId,
+    }) {
+      final appIdentifiers = <String>{};
+      _collectAppIdentifiers(
+        out: appIdentifiers,
+        requestedId: requestedId,
+        canonicalId: canonicalId,
+        displayName: displayName,
+        target: target,
+        bundleId: bundleId,
+      );
+      allowedIdentifiers.addAll(appIdentifiers);
+      final bundle = bundleId?.trim().toLowerCase();
+      if (bundle != null && ComputerUseSessionState.looksLikeBundleId(bundle)) {
+        for (final id in appIdentifiers) {
+          if (id != bundle) bundleIds[id] = bundle;
+        }
+      }
+    }
 
     for (final appId in apps) {
       if (isHardDeniedAppOrProcess(appId)) {
@@ -1395,13 +1601,14 @@ class ComputerUseSessionManager {
         }
         final discoveredMatch = effectiveScanner?.findApp(appId);
         allowedAppConfigs.add(cfg);
-        _collectAppIdentifiers(
-          out: allowedIdentifiers,
+        addApp(
           requestedId: appId,
           canonicalId: cfg.id,
           displayName: cfg.name,
           target: cfg.target,
-          bundleId: discoveredMatch?.bundleId,
+          bundleId:
+              discoveredMatch?.bundleId ??
+              (cfg.kind == AppLaunchKind.bundle ? cfg.target : null),
         );
         continue;
       }
@@ -1434,8 +1641,7 @@ class ComputerUseSessionManager {
           risk: RiskTier.r2,
         ),
       );
-      _collectAppIdentifiers(
-        out: allowedIdentifiers,
+      addApp(
         requestedId: appId,
         canonicalId: discovered.id,
         displayName: discovered.name,
@@ -1444,36 +1650,11 @@ class ComputerUseSessionManager {
       );
     }
 
-    final normalizedDomains = <String>[
-      for (final d in domains) normalizeDomainAllowlistEntry(d),
-    ];
-
-    final sessionId = requestedSessionId ?? 'cu-session-${++_sessionCounter}';
-
-    final manifestYaml = CuaDriverMap.buildBoundedCapabilityManifestYaml(
-      allowedApps: allowedAppConfigs,
-      allowedDomains: normalizedDomains,
-      maxMinutes: maxMinutes,
+    return (
+      configs: allowedAppConfigs,
+      identifiers: allowedIdentifiers,
+      bundleIds: bundleIds,
     );
-
-    await provider.startSession(
-      sessionId: sessionId,
-      capabilityManifestYaml: manifestYaml,
-    );
-
-    final state = ComputerUseSessionState(
-      sessionId: sessionId,
-      goal: goal,
-      allowedApps: apps.toSet(),
-      allowedAppIdentifiers: allowedIdentifiers,
-      allowedDomains: normalizedDomains,
-      maxSteps: maxSteps.clamp(1, 20),
-      maxMinutes: maxMinutes.clamp(1, 10),
-      startedAtUtc: (nowUtc ?? DateTime.now()).toUtc(),
-    );
-    _activeSession = state;
-    _stateController.add(state);
-    return sessionId;
   }
 
   /// Ends the active computer-use session (`cu.session_end`).
@@ -1523,26 +1704,7 @@ class ComputerUseSessionManager {
     );
 
     for (final node in redactedNodes) {
-      final rawId = (node['id'] as String?) ?? '';
-      final qualRef = (node['ref'] as String?) ?? rawId;
-      final identity = SnapshotElementIdentity(
-        snapshotId: snapshotId,
-        rawId: rawId,
-        qualifiedRef: qualRef,
-        role: (node['role'] as String?) ?? 'unknown',
-        name: (node['name'] as String?) ?? '',
-        nativeId: node['nativeId'] as String?,
-        bounds: (node['bounds'] as Map?)?.cast<String, Object?>(),
-      );
-      if (rawId.isNotEmpty) {
-        session.snapshotRefMaps[rawId] = identity;
-      }
-      if (qualRef.isNotEmpty) {
-        session.snapshotRefMaps[qualRef] = identity;
-        if (qualRef.startsWith('@')) {
-          session.snapshotRefMaps[qualRef.substring(1)] = identity;
-        }
-      }
+      _registerSnapshotNode(session, node, snapshotId);
     }
 
     return <String, Object?>{
@@ -1555,6 +1717,321 @@ class ComputerUseSessionManager {
       'collapsedWrappersCount': collapsedWrappersCount,
       'nodes': redactedNodes,
     };
+  }
+
+  /// Records the identity behind a redacted, ref-tagged [node] so `input.*`
+  /// can resolve its ref and detect `stale_ref` / `ambiguous_target`.
+  void _registerSnapshotNode(
+    ComputerUseSessionState session,
+    Map<String, Object?> node,
+    String snapshotId,
+  ) {
+    final rawId = (node['id'] as String?) ?? '';
+    final qualRef = (node['ref'] as String?) ?? rawId;
+    final identity = SnapshotElementIdentity(
+      snapshotId: snapshotId,
+      rawId: rawId,
+      qualifiedRef: qualRef,
+      role: (node['role'] as String?) ?? 'unknown',
+      name: (node['name'] as String?) ?? '',
+      nativeId: node['nativeId'] as String?,
+      bounds: (node['bounds'] as Map?)?.cast<String, Object?>(),
+    );
+    if (rawId.isNotEmpty) {
+      session.snapshotRefMaps[rawId] = identity;
+    }
+    if (qualRef.isNotEmpty) {
+      session.snapshotRefMaps[qualRef] = identity;
+      if (qualRef.startsWith('@')) {
+        session.snapshotRefMaps[qualRef.substring(1)] = identity;
+      }
+    }
+    final parsed = parseSnapshotElementRef(qualRef);
+    if (parsed != null &&
+        parsed.snapshotId == snapshotId &&
+        parsed.elementNumber >= session.nextElementNumber) {
+      session.nextElementNumber = parsed.elementNumber + 1;
+    }
+  }
+
+  /// Redacts [rawNode] like `ui.inspect` and gives it a ref in the latest
+  /// snapshot: the ref it already has when the same element (same raw id,
+  /// role and name) is registered there, otherwise the next free number.
+  Map<String, Object?> _redactAndRegisterInLatestSnapshot(
+    ComputerUseSessionState session,
+    Map<String, Object?> rawNode,
+  ) {
+    final snapshotId = session.latestSnapshotId!;
+    final redacted = redactUiTreeNodes(<Map<String, Object?>>[
+      rawNode,
+    ], maxNodes: 1).single;
+    final rawId = (redacted['id'] as String?) ?? '';
+    final known = rawId.isEmpty ? null : session.snapshotRefMaps[rawId];
+    if (known != null &&
+        known.snapshotId == snapshotId &&
+        known.rawId == rawId &&
+        _identitySignature(known) == uiNodeSignature(rawNode)) {
+      redacted['ref'] = known.qualifiedRef;
+      return redacted;
+    }
+    redacted['ref'] = '@$snapshotId:e${session.nextElementNumber}';
+    final nativeId = rawNode['nativeId'];
+    _registerSnapshotNode(session, <String, Object?>{
+      ...redacted,
+      if (nativeId is String) 'nativeId': nativeId,
+    }, snapshotId);
+    return redacted;
+  }
+
+  /// Same key as [uiNodeSignature], from a recorded identity (whose role and
+  /// name were stored already redacted).
+  static String _identitySignature(SnapshotElementIdentity identity) =>
+      '${identity.role.trim().toLowerCase()}\u0000${identity.name}';
+
+  /// Finds elements of the active window by name and/or role (`ui.find`,
+  /// UDC-17 S17.4) after the same hard refusals as [inspectWindow].
+  ///
+  /// Read-only on the screen. Candidates join the latest snapshot (one is
+  /// minted when the session has none), so refs from an earlier `ui.inspect`
+  /// stay valid. Every ref is still re-checked against the live element when
+  /// an `input.*` call uses it.
+  Future<Map<String, Object?>> findElements({
+    String? query,
+    String? role,
+    int maxResults = defaultUiFindResults,
+    DateTime? nowUtc,
+  }) async {
+    final session = _requireActiveSession(nowUtc: nowUtc);
+    final window = await provider.inspectActiveWindow(maxNodes: 300);
+    _enforceWindowHardRefusals(session: session, window: window);
+    final found = findUiNodes(
+      window.nodes,
+      query: query,
+      role: role,
+      maxResults: maxResults,
+    );
+    final snapshotId = session.latestSnapshotId ?? session.mintNextSnapshotId();
+    final matches = <Map<String, Object?>>[
+      for (final node in found.matches)
+        _redactAndRegisterInLatestSnapshot(session, node),
+    ];
+    return <String, Object?>{
+      'appId': window.appId,
+      'windowTitle': window.windowTitle.length > 120
+          ? window.windowTitle.substring(0, 120)
+          : window.windowTitle,
+      'snapshotId': snapshotId,
+      'searchedNodes': window.nodes.length,
+      'total': found.total,
+      'truncated': found.total > matches.length,
+      'matches': matches,
+    };
+  }
+
+  /// Most entries per list in an action's `changes`.
+  static const int maxChangeEntries = 15;
+
+  /// Brings the latest snapshot up to date after an `input.*` action and
+  /// describes what changed (UDC-17 S17.4), or returns `null` when no
+  /// snapshot was taken yet.
+  ///
+  /// A registered element keeps its ref only when it is provably the same
+  /// element in [after]:
+  /// 1. the same `nativeId`, unique in [before] and [after]; or
+  /// 2. a non-empty name whose role+name is unique both [before] and [after]
+  ///    (the raw id is re-bound if native ordinals shifted); or
+  /// 3. the same raw id at the same position, when the window's structure
+  ///    did not change at all (every node's raw id, role and name equal, in
+  ///    order, e.g. after typing a draft or a button turning enabled).
+  /// Anything else is dropped (`removed`), so its ref fails with `stale_ref`
+  /// instead of reaching another element. Unnamed or duplicated controls are
+  /// therefore dropped whenever the structure changed: an identical-looking
+  /// control inserted before them cannot be told apart without a native id.
+  /// Controls that appeared, or that replace dropped ones, get new refs
+  /// (`added`).
+  ///
+  /// When [after] fails the window hard refusals (another app came to the
+  /// front), no element of it is described.
+  Map<String, Object?>? _reconcileSnapshotAfterAction({
+    required ComputerUseSessionState session,
+    required ActiveWindowObservation before,
+    required ActiveWindowObservation after,
+    required bool afterWindowAllowed,
+  }) {
+    final snapshotId = session.latestSnapshotId;
+    if (snapshotId == null) return null;
+    if (!afterWindowAllowed) {
+      return <String, Object?>{
+        'snapshotId': snapshotId,
+        'windowOutsideSession': true,
+      };
+    }
+
+    final beforeSigs = <String>[
+      for (final n in before.nodes) uiNodeSignature(n),
+    ];
+    final afterSigs = <String>[for (final n in after.nodes) uiNodeSignature(n)];
+    Map<String, int> countOf(List<String> sigs) {
+      final counts = <String, int>{};
+      for (final sig in sigs) {
+        counts[sig] = (counts[sig] ?? 0) + 1;
+      }
+      return counts;
+    }
+
+    final beforeCounts = countOf(beforeSigs);
+    final afterCounts = countOf(afterSigs);
+    var structureUnchanged = beforeSigs.length == afterSigs.length;
+    for (var i = 0; structureUnchanged && i < beforeSigs.length; i++) {
+      structureUnchanged =
+          beforeSigs[i] == afterSigs[i] &&
+          before.nodes[i]['id'] == after.nodes[i]['id'];
+    }
+
+    int? uniqueIndexWhere(
+      List<Map<String, Object?>> nodes,
+      bool Function(Map<String, Object?>) test,
+    ) {
+      int? found;
+      for (var i = 0; i < nodes.length; i++) {
+        if (!test(nodes[i])) continue;
+        if (found != null) return null;
+        found = i;
+      }
+      return found;
+    }
+
+    final current = <SnapshotElementIdentity>{
+      for (final identity in session.snapshotRefMaps.values)
+        if (identity.snapshotId == snapshotId) identity,
+    };
+    final carriedAfter = <int>{};
+    final droppedSigs = <String>{};
+    final removed = <String>[];
+    final changed = <Map<String, Object?>>[];
+
+    for (final identity in current) {
+      final sig = _identitySignature(identity);
+      int? beforeIdx;
+      int? afterIdx;
+      final nativeId = identity.nativeId;
+      if (nativeId != null && nativeId.isNotEmpty) {
+        beforeIdx = uniqueIndexWhere(
+          before.nodes,
+          (n) => n['nativeId'] == nativeId,
+        );
+        afterIdx = uniqueIndexWhere(
+          after.nodes,
+          (n) => n['nativeId'] == nativeId,
+        );
+      } else if (identity.name.isNotEmpty &&
+          beforeCounts[sig] == 1 &&
+          afterCounts[sig] == 1) {
+        beforeIdx = beforeSigs.indexOf(sig);
+        afterIdx = afterSigs.indexOf(sig);
+      } else if (identity.rawId.isNotEmpty) {
+        final idx = uniqueIndexWhere(
+          before.nodes,
+          (n) => n['id'] == identity.rawId,
+        );
+        if (idx != null && structureUnchanged && beforeSigs[idx] == sig) {
+          beforeIdx = idx;
+          afterIdx = idx;
+        }
+      }
+      if (afterIdx == null ||
+          afterSigs[afterIdx] != sig ||
+          carriedAfter.contains(afterIdx)) {
+        _dropIdentity(session, identity);
+        droppedSigs.add(sig);
+        removed.add(identity.qualifiedRef);
+        continue;
+      }
+      carriedAfter.add(afterIdx);
+      final live = after.nodes[afterIdx];
+      final liveId = (live['id'] as String?) ?? '';
+      if (liveId != identity.rawId) {
+        // Native ordinals shifted: the ref now points at the element's new id.
+        _dropIdentity(session, identity);
+        _registerSnapshotNode(session, <String, Object?>{
+          'id': liveId,
+          'ref': identity.qualifiedRef,
+          'role': identity.role,
+          'name': identity.name,
+          if (live['nativeId'] is String) 'nativeId': live['nativeId'],
+          if (live['bounds'] is Map) 'bounds': live['bounds'],
+        }, snapshotId);
+      }
+      if (beforeIdx != null) {
+        final prev = before.nodes[beforeIdx];
+        final enabledNow = live['enabled'] != false;
+        final visibleNow = live['visible'] != false;
+        if ((prev['enabled'] != false) != enabledNow ||
+            (prev['visible'] != false) != visibleNow) {
+          changed.add(<String, Object?>{
+            'ref': identity.qualifiedRef,
+            'enabled': enabledNow,
+            'visible': visibleNow,
+          });
+        }
+      }
+    }
+
+    final addedCandidates = <Map<String, Object?>>[];
+    for (var i = 0; i < after.nodes.length; i++) {
+      if (carriedAfter.contains(i)) continue;
+      final node = after.nodes[i];
+      if (!isInteractiveUiNode(node) && !isOverlaySurfaceNode(node)) continue;
+      final sig = afterSigs[i];
+      final grew = (afterCounts[sig] ?? 0) > (beforeCounts[sig] ?? 0);
+      if (!grew && !droppedSigs.contains(sig)) continue;
+      addedCandidates.add(node);
+    }
+    final added = <Map<String, Object?>>[
+      for (final node in addedCandidates.take(maxChangeEntries))
+        _slimChangeNode(_redactAndRegisterInLatestSnapshot(session, node)),
+    ];
+    return <String, Object?>{
+      'snapshotId': snapshotId,
+      'added': added,
+      'removed': removed.take(maxChangeEntries).toList(),
+      'changed': changed.take(maxChangeEntries).toList(),
+      'truncated':
+          addedCandidates.length > maxChangeEntries ||
+          removed.length > maxChangeEntries ||
+          changed.length > maxChangeEntries,
+    };
+  }
+
+  /// Fields of a redacted node kept in `changes.added`. Layout fields
+  /// (`bounds`, `depth`, `parentId`…) are left out so a full `changes` stays
+  /// well inside the backend's tool-output byte limit; `ui.inspect` still
+  /// returns them.
+  static const List<String> _changeNodeKeys = <String>[
+    'ref',
+    'id',
+    'role',
+    'name',
+    'enabled',
+    'visible',
+    'editable',
+    'isPassword',
+    'modal',
+  ];
+
+  static Map<String, Object?> _slimChangeNode(Map<String, Object?> node) =>
+      <String, Object?>{
+        for (final key in _changeNodeKeys)
+          if (node.containsKey(key)) key: node[key],
+      };
+
+  /// Removes every key of `snapshotRefMaps` that points at [identity], so its
+  /// ref resolves to `stale_ref`.
+  void _dropIdentity(
+    ComputerUseSessionState session,
+    SnapshotElementIdentity identity,
+  ) {
+    session.snapshotRefMaps.removeWhere((_, v) => identical(v, identity));
   }
 
   /// Captures the active window or screen JPEG after enforcing hard refusals
@@ -1620,8 +2097,11 @@ class ComputerUseSessionManager {
         errorCode: 'password_field_forbidden',
       );
     }
+    // The model's declared name counts only when it types: a click on
+    // "Quên mật khẩu" is not typing into a password field (UDC-17 S17.6).
     final explicitElementName = arguments['elementName'] as String?;
-    if (explicitElementName != null &&
+    if (toolName != 'input.click' &&
+        explicitElementName != null &&
         isPasswordUiNode(<String, Object?>{'name': explicitElementName})) {
       throw const XunaHostChannelException(
         status: XtpStatus.denied,
@@ -1629,17 +2109,32 @@ class ComputerUseSessionManager {
       );
     }
 
-    // Check if the actual UI node in the tree has a consequential name even if
-    // the LLM omitted or disguised `elementName` in `input.click`!
-    final effectiveElementName =
-        (targetNode?['name'] as String?) ?? explicitElementName;
-    if (toolName == 'input.click' &&
-        isConsequentialElementName(effectiveElementName) &&
-        !hasR3Approval) {
+    // The same classifier answers `xuna/preflight`, so the risk the owner was
+    // asked to approve is the risk enforced here (UDC-17 S17.1). It reads the
+    // live node, so a disguised or missing `elementName` cannot lower it.
+    final stepRisk = classifyInputStepRisk(
+      toolName: toolName,
+      arguments: arguments,
+      liveTarget: targetNode,
+      focusedRole: beforeWindow.focusedRole,
+      draftCharsRemaining: session.draftCharsRemaining,
+      hasUncommittedDraft: session.hasUncommittedDraft,
+    );
+    if (stepRisk.risk >= RiskTier.r3 && !hasR3Approval) {
       throw const XunaHostChannelException(
         status: XtpStatus.denied,
         errorCode: 'approval_required',
       );
+    }
+    if (toolName == 'input.type_text' && !hasR3Approval) {
+      // An unsigned draft (ADR-0015 D1) spends the session's draft budget
+      // before anything is typed.
+      session.draftCharsTyped += (arguments['text'] as String).length;
+      session.hasUncommittedDraft = true;
+    } else if (hasR3Approval &&
+        (toolName == 'input.click' || toolName == 'input.key')) {
+      // The owner signed a possible commit; drafts before it are settled.
+      session.hasUncommittedDraft = false;
     }
 
     // Pre-dispatch Actionability Battery (`agent-desktop` actionability checks).
@@ -1651,8 +2146,10 @@ class ComputerUseSessionManager {
       );
     }
 
-    // Duplicate-action detection (`UDC-8` §4.3): same action on the same
-    // element twice in a row stops the session.
+    // Duplicate-action detection (`UDC-8` §4.3): the same action on the same
+    // element right after it changed nothing on screen stops the session. A
+    // repeat after a visible change (next page, a "+" stepper) is progress:
+    // refs survive actions now (UDC-17 S17.4), so it has the same arguments.
     final actionSignature = '$toolName:${argsSha256(arguments)}';
     if (session.lastActionSignature == actionSignature) {
       await endSession(sessionId: session.sessionId, outcome: 'stopped');
@@ -1747,6 +2244,7 @@ class ComputerUseSessionManager {
     final changed = afterWindow.stateDigest() != beforeDigest;
     if (changed) {
       session.consecutiveNoChange = 0;
+      session.lastActionSignature = null;
     } else {
       session.consecutiveNoChange++;
       if (session.consecutiveNoChange >= 3) {
@@ -1762,7 +2260,22 @@ class ComputerUseSessionManager {
       'delivery': changed ? 'delivered_verified' : 'delivered_unverified',
       'retry': 'unsafe',
     };
-    final openSurfaces = extractOverlaySurfaces(afterWindow.nodes);
+    var afterWindowAllowed = true;
+    try {
+      _enforceWindowHardRefusals(session: session, window: afterWindow);
+    } on XunaHostChannelException {
+      afterWindowAllowed = false;
+    }
+    // Nothing from a window outside the session reaches the model.
+    final openSurfaces = afterWindowAllowed
+        ? extractOverlaySurfaces(afterWindow.nodes)
+        : const <Map<String, Object?>>[];
+    final changes = _reconcileSnapshotAfterAction(
+      session: session,
+      before: beforeWindow,
+      after: afterWindow,
+      afterWindowAllowed: afterWindowAllowed,
+    );
 
     return <String, Object?>{
       'effect': changed ? 'changed' : 'no_change',
@@ -1772,7 +2285,80 @@ class ComputerUseSessionManager {
         'snapshotId': session.latestSnapshotId,
       if (openSurfaces.isNotEmpty) 'surfaces': openSurfaces,
       if (waitSatisfied != null) 'waitSatisfied': waitSatisfied,
+      if (changes != null) 'changes': changes,
     };
+  }
+
+  /// Answers `xuna/preflight` for an `input.*` step (UDC-17 S17.1): which risk
+  /// the host would enforce and which live element the step would hit.
+  ///
+  /// Strictly read-only. It does not mint a snapshot, count a step, record the
+  /// action signature or end the session, so the real call that follows sees
+  /// the same state. Every refusal [executeInputAction] would raise before
+  /// acting (no session, budget, window refusals, stale or ambiguous ref,
+  /// password field) is thrown here as the same [XunaHostChannelException].
+  Future<({InputStepRisk stepRisk, String? elementRole, String? elementName})>
+  preflightInputAction({
+    required String toolName,
+    required Map<String, Object?> arguments,
+    DateTime? nowUtc,
+  }) async {
+    final session = _activeSession;
+    if (session == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'cu_session_required',
+      );
+    }
+    if (session.isWallClockExpired((nowUtc ?? DateTime.now()).toUtc())) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'time_budget_exceeded',
+      );
+    }
+    if (session.stepsExecuted >= session.maxSteps) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'step_budget_exceeded',
+      );
+    }
+
+    final window = await provider.inspectActiveWindow(maxNodes: 300);
+    _enforceWindowHardRefusals(session: session, window: window);
+    final resolved = _resolveAndValidateTargetElement(
+      session: session,
+      window: window,
+      toolName: toolName,
+      rawElementId: arguments['elementId'] as String?,
+    );
+    final targetNode = resolved.targetNode;
+    final declaredName = arguments['elementName'];
+    if ((targetNode != null && isPasswordUiNode(targetNode)) ||
+        (toolName != 'input.click' &&
+            declaredName is String &&
+            isPasswordUiNode(<String, Object?>{'name': declaredName}))) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'password_field_forbidden',
+      );
+    }
+    final stepRisk = classifyInputStepRisk(
+      toolName: toolName,
+      arguments: arguments,
+      liveTarget: targetNode,
+      focusedRole: window.focusedRole,
+      draftCharsRemaining: session.draftCharsRemaining,
+      hasUncommittedDraft: session.hasUncommittedDraft,
+    );
+    final rawName = targetNode?['name'];
+    final label = rawName is String ? sanitizePreflightLabel(rawName) : '';
+    return (
+      stepRisk: stepRisk,
+      elementRole: targetNode == null
+          ? null
+          : sanitizePreflightRole(targetNode['role'] as String?),
+      elementName: label.isEmpty ? null : label,
+    );
   }
 
   /// Resolves [rawElementId] against `beforeWindow.nodes` and `session.snapshotRefMaps`,
@@ -2127,11 +2713,13 @@ class ComputerUseSessionManager {
     }
   }
 
-  /// Builds the 8 [HostToolHandler] instances for computer use.
+  /// Builds the 10 [HostToolHandler] instances for computer use.
   List<HostToolHandler> buildHandlers() => <HostToolHandler>[
     CuSessionStartTool(this),
+    CuSessionExtendTool(this),
     ScreenCaptureTool(this),
     UiInspectTool(this),
+    UiFindTool(this),
     InputClickTool(this),
     InputTypeTextTool(this),
     InputKeyTool(this),
@@ -2173,6 +2761,35 @@ class CuSessionStartTool extends HostToolHandler {
       text: 'Đã bắt đầu phiên điều khiển màn hình ($sessionId).',
       structuredContent: <String, Object?>{'sessionId': sessionId},
       toastBody: 'bắt đầu phiên điều khiển màn hình',
+    );
+  }
+}
+
+class CuSessionExtendTool extends HostToolHandler {
+  const CuSessionExtendTool(this.manager);
+  final ComputerUseSessionManager manager;
+
+  @override
+  String get name => 'cu.session_extend';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final result = await manager.extendSession(
+      sessionId: context.arguments['sessionId'] as String,
+      apps: (context.arguments['apps'] as List).cast<String>(),
+      domains: (context.arguments['domains'] as List).cast<String>(),
+      policy: context.policy!,
+      appScanner: context.appScanner,
+      allowZeroConfigAppDiscovery: true,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã mở rộng phiên điều khiển màn hình.',
+      structuredContent: <String, Object?>{
+        'sessionId': context.arguments['sessionId'],
+        'apps': result.apps,
+        'domains': result.domains,
+      },
+      toastBody: 'đã thêm ứng dụng/tên miền vào phiên điều khiển',
     );
   }
 }
@@ -2225,6 +2842,28 @@ class UiInspectTool extends HostToolHandler {
   }
 }
 
+class UiFindTool extends HostToolHandler {
+  const UiFindTool(this.manager);
+  final ComputerUseSessionManager manager;
+
+  @override
+  String get name => 'ui.find';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final result = await manager.findElements(
+      query: context.arguments['query'] as String?,
+      role: context.arguments['role'] as String?,
+      maxResults:
+          (context.arguments['maxResults'] as int?) ?? defaultUiFindResults,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã tìm phần tử giao diện (${result['total']} kết quả).',
+      structuredContent: result,
+    );
+  }
+}
+
 class InputClickTool extends HostToolHandler {
   const InputClickTool(this.manager);
   final ComputerUseSessionManager manager;
@@ -2237,7 +2876,7 @@ class InputClickTool extends HostToolHandler {
     final result = await manager.executeInputAction(
       toolName: name,
       arguments: context.arguments,
-      hasR3Approval: context.evaluation.effectiveRisk >= RiskTier.r3,
+      hasR3Approval: context.hasVerifiedR3Approval,
     );
     return ToolHandlerOutput(
       text: 'Đã nhấn chuột (${result['effect']}).',
@@ -2258,7 +2897,7 @@ class InputTypeTextTool extends HostToolHandler {
     final result = await manager.executeInputAction(
       toolName: name,
       arguments: context.arguments,
-      hasR3Approval: true,
+      hasR3Approval: context.hasVerifiedR3Approval,
     );
     return ToolHandlerOutput(
       text: 'Đã nhập văn bản (${result['effect']}).',
@@ -2280,7 +2919,7 @@ class InputKeyTool extends HostToolHandler {
     final result = await manager.executeInputAction(
       toolName: name,
       arguments: context.arguments,
-      hasR3Approval: context.evaluation.effectiveRisk >= RiskTier.r3,
+      hasR3Approval: context.hasVerifiedR3Approval,
     );
     return ToolHandlerOutput(
       text: 'Đã nhấn phím (${result['effect']}).',
@@ -2301,7 +2940,7 @@ class InputScrollTool extends HostToolHandler {
     final result = await manager.executeInputAction(
       toolName: name,
       arguments: context.arguments,
-      hasR3Approval: false,
+      hasR3Approval: context.hasVerifiedR3Approval,
     );
     return ToolHandlerOutput(
       text: 'Đã cuộn trang (${result['effect']}).',

@@ -319,8 +319,26 @@ const Set<String> allowedInputKeyCombos = <String>{
   'PageDown',
 };
 
-/// Longest text accepted by `input.type_text` (still always R3 phone-signed).
+/// Upper bounds of one computer-use session (`cu.session_start`), owner-approved
+/// 2026-11-12 (ADR-0015 E1). The session stops itself when either is reached.
+const int maxCuSessionSteps = 40;
+const int maxCuSessionMinutes = 20;
+
+/// `cu.session_extend` limits (UDC-17 S17.3), chosen 2026-11-12 by the
+/// implementer: at most this many apps and this many domains per call, and a
+/// session never holds more than [maxCuSessionApps] apps or
+/// [maxCuSessionDomains] domains in total.
+const int maxCuSessionExtendItems = 3;
+const int maxCuSessionApps = 8;
+const int maxCuSessionDomains = 12;
+
+/// Longest text accepted by one `input.type_text` call.
 const int maxInputTypeTextLength = 4000;
+
+/// Characters one computer-use session may type without a per-call signature
+/// (ADR-0015 D1). Chosen 2026-11-12 by the implementer, not by the owner: about
+/// a long message or a short note. Beyond it every `input.type_text` is R3.
+const int maxCuSessionDraftChars = 2000;
 
 const Set<String> _comboModifiers = <String>{
   'cmd',
@@ -436,6 +454,16 @@ bool isAllowedInputKeyCombo(String combo) {
   final canonical = _canonicalInputKeyCombo(combo);
   if (canonical == null) return false;
   return !_deniedInputKeyCombos.contains(canonical);
+}
+
+/// True when [combo] presses Enter/Return or Space (with any modifiers): keys
+/// that activate the focused control, so `input.key` treats them as R3 and
+/// requires a phone-signed approval for every press.
+bool isActivationKeyCombo(String combo) {
+  final canonical = _canonicalInputKeyCombo(combo);
+  if (canonical == null) return false;
+  final key = canonical.split('+').last;
+  return key == 'enter' || key == 'space';
 }
 
 /// Supported host operating system platforms.

@@ -8,9 +8,11 @@ import 'policy/tool_arg_validators.dart';
 import 'schemas.dart';
 
 export 'policy/forge_swarm_validators.dart';
+export 'policy/input_step_risk.dart';
 export 'policy/policy_models.dart';
 export 'policy/security_redaction.dart';
 export 'policy/tool_arg_validators.dart';
+export 'policy/ui_find.dart';
 export 'policy/url_domain_validator.dart';
 
 /// Fail-closed evaluator for `host-policy.json` (`UDC-3` §5.6.4–§5.6.5).
@@ -157,92 +159,22 @@ class HostPolicyEvaluator {
         : effectiveRisk >= RiskTier.r2;
 
     if (requiresApproval) {
-      if (approval == null) {
+      final approvalError = effectiveRisk >= RiskTier.r3
+          ? verifyPhoneSignedApproval(
+              approval: approval,
+              arguments: arguments,
+              nowUtc: now,
+              hostId: hostId,
+              pinnedPhonePublicKeys: pinnedPhonePublicKeys,
+            )
+          : _verifyBoundApproval(approval, arguments, now);
+      if (approvalError != null) {
         return PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.denied,
           effectiveRisk: effectiveRisk,
-          errorCode: 'approval_required',
+          errorCode: approvalError,
         );
-      }
-      if (approval.isExpiredAt(now)) {
-        return PolicyEvaluationResult(
-          allowed: false,
-          status: XtpStatus.denied,
-          effectiveRisk: effectiveRisk,
-          errorCode: 'approval_expired',
-        );
-      }
-      final computedHash = argsSha256(arguments);
-      if (approval.argsSha256 != computedHash) {
-        return PolicyEvaluationResult(
-          allowed: false,
-          status: XtpStatus.denied,
-          effectiveRisk: effectiveRisk,
-          errorCode: 'approval_mismatch',
-        );
-      }
-      if (effectiveRisk >= RiskTier.r3) {
-        if (approval.scope != 'once') {
-          return PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: effectiveRisk,
-            errorCode: 'r3_requires_once_scope',
-          );
-        }
-        // UDC-7 S7.5: Verify phone-signed approval for R3 tools against
-        // enrolled owner phone keys; reject missing or invalid signatures.
-        final sig = approval.signature;
-        if (sig == null ||
-            hostId == null ||
-            hostId.isEmpty ||
-            pinnedPhonePublicKeys.isEmpty) {
-          return PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: effectiveRisk,
-            errorCode: 'approval_signature_invalid',
-          );
-        }
-        final proofMsg = approvalProofMessage(
-          approvalId: approval.approvalId,
-          argsSha256: approval.argsSha256,
-          hostId: hostId,
-          expiresAt: approval.expiresAtWire,
-        );
-        final candidateKeys = <Uint8List>[];
-        if (approval.publicKey != null) {
-          final hasMatch = pinnedPhonePublicKeys.any(
-            (k) => _bytesEqual(k, approval.publicKey!),
-          );
-          if (!hasMatch) {
-            return PolicyEvaluationResult(
-              allowed: false,
-              status: XtpStatus.denied,
-              effectiveRisk: effectiveRisk,
-              errorCode: 'approval_signature_invalid',
-            );
-          }
-          candidateKeys.add(approval.publicKey!);
-        } else {
-          candidateKeys.addAll(pinnedPhonePublicKeys);
-        }
-        if (candidateKeys.isEmpty ||
-            !candidateKeys.any(
-              (k) => verifyP256Signature(
-                publicKey: k,
-                message: proofMsg,
-                signature: sig,
-              ),
-            )) {
-          return PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: effectiveRisk,
-            errorCode: 'approval_signature_invalid',
-          );
-        }
       }
     }
 
@@ -255,6 +187,67 @@ class HostPolicyEvaluator {
       normalizedUrlHost: normalizedUrlHost,
     );
   }
+}
+
+/// Checks that [approval] is present, unexpired at [nowUtc] and bound to
+/// `argsSha256(arguments)`. Returns `null` when it is, otherwise the XTP error
+/// code (`approval_required`, `approval_expired`, `approval_mismatch`).
+String? _verifyBoundApproval(
+  ApprovalToken? approval,
+  Map<String, Object?> arguments,
+  DateTime nowUtc,
+) {
+  if (approval == null) return 'approval_required';
+  if (approval.isExpiredAt(nowUtc)) return 'approval_expired';
+  if (approval.argsSha256 != argsSha256(arguments)) return 'approval_mismatch';
+  return null;
+}
+
+/// Verifies an R3 approval: bound to [arguments] and unexpired, scope `once`,
+/// and signed by one of the owner's enrolled phone keys (UDC-7 S7.5).
+///
+/// Returns `null` when the approval is valid, otherwise the XTP error code.
+/// The Desktop Agent also calls this when the risk comes from the live screen
+/// rather than from the arguments (UDC-17 S17.1), so a step the host raised to
+/// R3 can run once the owner has signed it.
+String? verifyPhoneSignedApproval({
+  required ApprovalToken? approval,
+  required Map<String, Object?> arguments,
+  required DateTime nowUtc,
+  String? hostId,
+  List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
+}) {
+  final boundError = _verifyBoundApproval(approval, arguments, nowUtc.toUtc());
+  if (boundError != null) return boundError;
+  final token = approval!;
+  if (token.scope != 'once') return 'r3_requires_once_scope';
+  final sig = token.signature;
+  if (sig == null ||
+      hostId == null ||
+      hostId.isEmpty ||
+      pinnedPhonePublicKeys.isEmpty) {
+    return 'approval_signature_invalid';
+  }
+  final proofMsg = approvalProofMessage(
+    approvalId: token.approvalId,
+    argsSha256: token.argsSha256,
+    hostId: hostId,
+    expiresAt: token.expiresAtWire,
+  );
+  final candidateKeys = <Uint8List>[];
+  final presentedKey = token.publicKey;
+  if (presentedKey != null) {
+    if (!pinnedPhonePublicKeys.any((k) => _bytesEqual(k, presentedKey))) {
+      return 'approval_signature_invalid';
+    }
+    candidateKeys.add(presentedKey);
+  } else {
+    candidateKeys.addAll(pinnedPhonePublicKeys);
+  }
+  final verified = candidateKeys.any(
+    (k) => verifyP256Signature(publicKey: k, message: proofMsg, signature: sig),
+  );
+  return verified ? null : 'approval_signature_invalid';
 }
 
 bool _bytesEqual(Uint8List a, Uint8List b) {

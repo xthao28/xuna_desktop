@@ -474,30 +474,127 @@ class AutoAppScanner {
     try {
       final plist = File('$appBundlePath/Contents/Info.plist');
       if (!plist.existsSync()) return null;
-      final bytes = plist.readAsBytesSync();
-      final text = String.fromCharCodes(bytes);
-      final xmlMatch = RegExp(
-        r'<key>\s*CFBundleIdentifier\s*</key>\s*<string>\s*([^<\s]+)\s*</string>',
-      ).firstMatch(text);
-      if (xmlMatch != null) {
-        return xmlMatch.group(1)?.trim();
+      return parseBundleIdFromInfoPlist(plist.readAsBytesSync());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Reads `CFBundleIdentifier` from the bytes of an `Info.plist`, in either
+  /// the XML or the binary (`bplist00`) format.
+  ///
+  /// Returns `null` when the key is absent, its value is not a string, or the
+  /// file is malformed. The value is never inferred from other content.
+  static String? parseBundleIdFromInfoPlist(List<int> bytes) {
+    const magic = 'bplist00';
+    if (bytes.length >= magic.length &&
+        String.fromCharCodes(bytes.sublist(0, magic.length)) == magic) {
+      return _bundleIdFromBinaryPlist(bytes);
+    }
+    final text = String.fromCharCodes(bytes);
+    final xmlMatch = RegExp(
+      r'<key>\s*CFBundleIdentifier\s*</key>\s*<string>\s*([^<\s]+)\s*</string>',
+    ).firstMatch(text);
+    return xmlMatch?.group(1);
+  }
+
+  /// Minimal `bplist00` reader: follows the trailer to the top-level
+  /// dictionary and returns the string stored under `CFBundleIdentifier`.
+  static String? _bundleIdFromBinaryPlist(List<int> b) {
+    const trailerLength = 32;
+    if (b.length < 8 + trailerLength) return null;
+    final trailer = b.length - trailerLength;
+    final offsetSize = b[trailer + 6];
+    final refSize = b[trailer + 7];
+    final objectCount = _beInt(b, trailer + 8, 8);
+    final topObject = _beInt(b, trailer + 16, 8);
+    final tableOffset = _beInt(b, trailer + 24, 8);
+    if (offsetSize < 1 ||
+        offsetSize > 8 ||
+        refSize < 1 ||
+        refSize > 8 ||
+        objectCount == null ||
+        topObject == null ||
+        tableOffset == null ||
+        objectCount <= 0 ||
+        topObject >= objectCount ||
+        tableOffset < 8 ||
+        tableOffset + objectCount * offsetSize > trailer) {
+      return null;
+    }
+
+    int? offsetOf(int objectIndex) {
+      if (objectIndex < 0 || objectIndex >= objectCount) return null;
+      final off = _beInt(b, tableOffset + objectIndex * offsetSize, offsetSize);
+      if (off == null || off < 8 || off >= tableOffset) return null;
+      return off;
+    }
+
+    // Returns (count, offset of the first payload byte) for the object at
+    // [off], resolving the extended-length form (low nibble 0xF).
+    ({int count, int payload})? header(int off) {
+      final info = b[off] & 0x0F;
+      if (info != 0x0F) return (count: info, payload: off + 1);
+      if (off + 1 >= tableOffset) return null;
+      final intMarker = b[off + 1];
+      if ((intMarker & 0xF0) != 0x10) return null;
+      final intLength = 1 << (intMarker & 0x0F);
+      if (intLength > 8) return null;
+      final count = _beInt(b, off + 2, intLength);
+      if (count == null) return null;
+      return (count: count, payload: off + 2 + intLength);
+    }
+
+    String? stringAt(int objectIndex) {
+      final off = offsetOf(objectIndex);
+      if (off == null) return null;
+      final type = b[off] & 0xF0;
+      if (type != 0x50 && type != 0x60) return null;
+      final head = header(off);
+      if (head == null) return null;
+      final unitCount = head.count;
+      final start = head.payload;
+      if (type == 0x50) {
+        if (start + unitCount > tableOffset) return null;
+        return String.fromCharCodes(b.sublist(start, start + unitCount));
       }
-      final keyIdx = text.indexOf('CFBundleIdentifier');
-      if (keyIdx >= 0) {
-        final tail = text.substring(keyIdx + 'CFBundleIdentifier'.length);
-        final binMatch = RegExp(
-          r'([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,})',
-        ).firstMatch(tail);
-        if (binMatch != null) {
-          final candidate = binMatch.group(1)!;
-          final lower = candidate.toLowerCase();
-          if (!lower.endsWith('.plist') && !lower.endsWith('.icns')) {
-            return candidate;
-          }
-        }
-      }
-    } catch (_) {}
+      if (start + unitCount * 2 > tableOffset) return null;
+      final units = <int>[
+        for (var i = 0; i < unitCount; i++)
+          (b[start + i * 2] << 8) | b[start + i * 2 + 1],
+      ];
+      return String.fromCharCodes(units);
+    }
+
+    final dictOffset = offsetOf(topObject);
+    if (dictOffset == null || (b[dictOffset] & 0xF0) != 0xD0) return null;
+    final dictHead = header(dictOffset);
+    if (dictHead == null) return null;
+    final pairCount = dictHead.count;
+    final keysStart = dictHead.payload;
+    final valuesStart = keysStart + pairCount * refSize;
+    if (valuesStart + pairCount * refSize > tableOffset) return null;
+    for (var i = 0; i < pairCount; i++) {
+      final keyRef = _beInt(b, keysStart + i * refSize, refSize);
+      if (keyRef == null || stringAt(keyRef) != 'CFBundleIdentifier') continue;
+      final valueRef = _beInt(b, valuesStart + i * refSize, refSize);
+      if (valueRef == null) return null;
+      final value = stringAt(valueRef)?.trim();
+      return (value == null || value.isEmpty) ? null : value;
+    }
     return null;
+  }
+
+  /// Big-endian unsigned integer of [length] bytes at [offset], or `null`
+  /// when it is out of range or does not fit a non-negative Dart `int`.
+  static int? _beInt(List<int> b, int offset, int length) {
+    if (offset < 0 || length < 1 || offset + length > b.length) return null;
+    var value = 0;
+    for (var i = 0; i < length; i++) {
+      if (value > 0x7FFFFFFFFFFFFF) return null;
+      value = (value << 8) | b[offset + i];
+    }
+    return value < 0 ? null : value;
   }
 
   static bool _isIgnoredWindowsInstallerExe(String lowerFileName) {

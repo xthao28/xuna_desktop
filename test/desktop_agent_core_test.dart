@@ -483,6 +483,72 @@ void main() {
     );
   });
 
+  group('UDC-17 S17.6: url.open refuses names that resolve inside', () {
+    Future<Map<String, Object?>> openUrl(String url, int seq) async {
+      final args = <String, Object?>{'url': url};
+      final now = DateTime.utc(2026, 11, 13, 9, 0);
+      final res = await dispatcher.dispatch(
+        requestId: 900 + seq,
+        params: ToolsCallParams(
+          name: 'url.open',
+          arguments: args,
+          invocationId:
+              '9${seq.toString().padLeft(7, '0')}-1111-4111-8111-111111111111',
+          deadlineMs: 5000,
+          approval: ApprovalToken(
+            approvalId:
+                '8${seq.toString().padLeft(7, '0')}-7777-4777-8777-777777777777',
+            argsSha256: argsSha256(args),
+            expiresAt: now.add(const Duration(minutes: 2)),
+          ),
+        ),
+        nowUtc: now,
+      );
+      return res.result['_meta'] as Map<String, Object?>;
+    }
+
+    test('a public name opens; private, loopback and unresolvable ones do '
+        'not', () async {
+      await policyStore.savePolicy(_sampleHealthyPolicy());
+      channel.resolvedAddresses['github.com'] = <InternetAddress>[
+        InternetAddress('140.82.112.3'),
+        InternetAddress('2606:50c0:8000::153'),
+      ];
+      final ok = await openUrl('https://github.com/xuna', 1);
+      expect(ok['xuna/status'], 'ok');
+      expect(channel.invokedMethods.where((m) => m == 'urlOpen'), hasLength(1));
+
+      final cases = <String, List<InternetAddress>>{
+        // A public-looking name pointed at this computer or the LAN.
+        'jira.example.com': <InternetAddress>[InternetAddress('127.0.0.1')],
+        'a.github.com': <InternetAddress>[InternetAddress('192.168.1.10')],
+        'b.github.com': <InternetAddress>[InternetAddress('10.0.0.5')],
+        'c.github.com': <InternetAddress>[InternetAddress('169.254.169.254')],
+        'd.github.com': <InternetAddress>[InternetAddress('::1')],
+        'e.github.com': <InternetAddress>[InternetAddress('fd00::1')],
+        'f.github.com': <InternetAddress>[InternetAddress('::ffff:10.0.0.1')],
+        // One private address among public ones is enough to refuse.
+        'g.github.com': <InternetAddress>[
+          InternetAddress('140.82.112.3'),
+          InternetAddress('172.16.0.1'),
+        ],
+      };
+      var seq = 2;
+      for (final entry in cases.entries) {
+        channel.resolvedAddresses[entry.key] = entry.value;
+        final meta = await openUrl('https://${entry.key}/x', seq++);
+        expect(meta['xuna/status'], 'denied', reason: entry.key);
+        expect(meta['xuna/errorCode'], 'url_not_public', reason: entry.key);
+      }
+      channel.resolvedAddresses['h.github.com'] = <InternetAddress>[];
+      final unresolved = await openUrl('https://h.github.com/x', seq);
+      expect(unresolved['xuna/status'], 'failed');
+      expect(unresolved['xuna/errorCode'], 'url_unresolvable');
+      // Nothing but the first URL reached the browser.
+      expect(channel.invokedMethods.where((m) => m == 'urlOpen'), hasLength(1));
+    });
+  });
+
   group('AuditLogStore 30-day retention', () {
     test('prunes daily JSONL files older than 30 days', () async {
       final oldDate = DateTime.utc(2026, 9, 15, 10);

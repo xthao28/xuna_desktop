@@ -194,7 +194,14 @@ class ToolExecutionContext {
     required this.nowUtc,
     this.beamDirectoryPath,
     this.subStepExecutor,
+    this.hasVerifiedR3Approval = false,
   });
+
+  /// Whether the call carries an approval the host verified as R3-grade:
+  /// bound to these arguments, unexpired, scope `once` and signed by an
+  /// enrolled phone key. Handlers that raise the risk from the live screen
+  /// (`input.*`, UDC-17 S17.1) read this instead of the argument-derived risk.
+  final bool hasVerifiedR3Approval;
 
   final Map<String, Object?> arguments;
   final PolicyEvaluationResult evaluation;
@@ -382,6 +389,7 @@ class HostToolDispatcher {
     'heartbeat.configure_and_tick',
     'screen.capture',
     'ui.inspect',
+    'ui.find',
   };
 
   /// Builds the `tools/list` manifest with current OS permission states.
@@ -605,7 +613,21 @@ class HostToolDispatcher {
           ? <String, Object?>{'skillId': params.name, ...params.arguments}
           : params.arguments;
 
+      final approval = params.approval;
+      final hasVerifiedR3Approval =
+          approval != null &&
+          verifyPhoneSignedApproval(
+                approval: approval,
+                arguments: params.arguments,
+                nowUtc: effectiveNow,
+                hostId: enrolled?.hostId,
+                pinnedPhonePublicKeys:
+                    enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
+              ) ==
+              null;
+
       final execContext = ToolExecutionContext(
+        hasVerifiedR3Approval: hasVerifiedR3Approval,
         arguments: effectiveArguments,
         evaluation: evaluation,
         policy: evaluator.policy,
@@ -738,6 +760,99 @@ class HostToolDispatcher {
       nowUtc: nowUtc,
     );
     return response;
+  }
+
+  /// Input tools whose risk the host decides from the live screen.
+  static const Set<String> _liveClassifiedInputTools = <String>{
+    'input.click',
+    'input.type_text',
+    'input.key',
+    'input.scroll',
+  };
+
+  /// Answers `xuna/preflight` (`XUNA_XTP_V1_CONTRACT.md` §4.2.8, UDC-17
+  /// S17.1): the risk this host would enforce for [params] and, for `input.*`,
+  /// the live element it would act on. Executes nothing.
+  ///
+  /// The local policy runs without an approval: `approval_required` means
+  /// "allowed at this risk once approved"; any other refusal is returned as a
+  /// refusal so the backend does not ask the owner for a call that cannot run.
+  Future<XtpResponse> preflight({
+    required Object requestId,
+    required PreflightParams params,
+    DateTime? nowUtc,
+  }) async {
+    final now = (nowUtc ?? DateTime.now()).toUtc();
+    final enrolled = enrollmentStore?.current;
+    final evaluation = policyStore.evaluator.evaluateInvocation(
+      toolName: params.name,
+      arguments: params.arguments,
+      isStopped: stopController.isStopped,
+      hostId: enrolled?.hostId,
+      pinnedPhonePublicKeys:
+          enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
+      isInApprovedCuSession: computerUseManager?.hasActiveSession ?? false,
+      allowZeroConfigAppDiscovery: true,
+      allowPublicHttpsDomains: true,
+      nowUtc: now,
+    );
+
+    XtpResponse refuse(XtpStatus status, String errorCode) {
+      logger.info('tool.preflight', <String, Object?>{
+        'tool': params.name,
+        'status': status.wire,
+        'errorCode': errorCode,
+      });
+      return XtpResponse.preflightResult(
+        id: requestId,
+        status: status,
+        errorCode: errorCode,
+      );
+    }
+
+    if (!evaluation.allowed && evaluation.errorCode != 'approval_required') {
+      return refuse(evaluation.status, evaluation.errorCode ?? 'policy_blocked');
+    }
+
+    var risk = evaluation.effectiveRisk;
+    var reasonCode = 'policy';
+    String? elementRole;
+    String? elementName;
+    final manager = computerUseManager;
+    if (_liveClassifiedInputTools.contains(params.name) && manager != null) {
+      try {
+        final live = await manager.preflightInputAction(
+          toolName: params.name,
+          arguments: params.arguments,
+          nowUtc: now,
+        );
+        if (live.stepRisk.risk > risk) risk = live.stepRisk.risk;
+        reasonCode = live.stepRisk.reasonCode;
+        elementRole = live.elementRole;
+        elementName = live.elementName;
+      } on XunaHostChannelException catch (error) {
+        return refuse(error.status, error.errorCode);
+      } catch (_) {
+        // The live screen could not be read: unclassifiable is R3 (ADR-0015).
+        risk = RiskTier.r3;
+        reasonCode = 'unclassified_target';
+      }
+    }
+
+    logger.info('tool.preflight', <String, Object?>{
+      'tool': params.name,
+      'status': XtpStatus.ok.wire,
+      'risk': risk.wire,
+      'reasonCode': reasonCode,
+    });
+    return XtpResponse.preflightResult(
+      id: requestId,
+      status: XtpStatus.ok,
+      effectiveRisk: risk,
+      reasonCode: reasonCode,
+      elementRole: elementRole,
+      elementName: elementName,
+    );
   }
 
   Future<void> _recordOutcome({

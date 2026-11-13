@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
@@ -143,6 +144,25 @@ class FakeXunaHostChannel implements XunaHostChannel {
   }) async {
     invokedMethods.add('appLaunch:${kind.wire}');
     await _delayAndThrowIfConfigured();
+  }
+
+  /// Addresses [resolveHostAddresses] returns per host. Hosts not listed
+  /// resolve to [defaultResolvedAddresses]; a host mapped to an empty list
+  /// fails to resolve.
+  final Map<String, List<InternetAddress>> resolvedAddresses =
+      <String, List<InternetAddress>>{};
+  List<InternetAddress> defaultResolvedAddresses = <InternetAddress>[
+    InternetAddress('140.82.112.3'),
+  ];
+
+  @override
+  Future<List<InternetAddress>> resolveHostAddresses(String host) async {
+    invokedMethods.add('resolveHostAddresses');
+    final addresses = resolvedAddresses[host] ?? defaultResolvedAddresses;
+    if (addresses.isEmpty) {
+      throw SocketException('Failed host lookup: $host');
+    }
+    return addresses;
   }
 
   @override

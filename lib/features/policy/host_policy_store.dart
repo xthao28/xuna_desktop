@@ -112,8 +112,21 @@ class HostPolicyStore {
     return savePolicy(defaultPolicy);
   }
 
-  /// Populates `allow` ONLY for desktop tool families missing from an older
-  /// healthy `host-policy.json` file; never overwrites an explicit `block`.
+  /// Computer-use families introduced after the first `host-policy.json`
+  /// format. Only these are added by [migrateMissingDesktopFamilies].
+  static const List<ToolFamily> _migratedComputerUseFamilies = <ToolFamily>[
+    ToolFamily.cu,
+    ToolFamily.screen,
+    ToolFamily.ui,
+    ToolFamily.input,
+  ];
+
+  /// Adds `allow` for the computer-use families (`cu`, `screen`, `ui`,
+  /// `input`) that are absent from an older healthy `host-policy.json`.
+  ///
+  /// Every other family keeps its meaning: absent stays denied, and an
+  /// explicit `block` is never overwritten. This runs on every start, so the
+  /// owner turns a computer-use family off with `block`, not by deleting it.
   Future<HostPolicyEvaluator> migrateMissingDesktopFamilies() async {
     final current = _evaluator.policy;
     if (!_evaluator.isHealthy || current == null) {
@@ -123,7 +136,7 @@ class HostPolicyStore {
       ...current.families,
     };
     var addedAny = false;
-    for (final family in _defaultDesktopFamilies) {
+    for (final family in _migratedComputerUseFamilies) {
       if (!updatedFamilies.containsKey(family)) {
         updatedFamilies[family] = FamilyPolicyDecision.allow;
         addedAny = true;

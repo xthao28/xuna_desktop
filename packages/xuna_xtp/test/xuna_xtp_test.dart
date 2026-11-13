@@ -69,6 +69,61 @@ Uint8List _signP256RawDeterministic({
 }
 
 void main() {
+  test('isPublicIpAddress refuses every non-public range (UDC-17 S17.6)', () {
+    List<int> v4(String s) => s.split('.').map(int.parse).toList();
+    List<int> v6(List<int> groups) => <int>[
+          for (final g in groups) ...<int>[g >> 8, g & 0xff],
+        ];
+    for (final public in <String>['140.82.112.3', '8.8.8.8', '1.1.1.1']) {
+      expect(isPublicIpAddress(v4(public)), isTrue, reason: public);
+    }
+    for (final inside in <String>[
+      '0.0.0.0',
+      '10.1.2.3',
+      '100.64.0.1',
+      '127.0.0.1',
+      '169.254.169.254',
+      '172.16.0.1',
+      '172.31.255.255',
+      '192.0.0.8',
+      '192.0.2.1',
+      '192.168.1.10',
+      '198.18.0.1',
+      '198.51.100.7',
+      '203.0.113.9',
+      '224.0.0.1',
+      '255.255.255.255',
+    ]) {
+      expect(isPublicIpAddress(v4(inside)), isFalse, reason: inside);
+    }
+    expect(isPublicIpAddress(v4('172.32.0.1')), isTrue);
+    expect(isPublicIpAddress(v4('100.128.0.1')), isTrue);
+
+    // 2606:4700::1111 (public), then ::1, ::, fd00::1, fe80::1, ff02::1,
+    // 2001:db8::1, Teredo, 6to4, mapped/NAT64 private and mapped public.
+    expect(isPublicIpAddress(v6(<int>[0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111])),
+        isTrue);
+    for (final inside in <List<int>>[
+      <int>[0, 0, 0, 0, 0, 0, 0, 1],
+      <int>[0, 0, 0, 0, 0, 0, 0, 0],
+      <int>[0xfd00, 0, 0, 0, 0, 0, 0, 1],
+      <int>[0xfe80, 0, 0, 0, 0, 0, 0, 1],
+      <int>[0xff02, 0, 0, 0, 0, 0, 0, 1],
+      <int>[0x2001, 0x0db8, 0, 0, 0, 0, 0, 1],
+      <int>[0x2001, 0, 0, 0, 0, 0, 0, 1],
+      <int>[0x2002, 0x0a00, 0x0001, 0, 0, 0, 0, 1],
+      <int>[0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0001],
+      <int>[0x0064, 0xff9b, 0, 0, 0, 0, 0xc0a8, 0x0101],
+    ]) {
+      expect(isPublicIpAddress(v6(inside)), isFalse, reason: '$inside');
+    }
+    expect(
+      isPublicIpAddress(v6(<int>[0, 0, 0, 0, 0, 0xffff, 0x8c52, 0x7003])),
+      isTrue,
+    );
+    expect(isPublicIpAddress(const <int>[1, 2, 3]), isFalse);
+  });
+
   late Map<String, Object?> golden;
   late Map<String, Object?> sampleFrames;
 
@@ -858,13 +913,15 @@ void main() {
       expect(evaluator.isHealthy, isTrue);
 
       final cuTools = buildComputerUseTools();
-      expect(cuTools, hasLength(8));
+      expect(cuTools, hasLength(10));
       expect(
         cuTools.map((t) => t.name).toList(),
         equals(<String>[
           'cu.session_start',
+          'cu.session_extend',
           'screen.capture',
           'ui.inspect',
+          'ui.find',
           'input.click',
           'input.type_text',
           'input.key',
@@ -1055,7 +1112,8 @@ void main() {
       expect(dangerClickNoApproval.effectiveRisk, equals(RiskTier.r3));
       expect(dangerClickNoApproval.errorCode, equals('approval_required'));
 
-      // input.type_text is always R3
+      // input.type_text: arguments alone give only the R2 floor (ADR-0015 D1);
+      // the live classifier decides and enforces R3 for anything but a draft.
       final typeNoApproval = evaluator.evaluateInvocation(
         toolName: 'input.type_text',
         arguments: const <String, Object?>{
@@ -1064,9 +1122,16 @@ void main() {
         },
         isInApprovedCuSession: true,
       );
-      expect(typeNoApproval.allowed, isFalse);
-      expect(typeNoApproval.effectiveRisk, equals(RiskTier.r3));
-      expect(typeNoApproval.errorCode, equals('approval_required'));
+      expect(typeNoApproval.allowed, isTrue);
+      expect(typeNoApproval.effectiveRisk, equals(RiskTier.r2));
+      expect(
+        classifyInputStepRisk(
+          toolName: 'input.type_text',
+          arguments: const <String, Object?>{'text': 'Họp nhóm'},
+        ).risk,
+        equals(RiskTier.r3),
+        reason: 'no live target: R3',
+      );
 
       // UDC-9 S9.1: browser.current_url descriptor and R2 policy evaluation
       final browserTool = buildBrowserCurrentUrlTool();
@@ -2554,6 +2619,126 @@ void main() {
       }
     });
 
+    test(
+      'Enter/Return and Space are R3 unless the live focus is known safe; inForm never lowers the risk',
+      () {
+        const policyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {"cu": "allow", "input": "allow"},
+  "apps": [],
+  "urlDomains": [],
+  "workflows": [],
+  "players": []
+}
+''';
+        final evaluator = HostPolicyEvaluator.fromJsonString(policyJson);
+        PolicyEvaluationResult press(Map<String, Object?> args) =>
+            evaluator.evaluateInvocation(
+              toolName: 'input.key',
+              arguments: args,
+              isInApprovedCuSession: true,
+            );
+
+        for (final args in const <Map<String, Object?>>[
+          <String, Object?>{'combo': 'Enter'},
+          <String, Object?>{'combo': 'Enter', 'inForm': false},
+          <String, Object?>{'combo': 'Enter', 'inForm': true},
+          <String, Object?>{'combo': 'Return'},
+          <String, Object?>{'combo': 'Cmd+Enter'},
+          <String, Object?>{'combo': 'shift+return'},
+          <String, Object?>{'combo': 'Space'},
+          <String, Object?>{'combo': 'Ctrl+Space', 'inForm': false},
+        ]) {
+          // The policy evaluator only checks the arguments; the floor is R2.
+          final result = press(args);
+          expect(result.allowed, isTrue, reason: '$args');
+          expect(result.effectiveRisk, equals(RiskTier.r2), reason: '$args');
+          // The live classifier is the gate: unknown focus is R3, and so is
+          // focus in a text field for Enter, whatever `inForm` says.
+          for (final focus in const <String?>[null, 'textfield', 'button']) {
+            final live = classifyInputStepRisk(
+              toolName: 'input.key',
+              arguments: args,
+              focusedRole: focus,
+            );
+            final lowered = (args['combo'] == 'Space' && focus == 'textfield');
+            expect(
+              live.risk,
+              equals(lowered ? RiskTier.r2 : RiskTier.r3),
+              reason: '$args focus=$focus',
+            );
+          }
+        }
+
+        // ADR-0015 D2: bare Enter/Return in a search field, bare Space in a
+        // text field. Any modifier keeps R3.
+        RiskTier live(String combo, String focus) => classifyInputStepRisk(
+              toolName: 'input.key',
+              arguments: <String, Object?>{'combo': combo},
+              focusedRole: focus,
+            ).risk;
+        expect(live('Enter', 'searchfield'), RiskTier.r2);
+        expect(live('Return', 'searchfield'), RiskTier.r2);
+        expect(live('Cmd+Enter', 'searchfield'), RiskTier.r3);
+        expect(live('Shift+Return', 'searchfield'), RiskTier.r3);
+        expect(live('Space', 'textarea'), RiskTier.r2);
+        expect(live('Ctrl+Space', 'textfield'), RiskTier.r3);
+        expect(live('Space', 'document'), RiskTier.r3);
+
+        // Navigation keys stay R2 and run inside an approved session.
+        for (final combo in const <String>[
+          'Tab',
+          'Esc',
+          'ArrowDown',
+          'Cmd+F'
+        ]) {
+          final result = press(<String, Object?>{'combo': combo});
+          expect(result.allowed, isTrue, reason: combo);
+          expect(result.effectiveRisk, equals(RiskTier.r2), reason: combo);
+        }
+
+        expect(isActivationKeyCombo('Enter'), isTrue);
+        expect(isActivationKeyCombo('Tab'), isFalse);
+        expect(isActivationKeyCombo('not a combo'), isFalse);
+      },
+    );
+
+    test('cu.session_start accepts budgets up to 40 steps / 20 minutes only',
+        () {
+      const policyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {"cu": "allow"},
+  "apps": [],
+  "urlDomains": [],
+  "workflows": [],
+  "players": []
+}
+''';
+      final evaluator = HostPolicyEvaluator.fromJsonString(policyJson);
+      PolicyEvaluationResult start(int steps, int minutes) =>
+          evaluator.evaluateInvocation(
+            toolName: 'cu.session_start',
+            arguments: <String, Object?>{
+              'goal': 'Soạn ghi chú dài',
+              'apps': const <String>['notes'],
+              'domains': const <String>[],
+              'maxSteps': steps,
+              'maxMinutes': minutes,
+            },
+            allowZeroConfigAppDiscovery: true,
+          );
+
+      expect(maxCuSessionSteps, equals(40));
+      expect(maxCuSessionMinutes, equals(20));
+      // At the bounds the arguments are valid and only the R3 approval is missing.
+      expect(start(40, 20).errorCode, equals('approval_required'));
+      expect(start(41, 20).errorCode, equals('schema_mismatch'));
+      expect(start(40, 21).errorCode, equals('schema_mismatch'));
+      expect(start(0, 5).errorCode, equals('schema_mismatch'));
+    });
+
     test('input.type_text accepts a long prompt but not above the cap', () {
       const policyJson = '''
 {
@@ -2574,14 +2759,50 @@ void main() {
             },
             isInApprovedCuSession: true,
           );
-      expect(
-        typeOf(maxInputTypeTextLength).errorCode,
-        equals('approval_required'),
-      );
+      // Valid arguments pass the policy floor; the live classifier gates it.
+      expect(typeOf(maxInputTypeTextLength).allowed, isTrue);
       expect(
         typeOf(maxInputTypeTextLength + 1).errorCode,
         equals('schema_mismatch'),
       );
+    });
+
+    test('ADR-0015 D1: only a draft into an ordinary text field is R2', () {
+      InputStepRisk typeInto(
+        Map<String, Object?>? node, {
+        String text = 'Mua sữa',
+        int? remaining = maxCuSessionDraftChars,
+      }) =>
+          classifyInputStepRisk(
+            toolName: 'input.type_text',
+            arguments: <String, Object?>{'elementId': 'x', 'text': text},
+            liveTarget: node,
+            draftCharsRemaining: remaining,
+          );
+
+      for (final role in draftTextRoles) {
+        final r = typeInto(<String, Object?>{'role': role, 'name': 'Nội dung'});
+        expect(r.risk, RiskTier.r2, reason: role);
+        expect(r.reasonCode, 'draft_text');
+      }
+      for (final node in <Map<String, Object?>?>[
+        null,
+        <String, Object?>{'role': 'document', 'name': 'Trang web'},
+        <String, Object?>{'role': 'button', 'name': 'Tìm'},
+        <String, Object?>{'role': 'combobox', 'name': 'Chọn'},
+        <String, Object?>{'role': 'textfield', 'name': 'x', 'editable': false},
+        <String, Object?>{'role': 'textfield', 'name': 'x', 'readOnly': true},
+        <String, Object?>{'role': 'textfield', 'name': 'PIN', 'secure': true},
+        <String, Object?>{'role': 'textfield', 'name': 'Mật khẩu'},
+      ]) {
+        expect(typeInto(node).risk, RiskTier.r3, reason: '$node');
+      }
+      const field = <String, Object?>{'role': 'textfield', 'name': 'Nội dung'};
+      expect(typeInto(field, remaining: null).risk, RiskTier.r3);
+      expect(typeInto(field, text: 'abc', remaining: 2).reasonCode,
+          'draft_budget_exceeded');
+      expect(typeInto(field, text: 'ab', remaining: 2).risk, RiskTier.r2);
+      expect(maxCuSessionDraftChars, 2000);
     });
 
     test(
@@ -2699,5 +2920,340 @@ void main() {
         }
       },
     );
+  });
+
+  group('UDC-17 S17.3 cu.session_extend', () {
+    const policyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {"cu": "allow"},
+  "apps": [],
+  "urlDomains": [],
+  "workflows": [],
+  "players": []
+}
+''';
+    final evaluator = HostPolicyEvaluator.fromJsonString(policyJson);
+    PolicyEvaluationResult extend(
+      Map<String, Object?> args, {
+      bool inSession = true,
+    }) =>
+        evaluator.evaluateInvocation(
+          toolName: 'cu.session_extend',
+          arguments: args,
+          isInApprovedCuSession: inSession,
+          allowZeroConfigAppDiscovery: true,
+          allowPublicHttpsDomains: true,
+        );
+
+    test('is R3, needs a session and applies the start checks', () {
+      const ok = <String, Object?>{
+        'sessionId': 'cu-session-1',
+        'apps': <String>['notes'],
+        'domains': <String>['docs.flutter.dev'],
+      };
+      final noSession = extend(ok, inSession: false);
+      expect(noSession.errorCode, 'cu_session_required');
+      final unsigned = extend(ok);
+      expect(unsigned.effectiveRisk, RiskTier.r3);
+      expect(unsigned.errorCode, 'approval_required');
+
+      expect(
+        extend(const <String, Object?>{
+          'sessionId': 'cu-session-1',
+          'apps': <String>['powershell'],
+          'domains': <String>[],
+        }).errorCode,
+        'denylisted_target_forbidden',
+      );
+      expect(
+        extend(const <String, Object?>{
+          'sessionId': 'cu-session-1',
+          'apps': <String>[],
+          'domains': <String>['192.168.1.1'],
+        }).errorCode,
+        'url_invalid',
+      );
+      for (final bad in <Map<String, Object?>>[
+        const <String, Object?>{
+          'sessionId': 'cu-session-1',
+          'apps': <String>[],
+          'domains': <String>[],
+        },
+        <String, Object?>{
+          'sessionId': 'cu-session-1',
+          'apps': List<String>.generate(
+            maxCuSessionExtendItems + 1,
+            (i) => 'app$i',
+          ),
+          'domains': const <String>[],
+        },
+        const <String, Object?>{
+          'sessionId': 'cu-session-1',
+          'apps': <String>['notes'],
+        },
+      ]) {
+        expect(extend(bad).errorCode, 'schema_mismatch', reason: '$bad');
+      }
+    });
+  });
+
+  group('UDC-17 S17.1 xuna/preflight frames', () {
+    String response(Map<String, Object?> preflight) => jsonEncode(
+          <String, Object?>{
+            'jsonrpc': '2.0',
+            'id': 7,
+            'result': <String, Object?>{'preflight': preflight},
+          },
+        );
+
+    test('rejects preflight results that break the contract', () {
+      for (final bad in <Map<String, Object?>>[
+        // ok without a risk
+        <String, Object?>{'status': 'ok'},
+        // unknown risk tier
+        <String, Object?>{'status': 'ok', 'effectiveRisk': 'R9'},
+        // refusal without an error code
+        <String, Object?>{'status': 'denied'},
+        // refusal that still claims a risk
+        <String, Object?>{
+          'status': 'denied',
+          'errorCode': 'stale_ref',
+          'effectiveRisk': 'R2',
+        },
+        // free text where a code belongs
+        <String, Object?>{
+          'status': 'ok',
+          'effectiveRisk': 'R2',
+          'reasonCode': 'Looks safe to me',
+        },
+        // unknown field
+        <String, Object?>{'status': 'ok', 'effectiveRisk': 'R2', 'extra': 1},
+        // label too long / with control characters
+        <String, Object?>{
+          'status': 'ok',
+          'effectiveRisk': 'R2',
+          'element': <String, Object?>{'role': 'button', 'name': 'x' * 81},
+        },
+        <String, Object?>{
+          'status': 'ok',
+          'effectiveRisk': 'R2',
+          'element': <String, Object?>{'role': 'button', 'name': 'a\nb'},
+        },
+      ]) {
+        expect(
+          () => XtpFrame.parse(response(bad)),
+          throwsA(isA<XtpProtocolException>()),
+          reason: jsonEncode(bad),
+        );
+      }
+    });
+
+    test('preflight request requires exactly name and arguments', () {
+      expect(
+        () => XtpFrame.parse(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': 8,
+            'method': 'xuna/preflight',
+            'params': <String, Object?>{
+              'name': 'input.click',
+              'arguments': <String, Object?>{},
+              '_meta': <String, Object?>{},
+            },
+          }),
+        ),
+        throwsA(isA<XtpProtocolException>()),
+      );
+      final ok = XtpFrame.parse(
+        jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': 9,
+          'method': 'xuna/preflight',
+          'params': <String, Object?>{
+            'name': 'input.key',
+            'arguments': <String, Object?>{'combo': 'Tab'},
+          },
+        }),
+      );
+      expect((ok as XtpRequest).typedParams, isA<PreflightParams>());
+    });
+
+    test('verifyPhoneSignedApproval refuses unsigned or conversation scope',
+        () {
+      final now = DateTime.utc(2026, 11, 12, 9);
+      const args = <String, Object?>{'combo': 'Enter'};
+      final unsigned = ApprovalToken(
+        approvalId: 'c1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        argsSha256: argsSha256(args),
+        expiresAt: now.add(const Duration(minutes: 1)),
+      );
+      expect(
+        verifyPhoneSignedApproval(
+          approval: unsigned,
+          arguments: args,
+          nowUtc: now,
+          hostId: '9b2f7e4a-5c11-4d8e-9a30-1f6d8c2e4b10',
+        ),
+        'approval_signature_invalid',
+      );
+      expect(
+        verifyPhoneSignedApproval(approval: null, arguments: args, nowUtc: now),
+        'approval_required',
+      );
+      expect(
+        verifyPhoneSignedApproval(
+          approval: unsigned,
+          arguments: const <String, Object?>{'combo': 'Tab'},
+          nowUtc: now,
+        ),
+        'approval_mismatch',
+      );
+    });
+  });
+
+  group('UDC-17 S17.4 ui.find', () {
+    const policyJson = '''
+{
+  "schemaVersion": 1,
+  "families": {"ui": "allow"},
+  "apps": [],
+  "urlDomains": [],
+  "workflows": [],
+  "players": []
+}
+''';
+    final evaluator = HostPolicyEvaluator.fromJsonString(policyJson);
+    PolicyEvaluationResult find(
+      Map<String, Object?> args, {
+      bool inSession = true,
+    }) =>
+        evaluator.evaluateInvocation(
+          toolName: 'ui.find',
+          arguments: args,
+          isInApprovedCuSession: inSession,
+        );
+
+    test('is R2 inside a session and validates its arguments', () {
+      final ok = find(const <String, Object?>{'query': 'Gửi'});
+      expect(ok.allowed, isTrue);
+      expect(ok.effectiveRisk, RiskTier.r2);
+      expect(
+        find(const <String, Object?>{'role': 'searchfield', 'maxResults': 10})
+            .allowed,
+        isTrue,
+      );
+      expect(
+        find(const <String, Object?>{'query': 'Gửi'}, inSession: false)
+            .errorCode,
+        'cu_session_required',
+      );
+      for (final bad in <Map<String, Object?>>[
+        const <String, Object?>{},
+        const <String, Object?>{'maxResults': 3},
+        const <String, Object?>{'query': '   '},
+        <String, Object?>{'query': 'a' * 81},
+        const <String, Object?>{'query': 'ok', 'maxResults': 11},
+        const <String, Object?>{'query': 'ok', 'maxResults': 0},
+        const <String, Object?>{'role': 'button; rm'},
+        const <String, Object?>{'query': 'ok', 'value': 'x'},
+        const <String, Object?>{'query': 'line\u0007bell'},
+      ]) {
+        final r = find(bad);
+        expect(r.allowed, isFalse, reason: '$bad');
+        expect(r.errorCode, 'schema_mismatch', reason: '$bad');
+      }
+    });
+
+    test('descriptor is advertised once with a bounded description', () {
+      final tool =
+          buildComputerUseTools().singleWhere((t) => t.name == 'ui.find');
+      expect(tool.policy.observes, isTrue);
+      expect(tool.policy.risk, RiskTier.r2);
+      expect(tool.policy.family, ToolFamily.ui);
+      expect(tool.description.length, lessThanOrEqualTo(240));
+    });
+
+    final nodes = <Map<String, Object?>>[
+      <String, Object?>{'id': 'ui_1', 'role': 'statictext', 'name': 'Gửi lúc'},
+      <String, Object?>{'id': 'ui_2', 'role': 'button', 'name': 'Gửi đi'},
+      <String, Object?>{
+        'id': 'ui_3',
+        'role': 'AXButton',
+        'name': 'Gửi',
+        'enabled': false,
+      },
+      <String, Object?>{'id': 'ui_4', 'role': 'button', 'name': 'gửi'},
+      <String, Object?>{
+        'id': 'ui_5',
+        'role': 'textfield',
+        'name': 'Tin nhắn',
+        'value': 'Gửi mật mã 1234',
+      },
+      <String, Object?>{
+        'id': 'ui_6',
+        'role': 'password',
+        'name': 'Gửi mã',
+        'isPassword': true,
+      },
+      <String, Object?>{'id': 'ui_7', 'role': 'button', 'name': 'Đã gửi xong'},
+    ];
+
+    test('ranks exact, prefix, substring; never picks; never reads values', () {
+      final r = findUiNodes(nodes, query: 'GỬI');
+      expect(r.total, 5);
+      // Exact (enabled before disabled), then prefix (control before text),
+      // then substring.
+      expect(
+        r.matches.map((n) => n['id']).toList(),
+        <String>['ui_4', 'ui_3', 'ui_2', 'ui_1', 'ui_7'],
+      );
+      // The text field matches only by its value: not found.
+      expect(findUiNodes(nodes, query: 'mật mã').total, 0);
+      // A password field's name is never searched.
+      expect(findUiNodes(nodes, query: 'Gửi mã').total, 0);
+    });
+
+    test('role filter ignores case and the ax prefix; bounds results', () {
+      final buttons = findUiNodes(nodes, role: 'button', maxResults: 2);
+      expect(buttons.total, 4);
+      expect(buttons.matches, hasLength(2));
+      final ax = findUiNodes(nodes, query: 'gửi', role: 'AXButton');
+      expect(ax.matches.first['id'], 'ui_4');
+      expect(ax.total, 4);
+      // Only by role can a password field be found.
+      final pwd = findUiNodes(nodes, role: 'password');
+      expect(pwd.matches.single['id'], 'ui_6');
+      expect(findUiNodes(nodes, maxResults: 50, role: 'button').matches,
+          hasLength(4));
+      expect(findUiNodes(nodes).total, 0);
+      expect(
+        findUiNodes(
+          <Map<String, Object?>>[
+            for (var i = 0; i < 30; i++)
+              <String, Object?>{'id': 'b$i', 'role': 'button', 'name': 'OK'},
+          ],
+          query: 'ok',
+          maxResults: 99,
+        ).matches,
+        hasLength(maxUiFindResults),
+      );
+    });
+
+    test('signature folds password fields and truncates names like inspect',
+        () {
+      expect(
+        uiNodeSignature(const <String, Object?>{
+          'role': 'textfield',
+          'name': 'Mật khẩu',
+          'value': 'secret',
+        }),
+        'password\u0000•••',
+      );
+      expect(
+        uiNodeSignature(<String, Object?>{'role': 'Button', 'name': 'x' * 70}),
+        'button\u0000${'x' * 60}',
+      );
+    });
   });
 }

@@ -466,6 +466,10 @@ class XtpSessionClient {
           params: typed,
         );
         _sendFrame(response);
+      case PreflightParams():
+        _sendFrame(
+          await dispatcher.preflight(requestId: request.id, params: typed),
+        );
       case HelloEnrollParams():
       case HelloReconnectParams():
       case ProofParams():

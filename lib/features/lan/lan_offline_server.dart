@@ -346,6 +346,7 @@ class LanOfflineServer {
                 );
                 sendFrame(resp);
               case ToolsListParams():
+              case PreflightParams():
               case HelloEnrollParams():
               case HelloReconnectParams():
                 sendFrame(

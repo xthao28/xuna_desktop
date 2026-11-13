@@ -187,7 +187,7 @@ class CuaDriverMap {
     required List<String> allowedDomains,
     required int maxMinutes,
   }) {
-    final clampedMinutes = maxMinutes.clamp(1, 10);
+    final clampedMinutes = maxMinutes.clamp(1, maxCuSessionMinutes);
     final idleMinutes = clampedMinutes < 5 ? clampedMinutes : 5;
     final buf = StringBuffer()
       ..writeln('version: 3')

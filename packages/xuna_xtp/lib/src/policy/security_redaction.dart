@@ -156,7 +156,9 @@ bool isHardDeniedAppOrProcess(String? appIdOrProcess) {
 
 /// Returns `true` if a UI node represents a password field (`UDC-8` §4.2).
 bool isPasswordUiNode(Map<String, Object?> node) {
-  if (node['isPassword'] == true || node['password'] == true) {
+  if (node['isPassword'] == true ||
+      node['password'] == true ||
+      node['secure'] == true) {
     return true;
   }
   final role = (node['role'] as String?)?.toLowerCase() ?? '';
@@ -165,15 +167,42 @@ bool isPasswordUiNode(Map<String, Object?> node) {
       role == 'axsecuretextfield') {
     return true;
   }
-  final name = (node['name'] as String?)?.toLowerCase() ?? '';
-  if (name.contains('password') ||
-      name.contains('mật khẩu') ||
-      name.contains('passcode') ||
-      name.contains('mã pin')) {
+  // macOS marks secure fields by subrole (`AXTextField` + `AXSecureTextField`);
+  // web inputs by type. Same rules as the backend's `is_password_ui_node`.
+  final subrole = (node['subrole'] as String?)?.toLowerCase() ?? '';
+  final inputType = (node['inputType'] as String?)?.toLowerCase() ?? '';
+  if (subrole.contains('secure') ||
+      subrole.contains('password') ||
+      inputType.contains('password')) {
     return true;
   }
-  return false;
+  // The name is a weak signal: it decides only for an editable field, or for a
+  // node whose role is unknown (fail closed). A "Quên mật khẩu" button or link
+  // is not a password field (UDC-17 S17.6).
+  if (role.isNotEmpty && !isEditableFieldRole(role)) return false;
+  final name = (node['name'] as String?)?.toLowerCase() ?? '';
+  return name.contains('password') ||
+      name.contains('mật khẩu') ||
+      name.contains('passcode') ||
+      name.contains('mã pin');
 }
+
+/// Role fragments of editable text inputs across UIA, AX and web trees
+/// (`Edit`, `AXTextField`, `AXTextArea`, `textbox`, `searchbox`, `combobox`).
+/// Static text (`Text`, `AXStaticText`) is not editable.
+const List<String> _editableFieldRoleHints = <String>[
+  'edit',
+  'field',
+  'input',
+  'textbox',
+  'textarea',
+  'searchbox',
+  'combobox',
+];
+
+/// Whether a lower-case [role] names an editable text input.
+bool isEditableFieldRole(String role) =>
+    _editableFieldRoleHints.any(role.contains);
 
 /// Roles treated as transparent web/Electron layout wrappers when unnamed and
 /// non-actionable (`agent-desktop` web-wrapper skipping).
@@ -281,8 +310,9 @@ List<Map<String, Object?>> extractOverlaySurfaces(
   for (final node in nodes) {
     if (!isOverlaySurfaceNode(node)) continue;
     final id = (node['id'] as String?) ?? '';
-    final role = ((node['surface'] as String?) ?? (node['role'] as String?) ?? 'dialog')
-        .toLowerCase();
+    final role =
+        ((node['surface'] as String?) ?? (node['role'] as String?) ?? 'dialog')
+            .toLowerCase();
     final name = (node['name'] as String?) ?? '';
     surfaces.add(<String, Object?>{
       'id': id,
@@ -305,9 +335,8 @@ String qualifySnapshotElementRef({
   required String rawId,
   required int index1Based,
 }) {
-  final cleanSnap = snapshotId.startsWith('@')
-      ? snapshotId.substring(1)
-      : snapshotId;
+  final cleanSnap =
+      snapshotId.startsWith('@') ? snapshotId.substring(1) : snapshotId;
   final parsed = parseSnapshotElementRef(rawId);
   if (parsed != null) {
     return '@$cleanSnap:e${parsed.elementNumber}';
@@ -686,7 +715,8 @@ const Set<String> allowedSynthesizedToolRuntimes = <String>{
 final RegExp _toolSlugRe = RegExp(r'^[a-z][a-z_]{1,47}$');
 
 /// Normalizes or validates an LLM-proposed tool slug (`a-z_`, `2..48` chars, XTP `^[a-z]+\.[a-z_]+$` safe).
-String normalizeSynthesizedToolSlug(String? rawName, {String fallback = 'custom_tool'}) {
+String normalizeSynthesizedToolSlug(String? rawName,
+    {String fallback = 'custom_tool'}) {
   final cleanFallback = fallback
       .toLowerCase()
       .replaceAll(RegExp(r'[^a-z_]+'), '_')
@@ -830,7 +860,8 @@ SynthesizedScriptValidationResult validateSynthesizedToolScript({
         safe: false,
         normalizedRuntime: normRuntime,
         violationCode: 'control_characters',
-        reasonVi: 'Mã nguồn công cụ chứa ký tự điều khiển nhị phân không hợp lệ.',
+        reasonVi:
+            'Mã nguồn công cụ chứa ký tự điều khiển nhị phân không hợp lệ.',
       );
     }
   }
@@ -851,4 +882,3 @@ SynthesizedScriptValidationResult validateSynthesizedToolScript({
     reasonVi: null,
   );
 }
-

@@ -1083,6 +1083,9 @@ List<ToolDescriptor> buildComputerUseTools({
       'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 32},
       'surfaces': <String, Object?>{'type': 'array'},
       'waitSatisfied': <String, Object?>{'type': 'boolean'},
+      // What changed in the window since before the action, with refs for
+      // new elements in the current snapshot (UDC-17 S17.4).
+      'changes': <String, Object?>{'type': 'object'},
     },
     'required': <String>['effect'],
     'additionalProperties': false,
@@ -1115,12 +1118,12 @@ List<ToolDescriptor> buildComputerUseTools({
           'maxSteps': <String, Object?>{
             'type': 'integer',
             'minimum': 1,
-            'maximum': 20,
+            'maximum': maxCuSessionSteps,
           },
           'maxMinutes': <String, Object?>{
             'type': 'integer',
             'minimum': 1,
-            'maximum': 10,
+            'maximum': maxCuSessionMinutes,
           },
         },
         'required': <String>[
@@ -1138,6 +1141,59 @@ List<ToolDescriptor> buildComputerUseTools({
           'sessionId': <String, Object?>{'type': 'string', 'maxLength': 64},
         },
         'required': <String>['sessionId'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.cu,
+        risk: RiskTier.r3,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'cu.session_extend',
+      description:
+          'Add apps or domains to the running computer-use session instead of ending and restarting it. Needs one owner signature; step and time budgets do not change.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'sessionId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'apps': <String, Object?>{
+            'type': 'array',
+            'maxItems': maxCuSessionExtendItems,
+            'items': <String, Object?>{
+              'type': 'string',
+              'pattern': r'^[a-z0-9_.-]{1,64}$',
+            },
+          },
+          'domains': <String, Object?>{
+            'type': 'array',
+            'maxItems': maxCuSessionExtendItems,
+            'items': <String, Object?>{'type': 'string', 'maxLength': 253},
+          },
+        },
+        'required': <String>['sessionId', 'apps', 'domains'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'sessionId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'apps': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 64},
+          },
+          'domains': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{'type': 'string', 'maxLength': 253},
+          },
+        },
+        'required': <String>['sessionId', 'apps', 'domains'],
         'additionalProperties': false,
       },
       policy: ToolPolicyMeta(
@@ -1242,6 +1298,62 @@ List<ToolDescriptor> buildComputerUseTools({
       ),
     ),
     ToolDescriptor(
+      name: 'ui.find',
+      description:
+          'Find active-window elements by name (case-insensitive substring) and/or role. Returns up to maxResults candidates with refs for input.*, never picks one. Field contents are not searched. Earlier refs stay valid until the next ui.inspect.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'query': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 80,
+          },
+          'role': <String, Object?>{
+            'type': 'string',
+            'maxLength': 32,
+            'description':
+                'Optional role filter such as button, textfield, searchfield, link, checkbox, menuitem.',
+          },
+          'maxResults': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 10,
+          },
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'appId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'searchedNodes': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'total': <String, Object?>{'type': 'integer', 'minimum': 0},
+          'truncated': <String, Object?>{'type': 'boolean'},
+          'matches': <String, Object?>{'type': 'array'},
+        },
+        'required': <String>[
+          'appId',
+          'windowTitle',
+          'snapshotId',
+          'searchedNodes',
+          'total',
+          'truncated',
+          'matches',
+        ],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.ui,
+        risk: RiskTier.r2,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
       name: 'input.click',
       description:
           'Click a UI element by elementId (@s<id>:e<N> or id) or coordinates inside an allowlisted app, with actionability checks and optional wait.',
@@ -1270,7 +1382,7 @@ List<ToolDescriptor> buildComputerUseTools({
     ToolDescriptor(
       name: 'input.type_text',
       description:
-          'Type or semantically set text into a non-password UI element (always R3 phone-signed), with actionability checks and optional wait.',
+          'Type text into a non-password UI element. In a session, drafts into ordinary text fields need no separate approval up to a character budget; other targets need the owner to sign. Typing never sends: send/submit still needs the owner.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -1295,7 +1407,9 @@ List<ToolDescriptor> buildComputerUseTools({
       outputSchema: effectOutputSchema,
       policy: ToolPolicyMeta(
         family: ToolFamily.input,
-        risk: RiskTier.r3,
+        // Base risk; the host raises each call from the live screen
+        // (`xuna/preflight`, ADR-0015 D1).
+        risk: RiskTier.r2,
         observes: false,
         reversible: false,
         permission: defaultPermission,
@@ -1312,9 +1426,13 @@ List<ToolDescriptor> buildComputerUseTools({
             'minLength': 1,
             'maxLength': 40,
             'description':
-                'One key with optional Cmd/Ctrl/Alt/Shift modifiers joined by +, e.g. Enter, Cmd+L, Cmd+Shift+P, Ctrl+Tab, F5. Quit, log-out, lock, force-quit and delete combos are rejected.',
+                'One key with optional Cmd/Ctrl/Alt/Shift modifiers joined by +, e.g. Enter, Cmd+L, Cmd+Shift+P, Ctrl+Tab, F5. Enter/Return and Space need a separate owner approval unless the host sees that focus is in a search field (Enter) or an ordinary text field (Space); with any modifier they always do. Quit, log-out, lock, force-quit and delete combos are rejected.',
           },
-          'inForm': <String, Object?>{'type': 'boolean'},
+          'inForm': <String, Object?>{
+            'type': 'boolean',
+            'description':
+                'Accepted for compatibility; it does not change the approval required.',
+          },
           'headed': <String, Object?>{'type': 'boolean'},
           'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
           'waitForGone': <String, Object?>{'type': 'string', 'maxLength': 120},

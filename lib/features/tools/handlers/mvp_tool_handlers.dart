@@ -223,6 +223,27 @@ class UrlOpenTool extends HostToolHandler {
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final url = context.arguments['url'] as String;
     final host = context.evaluation.normalizedUrlHost!;
+    // "Public" by syntax is not enough: a public name can point at this
+    // computer or the local network. Every address the name resolves to must
+    // be public, and a name that does not resolve is refused (UDC-17 S17.6).
+    // The browser resolves again when it loads, so this narrows rather than
+    // closes DNS rebinding.
+    final List<InternetAddress> addresses;
+    try {
+      addresses = await context.channel.resolveHostAddresses(host);
+    } on Object {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'url_unresolvable',
+      );
+    }
+    if (addresses.isEmpty ||
+        addresses.any((a) => !isPublicIpAddress(a.rawAddress))) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'url_not_public',
+      );
+    }
     await context.channel.urlOpen(url);
     return ToolHandlerOutput(
       text: 'Đã mở $host.',

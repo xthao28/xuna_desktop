@@ -292,3 +292,59 @@ String _punycodeEncode(String input) {
   }
   return output.toString();
 }
+
+/// Whether a resolved IP address ([raw] is 4 or 16 bytes) is a public internet
+/// address `url.open` may reach (UDC-17 S17.6).
+///
+/// Refuses loopback, private (RFC 1918, ULA), link-local, carrier-grade NAT,
+/// unspecified, multicast, broadcast, reserved and documentation ranges, and
+/// IPv6 forms that embed an IPv4 address (mapped, compatible, NAT64, 6to4,
+/// Teredo) unless the embedded address itself is public. Anything that is not
+/// 4 or 16 bytes is refused.
+bool isPublicIpAddress(List<int> raw) {
+  if (raw.length == 4) return _isPublicIpv4(raw);
+  if (raw.length != 16) return false;
+  bool prefix(List<int> bytes) {
+    for (var i = 0; i < bytes.length; i++) {
+      if (raw[i] != bytes[i]) return false;
+    }
+    return true;
+  }
+
+  final allZeroHead = raw.sublist(0, 10).every((b) => b == 0);
+  // ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible, also :: and ::1).
+  if (allZeroHead && raw[10] == 0xff && raw[11] == 0xff) {
+    return _isPublicIpv4(raw.sublist(12));
+  }
+  if (allZeroHead && raw[10] == 0 && raw[11] == 0) return false;
+  // 64:ff9b::/96 NAT64 carries an IPv4 address in the last 4 bytes.
+  if (prefix(const <int>[0x00, 0x64, 0xff, 0x9b]) &&
+      raw.sublist(4, 12).every((b) => b == 0)) {
+    return _isPublicIpv4(raw.sublist(12));
+  }
+  final first = raw[0];
+  if ((first & 0xfe) == 0xfc) return false; // fc00::/7 unique local
+  if (first == 0xfe && (raw[1] & 0xc0) == 0x80) return false; // fe80::/10
+  if (first == 0xff) return false; // ff00::/8 multicast
+  if (prefix(const <int>[0x20, 0x01, 0x0d, 0xb8])) return false; // docs
+  if (prefix(const <int>[0x20, 0x01, 0x00, 0x00])) return false; // Teredo
+  if (prefix(const <int>[0x20, 0x02])) return false; // 6to4
+  // Only global unicast (2000::/3) is public.
+  return (first & 0xe0) == 0x20;
+}
+
+bool _isPublicIpv4(List<int> b) {
+  final a = b[0];
+  final c = b[1];
+  if (a == 0 || a == 10 || a == 127) return false;
+  if (a == 100 && (c & 0xc0) == 64) return false; // 100.64.0.0/10 CGNAT
+  if (a == 169 && c == 254) return false; // link-local
+  if (a == 172 && (c & 0xf0) == 16) return false; // 172.16.0.0/12
+  if (a == 192 && c == 168) return false;
+  if (a == 192 && c == 0 && (b[2] == 0 || b[2] == 2)) return false;
+  if (a == 198 && (c == 18 || c == 19)) return false; // benchmarking
+  if (a == 198 && c == 51 && b[2] == 100) return false; // docs
+  if (a == 203 && c == 0 && b[2] == 113) return false; // docs
+  if (a >= 224) return false; // multicast, reserved, broadcast
+  return true;
+}

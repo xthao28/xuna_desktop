@@ -438,13 +438,22 @@ void main() {
         final calTree = await manager.inspectWindow(maxNodes: 50);
         expect(calTree['appId'], equals('browser'));
 
-        // 9. Duplicate action on the same element twice stops the session
+        // 9. The same action on the same element right after it changed
+        // nothing stops the session (UDC-17 S17.4: a repeat after a visible
+        // change is allowed).
         final firstClick = await manager.executeInputAction(
           toolName: 'input.click',
           arguments: const <String, Object?>{'elementId': 's00000005:1'},
           hasR3Approval: false,
         );
         expect(firstClick['effect'], equals('changed'));
+        fallback.simulateSilentUipiDrop = true;
+        final repeatAfterChange = await manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': 's00000005:1'},
+          hasR3Approval: false,
+        );
+        expect(repeatAfterChange['effect'], equals('no_change'));
 
         await expectLater(
           () => manager.executeInputAction(
@@ -461,6 +470,7 @@ void main() {
           ),
         );
         expect(manager.hasActiveSession, isFalse);
+        fallback.simulateSilentUipiDrop = false;
 
         // 10. Three consecutive no_change effects stops the session with no_progress
         await manager.startSession(
@@ -1142,7 +1152,9 @@ void main() {
           final nodes = (snap['nodes'] as List).cast<Map<String, Object?>>();
           expect(nodes.first['ref'], equals('@s00000001:e1'));
 
-          // Typing into @s00000001:e1 dispatches invokeWindowUiControl:set_value_ref:ui_1 to native channel
+          // Typing a draft into the search field @s00000001:e1 needs no
+          // signature (ADR-0015 D1); it spends the session's draft budget and
+          // dispatches invokeWindowUiControl:set_value_ref:ui_1.
           await manager.executeInputAction(
             toolName: 'input.type_text',
             arguments: const <String, Object?>{
@@ -1151,6 +1163,7 @@ void main() {
             },
             hasR3Approval: false,
           );
+          expect(manager.activeSession!.draftCharsTyped, 'BaoCao_Q4'.length);
           expect(
             channel.invokedMethods,
             contains('invokeWindowUiControl:set_value_ref:ui_1'),
@@ -1357,7 +1370,6 @@ void main() {
                 ToolFamily.media: FamilyPolicyDecision.allow,
                 ToolFamily.app: FamilyPolicyDecision.allow,
                 ToolFamily.url: FamilyPolicyDecision.block,
-                ToolFamily.workflow: FamilyPolicyDecision.allow,
               },
               apps: const <AllowedAppConfig>[],
               urlDomains: const <String>['github.com'],
@@ -1366,6 +1378,16 @@ void main() {
             ),
           );
           final migrated = await policyStore.migrateMissingDesktopFamilies();
+          // Only the computer-use families are added: a family the owner never
+          // listed (`workflow`) stays absent and denied.
+          expect(
+            migrated.policy!.isFamilyAllowed(ToolFamily.workflow),
+            isFalse,
+          );
+          expect(
+            migrated.policy!.families.containsKey(ToolFamily.workflow),
+            isFalse,
+          );
           expect(migrated.isHealthy, isTrue);
           expect(migrated.policy!.isFamilyAllowed(ToolFamily.cu), isTrue);
           expect(migrated.policy!.isFamilyAllowed(ToolFamily.ui), isTrue);
@@ -1417,6 +1439,27 @@ void main() {
           );
           addTearDown(manager.dispose);
 
+          // A scanner alone does not enable zero-config discovery: without
+          // the explicit flag an app outside host-policy.json is refused.
+          await expectLater(
+            () => manager.startSession(
+              goal: 'Tạo ghi chú mới',
+              apps: const <String>['notes'],
+              domains: const <String>[],
+              maxSteps: 6,
+              maxMinutes: 3,
+              policy: fresh.policy!,
+            ),
+            throwsA(
+              isA<XunaHostChannelException>().having(
+                (e) => e.errorCode,
+                'errorCode',
+                'policy_blocked',
+              ),
+            ),
+          );
+          expect(manager.hasActiveSession, isFalse);
+
           await manager.startSession(
             goal: 'Tạo ghi chú mới',
             apps: const <String>['notes'],
@@ -1424,6 +1467,7 @@ void main() {
             maxSteps: 6,
             maxMinutes: 3,
             policy: fresh.policy!,
+            allowZeroConfigAppDiscovery: true,
           );
           final tree = await manager.inspectWindow(maxNodes: 20);
           expect(tree['windowTitle'], equals('Tất cả trên iCloud'));
@@ -1455,6 +1499,7 @@ void main() {
               maxSteps: 4,
               maxMinutes: 2,
               policy: fresh.policy!,
+              allowZeroConfigAppDiscovery: true,
             ),
             throwsA(
               isA<XunaHostChannelException>().having(
@@ -1504,4 +1549,124 @@ void main() {
       );
     },
   );
+  group('AutoAppScanner.parseBundleIdFromInfoPlist', () {
+    // Builds a bplist00 file whose top object is a dictionary of ASCII
+    // string keys and values, in the given order.
+    List<int> binaryPlist(Map<String, String> entries) {
+      final objects = <List<int>>[];
+      List<int> asciiString(String s) => <int>[
+        if (s.length < 15) 0x50 | s.length else ...<int>[0x5F, 0x10, s.length],
+        ...s.codeUnits,
+      ];
+      final n = entries.length;
+      objects.add(<int>[
+        0xD0 | n,
+        for (var i = 0; i < n; i++) 1 + i,
+        for (var i = 0; i < n; i++) 1 + n + i,
+      ]);
+      objects.addAll(entries.keys.map(asciiString));
+      objects.addAll(entries.values.map(asciiString));
+      final out = <int>[...'bplist00'.codeUnits];
+      final offsets = <int>[];
+      for (final object in objects) {
+        offsets.add(out.length);
+        out.addAll(object);
+      }
+      final tableOffset = out.length;
+      out.addAll(offsets);
+      List<int> be8(int v) => <int>[
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        (v >> 8) & 0xFF,
+        v & 0xFF,
+      ];
+      out.addAll(<int>[
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        ...be8(objects.length),
+        ...be8(0),
+        ...be8(tableOffset),
+      ]);
+      return out;
+    }
+
+    test('reads the identifier from an XML Info.plist', () {
+      const xml =
+          '<?xml version="1.0"?><plist><dict>'
+          '<key>CFBundleShortVersionString</key><string>10.13.0</string>'
+          '<key>CFBundleIdentifier</key><string>com.apple.Notes</string>'
+          '</dict></plist>';
+      expect(
+        AutoAppScanner.parseBundleIdFromInfoPlist(utf8.encode(xml)),
+        equals('com.apple.Notes'),
+      );
+    });
+
+    test('reads the value bound to the key in a binary plist, not a '
+        'look-alike string stored near it', () {
+      final keyFirst = binaryPlist(const <String, String>{
+        'CFBundleIdentifier': 'com.apple.Notes',
+        'LSApplicationCategoryType': 'public.app-category.productivity',
+        'LSMinimumSystemVersion': '10.13.0',
+      });
+      // Values are stored in key order, so this order puts the dotted decoys
+      // before the real identifier in the file.
+      final keyLast = binaryPlist(const <String, String>{
+        'LSMinimumSystemVersion': '10.13.0',
+        'LSApplicationCategoryType': 'public.app-category.productivity',
+        'CFBundleIdentifier': 'com.apple.Notes',
+      });
+      expect(
+        AutoAppScanner.parseBundleIdFromInfoPlist(keyFirst),
+        equals('com.apple.Notes'),
+      );
+      expect(
+        AutoAppScanner.parseBundleIdFromInfoPlist(keyLast),
+        equals('com.apple.Notes'),
+      );
+    });
+
+    test('returns null when the key is absent or the file is malformed', () {
+      final noKey = binaryPlist(const <String, String>{
+        'LSMinimumSystemVersion': '10.13.0',
+        'CFBundleName': 'com.example.decoy',
+      });
+      expect(AutoAppScanner.parseBundleIdFromInfoPlist(noKey), isNull);
+
+      final valid = binaryPlist(const <String, String>{
+        'CFBundleIdentifier': 'com.apple.Notes',
+      });
+      expect(
+        AutoAppScanner.parseBundleIdFromInfoPlist(valid),
+        equals('com.apple.Notes'),
+      );
+      final truncated = valid.sublist(0, valid.length - 10);
+      expect(AutoAppScanner.parseBundleIdFromInfoPlist(truncated), isNull);
+
+      final badTable = <int>[...valid];
+      badTable[badTable.length - 1] = 0xFF; // offset table past the end
+      expect(AutoAppScanner.parseBundleIdFromInfoPlist(badTable), isNull);
+
+      expect(
+        AutoAppScanner.parseBundleIdFromInfoPlist('bplist00'.codeUnits),
+        isNull,
+      );
+      expect(
+        AutoAppScanner.parseBundleIdFromInfoPlist(
+          utf8.encode('<plist><dict></dict></plist>'),
+        ),
+        isNull,
+      );
+    });
+  });
 }

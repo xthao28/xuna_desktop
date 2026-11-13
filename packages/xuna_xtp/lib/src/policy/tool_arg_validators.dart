@@ -5,6 +5,7 @@ import '../schemas.dart';
 import 'forge_swarm_validators.dart';
 import 'policy_models.dart';
 import 'security_redaction.dart';
+import 'ui_find.dart';
 import 'url_domain_validator.dart';
 
 /// Callback signature for recursive step evaluation in `workflow.batch_steps`.
@@ -28,6 +29,78 @@ typedef EvaluateStepCallback = PolicyEvaluationResult Function({
 /// must immediately return that failure result. If `allowed` is `true`, the
 /// caller proceeds to the approval-token check using the returned
 /// `effectiveRisk`, `app`, `workflow`, and `normalizedUrlHost`.
+/// Checks the apps and domains of `cu.session_start` and `cu.session_extend`
+/// (one implementation, so the two cannot drift). Returns `null` when every
+/// item is allowed, otherwise the refusal.
+PolicyEvaluationResult? validateCuSessionScope({
+  required List<Object?> apps,
+  required List<Object?> domains,
+  required HostPolicy activePolicy,
+  required bool allowZeroConfigAppDiscovery,
+  required bool allowPublicHttpsDomains,
+}) {
+  for (final appItem in apps) {
+    if (appItem is! String || !isValidShortId(appItem)) {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.invalidArgs,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'schema_mismatch',
+      );
+    }
+    if (isHardDeniedAppOrProcess(appItem)) {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.denied,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'denylisted_target_forbidden',
+      );
+    }
+    if (activePolicy.findApp(appItem) == null &&
+        !allowZeroConfigAppDiscovery) {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.denied,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'policy_blocked',
+      );
+    }
+  }
+  for (final domainItem in domains) {
+    if (domainItem is! String) {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.invalidArgs,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'schema_mismatch',
+      );
+    }
+    final String asciiDomain;
+    try {
+      asciiDomain = normalizeDomainAllowlistEntry(domainItem);
+    } on FormatException {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.invalidArgs,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'url_invalid',
+      );
+    }
+    final domainAllowed = activePolicy.urlDomains.any(
+      (allowed) => asciiDomain == allowed || asciiDomain.endsWith('.$allowed'),
+    );
+    if (!domainAllowed && !allowPublicHttpsDomains) {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.denied,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'domain_not_allowed',
+      );
+    }
+  }
+  return null;
+}
+
 PolicyEvaluationResult validateToolArguments({
   required String toolName,
   required Map<String, Object?> arguments,
@@ -1548,10 +1621,10 @@ PolicyEvaluationResult validateToolArguments({
           domains is! List ||
           maxSteps is! int ||
           maxSteps < 1 ||
-          maxSteps > 20 ||
+          maxSteps > maxCuSessionSteps ||
           maxMinutes is! int ||
           maxMinutes < 1 ||
-          maxMinutes > 10) {
+          maxMinutes > maxCuSessionMinutes) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -1559,66 +1632,53 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      for (final appItem in apps) {
-        if (appItem is! String || !isValidShortId(appItem)) {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.invalidArgs,
-            effectiveRisk: RiskTier.r3,
-            errorCode: 'schema_mismatch',
-          );
-        }
-        if (isHardDeniedAppOrProcess(appItem)) {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: RiskTier.r3,
-            errorCode: 'denylisted_target_forbidden',
-          );
-        }
-        if (activePolicy.findApp(appItem) == null &&
-            !allowZeroConfigAppDiscovery) {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: RiskTier.r3,
-            errorCode: 'policy_blocked',
-          );
-        }
-      }
-      for (final domainItem in domains) {
-        if (domainItem is! String) {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.invalidArgs,
-            effectiveRisk: RiskTier.r3,
-            errorCode: 'schema_mismatch',
-          );
-        }
-        final String asciiDomain;
-        try {
-          asciiDomain = normalizeDomainAllowlistEntry(domainItem);
-        } on FormatException {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.invalidArgs,
-            effectiveRisk: RiskTier.r3,
-            errorCode: 'url_invalid',
-          );
-        }
-        final domainAllowed = activePolicy.urlDomains.any(
-          (allowed) =>
-              asciiDomain == allowed || asciiDomain.endsWith('.$allowed'),
+      final startScopeError = validateCuSessionScope(
+        apps: apps,
+        domains: domains,
+        activePolicy: activePolicy,
+        allowZeroConfigAppDiscovery: allowZeroConfigAppDiscovery,
+        allowPublicHttpsDomains: allowPublicHttpsDomains,
+      );
+      if (startScopeError != null) return startScopeError;
+      effectiveRisk = RiskTier.r3;
+    case 'cu.session_extend':
+      // UDC-17 S17.3: add apps/domains to the running session without
+      // restarting it. Same checks as `cu.session_start`; R3, phone-signed.
+      if (!isInApprovedCuSession) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r3,
+          errorCode: 'cu_session_required',
         );
-        if (!domainAllowed && !allowPublicHttpsDomains) {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: RiskTier.r3,
-            errorCode: 'domain_not_allowed',
-          );
-        }
       }
+      final extSessionId = arguments['sessionId'];
+      final extApps = arguments['apps'];
+      final extDomains = arguments['domains'];
+      if (arguments.length != 3 ||
+          extSessionId is! String ||
+          extSessionId.isEmpty ||
+          extSessionId.length > 64 ||
+          extApps is! List ||
+          extDomains is! List ||
+          (extApps.isEmpty && extDomains.isEmpty) ||
+          extApps.length > maxCuSessionExtendItems ||
+          extDomains.length > maxCuSessionExtendItems) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r3,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final extendScopeError = validateCuSessionScope(
+        apps: extApps,
+        domains: extDomains,
+        activePolicy: activePolicy,
+        allowZeroConfigAppDiscovery: allowZeroConfigAppDiscovery,
+        allowPublicHttpsDomains: allowPublicHttpsDomains,
+      );
+      if (extendScopeError != null) return extendScopeError;
       effectiveRisk = RiskTier.r3;
     case 'cu.session_end':
       final sessionId = arguments['sessionId'];
@@ -1699,6 +1759,42 @@ PolicyEvaluationResult validateToolArguments({
                   rootElementId.trim().isEmpty ||
                   rootElementId.length > 64 ||
                   !isSafeAgentPrompt(rootElementId)))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+    case 'ui.find':
+      if (!isInApprovedCuSession) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'cu_session_required',
+        );
+      }
+      final query = arguments['query'];
+      final role = arguments['role'];
+      final maxResults = arguments['maxResults'];
+      const allowedFindKeys = <String>{'query', 'role', 'maxResults'};
+      final queryOk = query == null ||
+          (query is String &&
+              query.trim().isNotEmpty &&
+              query.length <= maxUiFindQueryLength &&
+              isSafeAgentPrompt(query));
+      final roleOk =
+          role == null || (role is String && isValidUiFindRole(role));
+      if (arguments.keys.any((k) => !allowedFindKeys.contains(k)) ||
+          !queryOk ||
+          !roleOk ||
+          (query == null && role == null) ||
+          (maxResults != null &&
+              (maxResults is! int ||
+                  maxResults < 1 ||
+                  maxResults > maxUiFindResults))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -1809,7 +1905,9 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      effectiveRisk = RiskTier.r3;
+      // Floor only: the live classifier decides whether this is a draft into
+      // an ordinary text field (R2, ADR-0015 D1) or needs a signature (R3).
+      effectiveRisk = RiskTier.r2;
     case 'input.key':
       if (!isInApprovedCuSession) {
         return const PolicyEvaluationResult(
@@ -1854,8 +1952,12 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      effectiveRisk =
-          (combo == 'Enter' && inForm == true) ? RiskTier.r3 : RiskTier.r2;
+      // Arguments alone cannot tell what Enter/Return/Space will activate, so
+      // this is only a floor: inside a session the live classifier
+      // (`classifyInputStepRisk`, ADR-0015 D2) decides and enforces R3 unless
+      // the focused element is known to be safe. The model-declared `inForm`
+      // flag is untrusted and never consulted.
+      effectiveRisk = RiskTier.r2;
     case 'input.scroll':
       if (!isInApprovedCuSession) {
         return const PolicyEvaluationResult(

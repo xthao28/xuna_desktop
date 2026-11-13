@@ -192,6 +192,11 @@ abstract interface class XunaHostChannel {
   /// Opens a pre-validated `https://` URL in the user's default browser.
   Future<void> urlOpen(String url);
 
+  /// Resolves [host] to its IP addresses, so `url.open` can refuse a public
+  /// name that points at this computer or the local network (UDC-17 S17.6).
+  /// Throws when the name cannot be resolved in time.
+  Future<List<InternetAddress>> resolveHostAddresses(String host);
+
   /// Reads the active `https://` tab URL from Edge/Chrome (Windows UIA) or
   /// Safari/Chrome (macOS AppleScript) (`UDC-9` S9.1).
   Future<BrowserTabSnapshot> browserCurrentUrl({String browser = 'auto'});
@@ -337,6 +342,10 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       'target': target,
     });
   }
+
+  @override
+  Future<List<InternetAddress>> resolveHostAddresses(String host) =>
+      InternetAddress.lookup(host).timeout(const Duration(seconds: 3));
 
   @override
   Future<void> urlOpen(String url) async {

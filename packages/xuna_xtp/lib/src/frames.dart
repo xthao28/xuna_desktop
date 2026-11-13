@@ -61,6 +61,7 @@ const Set<String> knownXtpRequestMethods = <String>{
   'xuna/proof',
   'tools/list',
   'tools/call',
+  'xuna/preflight',
   'ping',
 };
 
@@ -369,6 +370,35 @@ class XtpResponse extends XtpFrame {
     );
   }
 
+  /// Builds an `xuna/preflight` response frame (`XUNA_XTP_V1_CONTRACT.md`
+  /// §4.2.8). [status] `ok` carries [effectiveRisk]; any other status carries
+  /// [errorCode]. [elementName] is the live label of the target, if any.
+  factory XtpResponse.preflightResult({
+    required Object id,
+    required XtpStatus status,
+    RiskTier? effectiveRisk,
+    String? reasonCode,
+    String? errorCode,
+    String? elementRole,
+    String? elementName,
+  }) {
+    final preflight = <String, Object?>{
+      'status': status.wire,
+      if (effectiveRisk != null) 'effectiveRisk': effectiveRisk.wire,
+      if (reasonCode != null) 'reasonCode': reasonCode,
+      if (errorCode != null) 'errorCode': errorCode,
+      if (elementName != null)
+        'element': <String, Object?>{
+          'role': elementRole ?? 'unknown',
+          'name': elementName,
+        },
+    };
+    return XtpResponse(
+      id: id,
+      result: <String, Object?>{'preflight': preflight},
+    );
+  }
+
   final Object id;
   final Map<String, Object?> result;
 
@@ -477,6 +507,16 @@ class ToolsCallParams extends XtpRequestParams {
   final String invocationId;
   final int deadlineMs;
   final ApprovalToken? approval;
+}
+
+/// `xuna/preflight` request params (`XUNA_XTP_V1_CONTRACT.md` §4.2.8): the
+/// backend asks the host which risk it would enforce for this call, without
+/// executing anything.
+class PreflightParams extends XtpRequestParams {
+  const PreflightParams({required this.name, required this.arguments});
+
+  final String name;
+  final Map<String, Object?> arguments;
 }
 
 /// `ping` request params.
@@ -595,6 +635,14 @@ XtpRequestParams _parseRequestParams(
         return const ToolsListParams();
       case 'tools/call':
         return _parseToolsCallParams(params);
+      case 'xuna/preflight':
+        _requireExactParamsKeys(params, const <String>{'name', 'arguments'});
+        final preflightName = _requireStringParam(params, 'name');
+        ToolDescriptor.validateToolName(preflightName);
+        return PreflightParams(
+          name: preflightName,
+          arguments: _requireMapParam(params, 'arguments'),
+        );
       case 'ping':
         _requireExactParamsKeys(params, const <String>{});
         return const PingParams();
@@ -998,6 +1046,22 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
     }
     return;
   }
+  if (_hasOnlyKeys(result, const <String>{'preflight'})) {
+    try {
+      final raw = result['preflight'];
+      if (raw is! Map) {
+        throw const FormatException('preflight must be an object');
+      }
+      _validatePreflightResult(_castStringObjectMap(raw, requestId: requestId));
+    } on FormatException catch (error) {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message: error.message,
+        requestId: requestId,
+      );
+    }
+    return;
+  }
   if (_hasOnlyKeys(
     result,
     const <String>{'content', 'structuredContent', 'isError', '_meta'},
@@ -1061,6 +1125,53 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
     message: 'Unrecognized result payload shape',
     requestId: requestId,
   );
+}
+
+/// Validates the `preflight` object of an `xuna/preflight` result (§4.2.8).
+void _validatePreflightResult(Map<String, Object?> preflight) {
+  _requireExactParamsKeys(
+    preflight,
+    const <String>{'status'},
+    optionalKeys: const <String>{
+      'effectiveRisk',
+      'reasonCode',
+      'errorCode',
+      'element',
+    },
+  );
+  final status = XtpStatus.fromWire(_requireStringParam(preflight, 'status'));
+  if (status == XtpStatus.ok) {
+    RiskTier.fromWire(_requireStringParam(preflight, 'effectiveRisk'));
+    if (preflight.containsKey('errorCode')) {
+      throw const FormatException('ok preflight must not carry errorCode');
+    }
+  } else {
+    final code = _requireStringParam(preflight, 'errorCode');
+    if (!isValidShortId(code)) {
+      throw const FormatException('Invalid preflight errorCode');
+    }
+    if (preflight.containsKey('effectiveRisk') ||
+        preflight.containsKey('element')) {
+      throw const FormatException(
+        'A refused preflight carries no risk or element',
+      );
+    }
+  }
+  if (preflight.containsKey('reasonCode') &&
+      !isValidShortId(_requireStringParam(preflight, 'reasonCode'))) {
+    throw const FormatException('Invalid preflight reasonCode');
+  }
+  if (preflight.containsKey('element')) {
+    final element = _requireMapParam(preflight, 'element');
+    _requireExactParamsKeys(element, const <String>{'role', 'name'});
+    if (!isValidShortId(_requireStringParam(element, 'role'))) {
+      throw const FormatException('Invalid preflight element role');
+    }
+    final name = _requireStringParam(element, 'name');
+    if (name.length > 80 || RegExp(r'[\u0000-\u001F\u007F]').hasMatch(name)) {
+      throw const FormatException('Invalid preflight element name');
+    }
+  }
 }
 
 bool _hasOnlyKeys(Map<String, Object?> map, Set<String> allowed) {
