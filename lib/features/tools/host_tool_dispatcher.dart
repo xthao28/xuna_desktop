@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
@@ -13,20 +14,29 @@ import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
 import 'package:xuna_desktop/features/discovery/auto_tv_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
+import 'package:xuna_desktop/features/native_bridge/macos_native_app_bridge.dart';
+import 'package:xuna_desktop/features/native_bridge/native_app_bridge.dart';
+import 'package:xuna_desktop/features/native_bridge/windows_native_app_bridge.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
+import 'package:xuna_desktop/features/browser_bridge/browser_engine_provider.dart';
+import 'package:xuna_desktop/features/browser_bridge/cdp_browser_engine_provider.dart';
+import 'package:xuna_desktop/features/tools/browser_tool_handlers.dart';
 import 'package:xuna_desktop/features/tools/handlers/forge_claw_tool_handlers.dart';
 import 'package:xuna_desktop/features/tools/handlers/mvp_tool_handlers.dart';
 import 'package:xuna_desktop/features/tools/handlers/symbiotic_tool_handlers.dart';
 import 'package:xuna_desktop/features/tools/handlers/tv_smarthome_handlers.dart';
 import 'package:xuna_desktop/features/tools/handlers/workspace_copilot_handlers.dart';
+import 'package:xuna_desktop/features/tools/native_app_handlers.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
+export 'package:xuna_desktop/features/tools/browser_tool_handlers.dart';
 export 'package:xuna_desktop/features/tools/handlers/forge_claw_tool_handlers.dart';
 export 'package:xuna_desktop/features/tools/handlers/mvp_tool_handlers.dart';
 export 'package:xuna_desktop/features/tools/handlers/symbiotic_tool_handlers.dart';
 export 'package:xuna_desktop/features/tools/handlers/tv_smarthome_handlers.dart';
 export 'package:xuna_desktop/features/tools/handlers/workspace_copilot_handlers.dart';
+export 'package:xuna_desktop/features/tools/native_app_handlers.dart';
 
 /// Result produced by an individual [HostToolHandler].
 class ToolHandlerOutput {
@@ -288,8 +298,17 @@ class HostToolDispatcher {
     this.beamDirectoryPath,
     this.agentVersion = '0.1.0',
     this.maxIdempotencyCacheEntries = 256,
+    NativeAppBridge? nativeAppBridge,
+    BrowserEngineProvider? browserEngineProvider,
     List<HostToolHandler>? handlers,
-  }) : appScanner = appScanner ?? AutoAppScanner(),
+  }) : nativeAppBridge =
+           nativeAppBridge ??
+           (Platform.isMacOS
+               ? MacosNativeAppBridge()
+               : WindowsNativeAppBridge()),
+       browserEngineProvider =
+           browserEngineProvider ?? CdpBrowserEngineProvider(),
+       appScanner = appScanner ?? AutoAppScanner(),
        workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer(),
        mcpBridge = mcpBridge ?? AutoMcpBridge(),
        tvScanner = tvScanner ?? AutoTvScanner(),
@@ -305,6 +324,8 @@ class HostToolDispatcher {
           ...defaultTvSmartHomeToolHandlers,
           ...defaultSymbioticToolHandlers,
           ...defaultForgeClawToolHandlers,
+          ...defaultNativeAppToolHandlers(this.nativeAppBridge),
+          ...defaultBrowserToolHandlers(this.browserEngineProvider),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -322,6 +343,8 @@ class HostToolDispatcher {
   final ContentFreeLogger logger;
   final EnrollmentStateStore? enrollmentStore;
   final ComputerUseSessionManager? computerUseManager;
+  final NativeAppBridge nativeAppBridge;
+  final BrowserEngineProvider browserEngineProvider;
   final AutoAppScanner appScanner;
   final AutoWorkspaceIndexer workspaceIndexer;
   final AutoMcpBridge mcpBridge;
@@ -390,6 +413,12 @@ class HostToolDispatcher {
     'screen.capture',
     'ui.inspect',
     'ui.find',
+    'notes.search',
+    'calendar.list_events',
+    'finder.reveal',
+    'web.snapshot',
+    'web.extract',
+    'web.wait_for',
   };
 
   /// Builds the `tools/list` manifest with current OS permission states.
@@ -417,12 +446,25 @@ class HostToolDispatcher {
     final dynamicForged = symbioticService.buildDynamicToolDescriptors(
       defaultPermission: perms.accessibility,
     );
+    final nativeCatalog = buildNativeAppToolCatalog(
+      defaultPermission: perms.accessibility,
+    );
+    final browserCatalog = buildBrowserToolCatalog(
+      defaultPermission: perms.accessibility,
+    );
     if (computerUseManager == null) {
-      return <ToolDescriptor>[...mvp, ...dynamicForged];
+      return <ToolDescriptor>[
+        ...mvp,
+        ...dynamicForged,
+        ...nativeCatalog,
+        ...browserCatalog,
+      ];
     }
     return <ToolDescriptor>[
       ...mvp,
       ...dynamicForged,
+      ...nativeCatalog,
+      ...browserCatalog,
       ...buildComputerUseTools(
         defaultPermission: perms.accessibility,
         screenCapturePermission: computerUseManager!.supportsScreenCapture

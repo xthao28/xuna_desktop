@@ -820,7 +820,7 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
     return null;
   }
   final prefix = toolName.split('.').first;
-  if (prefix == 'browser' || toolName == 'tv.cast_media') {
+  if (prefix == 'browser' || prefix == 'web' || toolName == 'tv.cast_media') {
     return ToolFamily.url;
   }
   if (toolName == 'tv.list_devices' ||
@@ -830,8 +830,11 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   if (prefix == 'system') {
     return ToolFamily.host;
   }
-  if (prefix == 'habit') {
+  if (prefix == 'habit' || prefix == 'shortcuts') {
     return ToolFamily.workflow;
+  }
+  if (prefix == 'finder') {
+    return ToolFamily.files;
   }
   if (prefix == 'display' ||
       prefix == 'workspace' ||
@@ -853,6 +856,10 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
       prefix == 'canvas' ||
       prefix == 'pipeline' ||
       prefix == 'memory' ||
+      prefix == 'notes' ||
+      prefix == 'reminders' ||
+      prefix == 'calendar' ||
+      prefix == 'mail' ||
       toolName == 'tv.launch_app' ||
       toolName == 'ui.accessibility_tree') {
     return ToolFamily.app;

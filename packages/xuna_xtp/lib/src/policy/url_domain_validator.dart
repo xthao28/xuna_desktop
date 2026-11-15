@@ -1,6 +1,28 @@
+/// Converts full-width ASCII variants (digits U+FF10..U+FF19, letters
+/// U+FF21..U+FF3A / U+FF41..U+FF5A, dots U+FF0E, U+3002, U+FF61) to their
+/// ASCII equivalents to prevent Unicode IP smuggling (UDC-18 Wave B).
+String _normalizeFullWidthToAscii(String input) {
+  final sb = StringBuffer();
+  for (final cp in input.runes) {
+    if (cp >= 0xFF10 && cp <= 0xFF19) {
+      sb.writeCharCode(0x30 + (cp - 0xFF10));
+    } else if (cp >= 0xFF21 && cp <= 0xFF3A) {
+      sb.writeCharCode(0x41 + (cp - 0xFF21));
+    } else if (cp >= 0xFF41 && cp <= 0xFF5A) {
+      sb.writeCharCode(0x61 + (cp - 0xFF41));
+    } else if (cp == 0xFF0E || cp == 0x3002 || cp == 0xFF61) {
+      sb.writeCharCode(0x2E);
+    } else {
+      sb.writeCharCode(cp);
+    }
+  }
+  return sb.toString();
+}
+
 /// Validates and normalizes an entry in `host-policy.json` `urlDomains`.
 String normalizeDomainAllowlistEntry(String domain) {
-  final trimmed = domain.trim().toLowerCase();
+  final normalized = _normalizeFullWidthToAscii(domain);
+  final trimmed = normalized.trim().toLowerCase();
   if (trimmed.isEmpty ||
       trimmed.startsWith('.') ||
       trimmed.endsWith('.') ||
@@ -103,6 +125,7 @@ UrlValidationResult validateHttpsUrlAgainstAllowlist(
     }
     rawHost = authority.substring(0, colonIdx);
   }
+  rawHost = _normalizeFullWidthToAscii(rawHost);
   if (rawHost.isEmpty || rawHost.endsWith('.')) {
     return (
       validUrl: false,
@@ -173,20 +196,31 @@ bool isAllowedHttpsCurrentUrl(String rawUrl) =>
 bool _isForbiddenLiteralOrLocalHost(String host) {
   final lower = host.toLowerCase();
   if (lower == 'localhost' ||
+      lower == 'localhost.localdomain' ||
+      lower == 'home.arpa' ||
       lower.endsWith('.localhost') ||
-      lower.endsWith('.local')) {
+      lower.endsWith('.local') ||
+      lower.endsWith('.internal') ||
+      lower.endsWith('.localdomain') ||
+      lower.endsWith('.lan') ||
+      lower.endsWith('.home.arpa')) {
     return true;
   }
   if (lower.contains(':')) {
     return true;
   }
   final parts = lower.split('.');
-  if (parts.length == 4 &&
-      parts.every((p) => RegExp(r'^[0-9]{1,3}$').hasMatch(p))) {
+  final hexOrDecPart =
+      RegExp(r'^(?:0x[0-9a-f]+|[0-9]+)$', caseSensitive: false);
+  if (parts.length >= 2 &&
+      parts.length <= 4 &&
+      parts.every(hexOrDecPart.hasMatch)) {
     return true;
   }
-  // Reject numeric-only TLD or single-label hostnames
-  if (parts.length < 2 || RegExp(r'^[0-9]+$').hasMatch(parts.last)) {
+  // Reject non-alphabetic/numeric/hex TLD, single-label hostnames, or hex labels
+  if (parts.length < 2 ||
+      hexOrDecPart.hasMatch(parts.last) ||
+      parts.any((p) => p.startsWith('0x'))) {
     return true;
   }
   return false;
@@ -195,7 +229,8 @@ bool _isForbiddenLiteralOrLocalHost(String host) {
 /// Converts a domain name (potentially containing Unicode IDN labels) into
 /// lower-case ASCII punycode (`xn--...`) per RFC 3492.
 String idnToAscii(String domain) {
-  final labels = domain.toLowerCase().split('.');
+  final normalized = _normalizeFullWidthToAscii(domain);
+  final labels = normalized.toLowerCase().split('.');
   if (labels.isEmpty) {
     throw const FormatException('Empty domain');
   }

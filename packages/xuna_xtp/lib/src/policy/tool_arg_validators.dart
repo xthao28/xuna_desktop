@@ -101,6 +101,46 @@ PolicyEvaluationResult? validateCuSessionScope({
   return null;
 }
 
+final _shortcutNamePattern = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,119}$');
+
+bool _isValidIsoDate(String dateStr) {
+  final trimmed = dateStr.trim();
+  if (trimmed.isEmpty || trimmed.length > 50) return false;
+  try {
+    DateTime.parse(trimmed);
+    return true;
+  } on FormatException {
+    return false;
+  }
+}
+
+bool _isValidEmailAddress(String email) {
+  final trimmed = email.trim();
+  if (trimmed.isEmpty || trimmed.length > 320) return false;
+  if (trimmed.contains('\r') || trimmed.contains('\n') || trimmed.contains('\x00')) return false;
+  final atIndex = trimmed.indexOf('@');
+  if (atIndex <= 0 || atIndex != trimmed.lastIndexOf('@') || atIndex == trimmed.length - 1) {
+    return false;
+  }
+  final localPart = trimmed.substring(0, atIndex);
+  final domainPart = trimmed.substring(atIndex + 1);
+  if (domainPart.contains(' ') || domainPart.contains(',') || domainPart.contains('"')) {
+    return false;
+  }
+  // Disallow unquoted spaces or commas in local-part
+  bool inQuotes = false;
+  for (int i = 0; i < localPart.length; i++) {
+    final ch = localPart[i];
+    if (ch == '"' && (i == 0 || localPart[i - 1] != r'\')) {
+      inQuotes = !inQuotes;
+    } else if (!inQuotes && (ch == ' ' || ch == ',')) {
+      return false;
+    }
+  }
+  if (inQuotes) return false;
+  return true;
+}
+
 PolicyEvaluationResult validateToolArguments({
   required String toolName,
   required Map<String, Object?> arguments,
@@ -2008,6 +2048,481 @@ PolicyEvaluationResult validateToolArguments({
         );
       }
       effectiveRisk = RiskTier.r2;
+    case 'notes.create':
+      final title = arguments['title'];
+      final body = arguments['body'];
+      final folder = arguments['folder'];
+      const allowedNotesCreateKeys = <String>{'title', 'body', 'folder'};
+      if (arguments.keys.any((k) => !allowedNotesCreateKeys.contains(k)) ||
+          title is! String ||
+          title.trim().isEmpty ||
+          title.length > 500 ||
+          title.contains('\x00') ||
+          body is! String ||
+          body.length > 50000 ||
+          body.contains('\x00') ||
+          (folder != null &&
+              (folder is! String ||
+                  folder.trim().isEmpty ||
+                  folder.length > 200 ||
+                  folder.contains('\x00')))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+    case 'notes.append':
+      final id = arguments['id'];
+      final title = arguments['title'];
+      final text = arguments['text'];
+      const allowedNotesAppendKeys = <String>{'id', 'title', 'text'};
+      if (arguments.keys.any((k) => !allowedNotesAppendKeys.contains(k)) ||
+          text is! String ||
+          text.trim().isEmpty ||
+          text.length > 50000 ||
+          text.contains('\x00') ||
+          (id != null &&
+              (id is! String ||
+                  id.trim().isEmpty ||
+                  id.length > 200 ||
+                  id.contains('\x00'))) ||
+          (title != null &&
+              (title is! String ||
+                  title.trim().isEmpty ||
+                  title.length > 500 ||
+                  title.contains('\x00')))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      if (id == null && title == null) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'missing_target',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+    case 'notes.search':
+      final query = arguments['query'];
+      final maxResults = arguments['maxResults'];
+      const allowedNotesSearchKeys = <String>{'query', 'maxResults'};
+      if (arguments.keys.any((k) => !allowedNotesSearchKeys.contains(k)) ||
+          query is! String ||
+          query.trim().isEmpty ||
+          query.length > 200 ||
+          (maxResults != null &&
+              (maxResults is! int || maxResults < 1 || maxResults > 20))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
+    case 'reminders.create':
+      final title = arguments['title'];
+      final list = arguments['list'];
+      final dueDate = arguments['dueDate'];
+      final notes = arguments['notes'];
+      final priority = arguments['priority'];
+      const allowedRemindersCreateKeys = <String>{
+        'title',
+        'list',
+        'dueDate',
+        'notes',
+        'priority',
+      };
+      if (arguments.keys.any((k) => !allowedRemindersCreateKeys.contains(k)) ||
+          title is! String ||
+          title.trim().isEmpty ||
+          title.length > 500 ||
+          (list != null &&
+              (list is! String || list.trim().isEmpty || list.length > 200)) ||
+          (dueDate != null &&
+              (dueDate is! String || !_isValidIsoDate(dueDate))) ||
+          (notes != null && (notes is! String || notes.length > 5000)) ||
+          (priority != null &&
+              (priority is! int || priority < 0 || priority > 9))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+    case 'calendar.list_events':
+      final timeMin = arguments['timeMin'];
+      final timeMax = arguments['timeMax'];
+      final calendarName = arguments['calendarName'];
+      final maxResults = arguments['maxResults'];
+      const allowedCalendarListKeys = <String>{
+        'timeMin',
+        'timeMax',
+        'calendarName',
+        'maxResults',
+      };
+      if (arguments.keys.any((k) => !allowedCalendarListKeys.contains(k)) ||
+          timeMin is! String ||
+          !_isValidIsoDate(timeMin) ||
+          timeMax is! String ||
+          !_isValidIsoDate(timeMax) ||
+          (calendarName != null &&
+              (calendarName is! String ||
+                  calendarName.trim().isEmpty ||
+                  calendarName.length > 200)) ||
+          (maxResults != null &&
+              (maxResults is! int || maxResults < 1 || maxResults > 50))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final parsedMin = DateTime.parse(timeMin);
+      final parsedMax = DateTime.parse(timeMax);
+      if (parsedMin.isAfter(parsedMax)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'invalid_date_range',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
+    case 'calendar.create_event':
+      final title = arguments['title'];
+      final startTime = arguments['startTime'];
+      final endTime = arguments['endTime'];
+      final location = arguments['location'];
+      final notes = arguments['notes'];
+      final calendarName = arguments['calendarName'];
+      const allowedCalendarCreateKeys = <String>{
+        'title',
+        'startTime',
+        'endTime',
+        'location',
+        'notes',
+        'calendarName',
+      };
+      if (arguments.keys.any((k) => !allowedCalendarCreateKeys.contains(k)) ||
+          title is! String ||
+          title.trim().isEmpty ||
+          title.length > 500 ||
+          startTime is! String ||
+          !_isValidIsoDate(startTime) ||
+          endTime is! String ||
+          !_isValidIsoDate(endTime) ||
+          (location != null &&
+              (location is! String || location.length > 500)) ||
+          (notes != null && (notes is! String || notes.length > 5000)) ||
+          (calendarName != null &&
+              (calendarName is! String ||
+                  calendarName.trim().isEmpty ||
+                  calendarName.length > 200))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final parsedStart = DateTime.parse(startTime);
+      final parsedEnd = DateTime.parse(endTime);
+      if (parsedStart.isAfter(parsedEnd)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'invalid_date_range',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+    case 'finder.reveal':
+      final path = arguments['path'];
+      const allowedFinderKeys = <String>{'path'};
+      if (arguments.keys.any((k) => !allowedFinderKeys.contains(k)) ||
+          path is! String ||
+          path.trim().isEmpty ||
+          path.length > 1024 ||
+          path.contains('\x00')) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
+    case 'shortcuts.run':
+      final shortcutName = arguments['shortcutName'];
+      final input = arguments['input'];
+      const allowedShortcutsKeys = <String>{'shortcutName', 'input'};
+      if (arguments.keys.any((k) => !allowedShortcutsKeys.contains(k)) ||
+          shortcutName is! String ||
+          shortcutName.startsWith('-') ||
+          !_shortcutNamePattern.hasMatch(shortcutName) ||
+          (input != null && input is String && input.length > 50000)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+    case 'mail.create_draft':
+      final to = arguments['to'];
+      final cc = arguments['cc'];
+      final bcc = arguments['bcc'];
+      final subject = arguments['subject'];
+      final body = arguments['body'];
+      const allowedMailKeys = <String>{'to', 'cc', 'bcc', 'subject', 'body'};
+      if (arguments.keys.any((k) => !allowedMailKeys.contains(k)) ||
+          to is! List ||
+          to.isEmpty ||
+          !to.every((item) => item is String && _isValidEmailAddress(item)) ||
+          (cc != null &&
+              (cc is! List ||
+                  !cc.every(
+                      (item) => item is String && _isValidEmailAddress(item)))) ||
+          (bcc != null &&
+              (bcc is! List ||
+                  !bcc.every(
+                      (item) => item is String && _isValidEmailAddress(item)))) ||
+          subject is! String ||
+          subject.length > 500 ||
+          subject.contains('\r') ||
+          subject.contains('\n') ||
+          body is! String ||
+          body.length > 50000) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+
+    case 'web.navigate':
+      final url = arguments['url'];
+      final timeoutMs = arguments['timeoutMs'];
+      const allowedNavigateKeys = <String>{'url', 'timeoutMs'};
+      if (arguments.keys.any((k) => !allowedNavigateKeys.contains(k)) ||
+          url is! String ||
+          url.trim().isEmpty ||
+          url.length > 2048 ||
+          url.contains('\x00') ||
+          (timeoutMs != null &&
+              (timeoutMs is! int || timeoutMs < 1000 || timeoutMs > 60000))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final urlCheck = validateHttpsUrlAgainstAllowlist(
+        url,
+        activePolicy.urlDomains,
+      );
+      if (!urlCheck.validUrl) {
+        return PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: urlCheck.errorCode ?? 'url_invalid',
+        );
+      }
+      if (!urlCheck.domainAllowed && !allowPublicHttpsDomains) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'domain_not_allowed',
+        );
+      }
+      normalizedUrlHost = urlCheck.asciiHost;
+      effectiveRisk = RiskTier.r2;
+
+    case 'web.snapshot':
+      final compact = arguments['compact'];
+      final maxBytes = arguments['maxBytes'];
+      const allowedSnapshotKeys = <String>{'compact', 'maxBytes'};
+      if (arguments.keys.any((k) => !allowedSnapshotKeys.contains(k)) ||
+          (compact != null && compact is! bool) ||
+          (maxBytes != null &&
+              (maxBytes is! int || maxBytes < 100 || maxBytes > 6144))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
+
+    case 'web.click':
+      final ref = arguments['ref'];
+      final selector = arguments['selector'];
+      final targetText = arguments['targetText'];
+      const allowedClickKeys = <String>{'ref', 'selector', 'targetText'};
+      if (arguments.keys.any((k) => !allowedClickKeys.contains(k)) ||
+          ref is! String ||
+          ref.trim().isEmpty ||
+          ref.length > 200 ||
+          ref.contains('\x00') ||
+          (selector != null &&
+              (selector is! String ||
+                  selector.trim().isEmpty ||
+                  selector.length > 500 ||
+                  selector.contains('\x00'))) ||
+          (targetText != null &&
+              (targetText is! String || targetText.length > 200))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final isConsequential = isConsequentialBrowserTarget(
+        ref: ref,
+        selector: selector as String?,
+        targetText: targetText as String?,
+      );
+      effectiveRisk = isConsequential ? RiskTier.r3 : RiskTier.r2;
+
+    case 'web.fill':
+      final ref = arguments['ref'];
+      final value = arguments['value'];
+      final selector = arguments['selector'];
+      final targetText = arguments['targetText'];
+      const allowedFillKeys = <String>{'ref', 'value', 'selector', 'targetText'};
+      if (arguments.keys.any((k) => !allowedFillKeys.contains(k)) ||
+          ref is! String ||
+          ref.trim().isEmpty ||
+          ref.length > 200 ||
+          ref.contains('\x00') ||
+          value is! String ||
+          value.length > 10000 ||
+          value.contains('\x00') ||
+          (selector != null &&
+              (selector is! String ||
+                  selector.trim().isEmpty ||
+                  selector.length > 500 ||
+                  selector.contains('\x00'))) ||
+          (targetText != null &&
+              (targetText is! String || targetText.length > 200))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final isConsequential = isConsequentialBrowserTarget(
+        ref: ref,
+        selector: selector as String?,
+        targetText: targetText as String?,
+        value: value,
+      );
+      effectiveRisk = isConsequential ? RiskTier.r3 : RiskTier.r2;
+
+    case 'web.select':
+      final ref = arguments['ref'];
+      final value = arguments['value'];
+      final selector = arguments['selector'];
+      const allowedSelectKeys = <String>{'ref', 'value', 'selector'};
+      if (arguments.keys.any((k) => !allowedSelectKeys.contains(k)) ||
+          ref is! String ||
+          ref.trim().isEmpty ||
+          ref.length > 200 ||
+          ref.contains('\x00') ||
+          value is! String ||
+          value.trim().isEmpty ||
+          value.length > 500 ||
+          value.contains('\x00') ||
+          (selector != null &&
+              (selector is! String ||
+                  selector.trim().isEmpty ||
+                  selector.length > 500 ||
+                  selector.contains('\x00')))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
+
+    case 'web.extract':
+      final ref = arguments['ref'];
+      final selector = arguments['selector'];
+      final attribute = arguments['attribute'];
+      const allowedExtractKeys = <String>{'ref', 'selector', 'attribute'};
+      if (arguments.keys.any((k) => !allowedExtractKeys.contains(k)) ||
+          (ref != null &&
+              (ref is! String ||
+                  ref.trim().isEmpty ||
+                  ref.length > 200 ||
+                  ref.contains('\x00'))) ||
+          (selector != null &&
+              (selector is! String ||
+                  selector.trim().isEmpty ||
+                  selector.length > 500 ||
+                  selector.contains('\x00'))) ||
+          (attribute != null &&
+              (attribute is! String ||
+                  attribute.trim().isEmpty ||
+                  attribute.length > 100 ||
+                  attribute.contains('\x00')))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
+
+    case 'web.wait_for':
+      final selector = arguments['selector'];
+      final state = arguments['state'];
+      final timeoutMs = arguments['timeoutMs'];
+      const allowedWaitForKeys = <String>{'selector', 'state', 'timeoutMs'};
+      const allowedStates = <String>{'visible', 'hidden', 'attached', 'detached'};
+      if (arguments.keys.any((k) => !allowedWaitForKeys.contains(k)) ||
+          (selector != null &&
+              (selector is! String ||
+                  selector.trim().isEmpty ||
+                  selector.length > 500 ||
+                  selector.contains('\x00'))) ||
+          (state != null &&
+              (state is! String || !allowedStates.contains(state))) ||
+          (timeoutMs != null &&
+              (timeoutMs is! int || timeoutMs < 100 || timeoutMs > 30000))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
+
     default:
       if (toolName.startsWith('forge.custom_')) {
         final argsJson = arguments['argsJson'];

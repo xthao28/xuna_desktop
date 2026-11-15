@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../schemas.dart';
 
 /// Consequential UI element lexicon (`UDC-8` §4.2) in Vietnamese and English.
@@ -12,6 +14,7 @@ const List<String> consequentialElementKeywords = <String>[
   'buy',
   'pay',
   'checkout',
+  'check out',
   'purchase',
   'post',
   'publish',
@@ -24,6 +27,9 @@ const List<String> consequentialElementKeywords = <String>[
   'xóa',
   'xoá',
   'gỡ bỏ',
+  'hủy',
+  'hủy bỏ',
+  'hủy tài khoản',
   'mua',
   'thanh toán',
   'chuyển khoản',
@@ -40,15 +46,85 @@ final RegExp _wordSplitRe = RegExp(
 /// (`send`, `submit`, `delete`, `buy`, `pay`, `post` in Vietnamese or English).
 bool isConsequentialElementName(String? elementName) {
   if (elementName == null || elementName.trim().isEmpty) return false;
-  final normalized = elementName.trim().toLowerCase();
+  final decomposed = elementName.replaceAllMapped(
+    RegExp(r'([a-z])([A-Z])'),
+    (m) => '${m[1]} ${m[2]}',
+  );
+  final normalized = decomposed.trim().toLowerCase();
   final words =
       normalized.split(_wordSplitRe).where((w) => w.isNotEmpty).toSet();
+  if (words.contains('checkout') ||
+      normalized.replaceAll(' ', '').contains('checkout') ||
+      normalized.replaceAll(RegExp(r'[\s_\-]+'), '').contains('checkout')) {
+    return true;
+  }
   for (final keyword in consequentialElementKeywords) {
     if (keyword.contains(' ')) {
       if (normalized.contains(keyword)) return true;
     } else if (words.contains(keyword)) {
       return true;
     }
+  }
+  return false;
+}
+
+/// Checks whether a browser interaction is consequential and requires elevation to R3 (`UDC-18` §Wave B).
+bool isConsequentialBrowserTarget({
+  required String ref,
+  String? selector,
+  String? targetText,
+  String? value,
+}) {
+  if (isConsequentialElementName(ref)) return true;
+  if (selector != null && isConsequentialElementName(selector)) return true;
+  if (targetText != null && isConsequentialElementName(targetText)) return true;
+  if (value != null && isConsequentialElementName(value)) return true;
+
+  final rawCombined =
+      '$ref ${selector ?? ''} ${targetText ?? ''} ${value ?? ''}';
+  final decomposed = rawCombined
+      .replaceAllMapped(
+        RegExp(r'([a-z])([A-Z])'),
+        (m) => '${m[1]} ${m[2]}',
+      )
+      .toLowerCase();
+  final words =
+      decomposed.split(_wordSplitRe).where((w) => w.isNotEmpty).toSet();
+
+  // Word-boundary sensitive matches (prevent false positives like spin, opinion, wildcard, cardigan)
+  if (words.contains('pin') ||
+      words.contains('card') ||
+      words.contains('credit') ||
+      words.contains('token') ||
+      words.contains('secret') ||
+      words.contains('thẻ') ||
+      words.contains('transfer') ||
+      words.contains('payment') ||
+      words.contains('checkout') ||
+      words.contains('wire') ||
+      decomposed.replaceAll(RegExp(r'[\s_\-]+'), '').contains('checkout') ||
+      decomposed.contains('check out')) {
+    return true;
+  }
+
+  // Multi-word or specific banking / credential substring matches
+  if (decomposed.contains('password') ||
+      decomposed.contains('passwd') ||
+      decomposed.contains('cvv') ||
+      decomposed.contains('cvc') ||
+      decomposed.contains('mật khẩu') ||
+      decomposed.contains('mat khau') ||
+      decomposed.contains('chuyen khoan') ||
+      decomposed.contains('thanh toan') ||
+      decomposed.contains('dat hang') ||
+      decomposed.contains('mua ngay') ||
+      decomposed.contains('xac nhan') ||
+      decomposed.contains('the tin dung') ||
+      decomposed.contains('the visa') ||
+      decomposed.contains('the mastercard') ||
+      decomposed.contains('the atm') ||
+      decomposed.contains('the ngan hang')) {
+    return true;
   }
   return false;
 }
@@ -581,6 +657,32 @@ RedactedSelectionResult redactSensitiveSelectionText(
 /// Convenience helper returning only the redacted string (`UDC-12` S12.2).
 String redactSensitiveTokens(String rawText, {int maxChars = 1200}) =>
     redactSensitiveSelectionText(rawText, maxChars: maxChars).text;
+
+/// Redacts sensitive credentials/tokens from browser snapshot text and bounds output to [maxBytes] (`UDC-18` §Wave B).
+({String text, bool truncated, int byteCount}) redactBrowserSnapshot(
+  String rawSnapshot, {
+  int maxBytes = 6144,
+}) {
+  var working = rawSnapshot;
+  for (final pattern in _sensitiveTokenPatterns) {
+    working = working.replaceAllMapped(pattern, (_) => '[REDACTED]');
+  }
+  final encoded = utf8.encode(working);
+  if (encoded.length <= maxBytes) {
+    return (text: working, truncated: false, byteCount: encoded.length);
+  }
+  // Truncate cleanly at UTF-8 character boundary within maxBytes
+  var byteLimit = maxBytes;
+  while (byteLimit > 0 && (encoded[byteLimit - 1] & 0xC0) == 0x80) {
+    byteLimit--; // back off UTF-8 continuation byte
+  }
+  if (byteLimit > 0 && (encoded[byteLimit - 1] & 0x80) != 0) {
+    byteLimit--; // back off lead byte
+  }
+  final truncatedText =
+      utf8.decode(encoded.sublist(0, byteLimit), allowMalformed: true);
+  return (text: truncatedText, truncated: true, byteCount: byteLimit);
+}
 
 /// Extensions forbidden for `beam.transfer` (`UDC-13` S13.3):
 /// executables, scripts, installers, libraries, and app bundles.
