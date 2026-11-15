@@ -56,6 +56,14 @@ PolicyEvaluationResult? validateCuSessionScope({
         errorCode: 'denylisted_target_forbidden',
       );
     }
+    if (activePolicy.isAppDenied(appItem)) {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.denied,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'policy_blocked',
+      );
+    }
     if (activePolicy.findApp(appItem) == null &&
         !allowZeroConfigAppDiscovery) {
       return const PolicyEvaluationResult(
@@ -84,6 +92,14 @@ PolicyEvaluationResult? validateCuSessionScope({
         status: XtpStatus.invalidArgs,
         effectiveRisk: RiskTier.r3,
         errorCode: 'url_invalid',
+      );
+    }
+    if (activePolicy.isDomainDenied(asciiDomain)) {
+      return const PolicyEvaluationResult(
+        allowed: false,
+        status: XtpStatus.denied,
+        effectiveRisk: RiskTier.r3,
+        errorCode: 'domain_not_allowed',
       );
     }
     final domainAllowed = activePolicy.urlDomains.any(
@@ -236,6 +252,14 @@ PolicyEvaluationResult validateToolArguments({
           status: XtpStatus.denied,
           effectiveRisk: RiskTier.r2,
           errorCode: 'denylisted_target_forbidden',
+        );
+      }
+      if (activePolicy.isAppDenied(appId)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'policy_blocked',
         );
       }
       matchedApp = activePolicy.findApp(appId);
@@ -1460,6 +1484,14 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: urlCheck.errorCode ?? 'url_invalid',
         );
       }
+      if (activePolicy.isDomainDenied(urlCheck.asciiHost)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'domain_not_allowed',
+        );
+      }
       if (!urlCheck.domainAllowed && !allowPublicHttpsDomains) {
         return const PolicyEvaluationResult(
           allowed: false,
@@ -2535,6 +2567,14 @@ PolicyEvaluationResult validateToolArguments({
           status: XtpStatus.invalidArgs,
           effectiveRisk: RiskTier.r2,
           errorCode: urlCheck.errorCode ?? 'url_invalid',
+        );
+      }
+      if (activePolicy.isDomainDenied(urlCheck.asciiHost)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'domain_not_allowed',
         );
       }
       if (!urlCheck.domainAllowed && !allowPublicHttpsDomains) {

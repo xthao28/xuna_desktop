@@ -1773,6 +1773,14 @@ class ComputerUseSessionManager {
     final normalizedDomains = <String>[
       for (final d in domains) normalizeDomainAllowlistEntry(d),
     ];
+    for (final d in normalizedDomains) {
+      if (policy.isDomainDenied(d)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'domain_not_allowed',
+        );
+      }
+    }
 
     final sessionId = requestedSessionId ?? 'cu-session-${++_sessionCounter}';
 
@@ -1834,6 +1842,14 @@ class ComputerUseSessionManager {
     final newDomains = <String>[
       for (final d in domains) normalizeDomainAllowlistEntry(d),
     ];
+    for (final d in newDomains) {
+      if (policy.isDomainDenied(d)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'domain_not_allowed',
+        );
+      }
+    }
     final nextApps = <String>{...session.allowedApps, ...apps};
     final nextDomains = <String>{...session.allowedDomains, ...newDomains};
     if (nextApps.length > maxCuSessionApps ||
@@ -1907,6 +1923,12 @@ class ComputerUseSessionManager {
           errorCode: 'denylisted_target_forbidden',
         );
       }
+      if (policy.isAppDenied(appId)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'policy_blocked',
+        );
+      }
       final cfg = policy.findApp(appId);
       if (cfg != null) {
         if (isHardDeniedAppOrProcess(cfg.target) ||
@@ -1914,6 +1936,12 @@ class ComputerUseSessionManager {
           throw const XunaHostChannelException(
             status: XtpStatus.denied,
             errorCode: 'denylisted_target_forbidden',
+          );
+        }
+        if (policy.isAppDenied(cfg.target) || policy.isAppDenied(cfg.name)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.denied,
+            errorCode: 'policy_blocked',
           );
         }
         final discoveredMatch = effectiveScanner?.findApp(appId);
@@ -1947,6 +1975,16 @@ class ComputerUseSessionManager {
         throw const XunaHostChannelException(
           status: XtpStatus.denied,
           errorCode: 'denylisted_target_forbidden',
+        );
+      }
+      if (policy.isAppDenied(discovered.id) ||
+          policy.isAppDenied(discovered.name) ||
+          policy.isAppDenied(discovered.target) ||
+          (discovered.bundleId != null &&
+              policy.isAppDenied(discovered.bundleId!))) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'policy_blocked',
         );
       }
       allowedAppConfigs.add(

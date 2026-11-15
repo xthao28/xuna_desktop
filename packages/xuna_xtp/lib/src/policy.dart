@@ -149,16 +149,19 @@ class HostPolicyEvaluator {
     final matchedWorkflow = argResult.workflow;
     final normalizedUrlHost = argResult.normalizedUrlHost;
 
-    // UDC-8 §4.2: Inside an already-approved computer-use session, R2
-    // observation/input/app tools do not require per-call approval; R3 tools
-    // ALWAYS require a phone-signed single-use approval.
-    final requiresApproval = isInApprovedCuSession &&
-            (const <ToolFamily>{
-              ToolFamily.screen,
-              ToolFamily.ui,
-              ToolFamily.input,
-            }.contains(family) ||
-                (family == ToolFamily.app && matchedApp != null))
+    // UDC-8 §4.2 & UDC-18: Inside an already-approved computer-use session (or
+    // when the owner explicitly enabled the Autopilot trust preset), R2 tools
+    // do not require per-call approval; R3 tools ALWAYS require a phone-signed
+    // single-use approval regardless of preset or active session.
+    final isAutopilot = activePolicy.trustPreset == TrustPreset.autopilot;
+    final requiresApproval = (isAutopilot ||
+            (isInApprovedCuSession &&
+                (const <ToolFamily>{
+                  ToolFamily.screen,
+                  ToolFamily.ui,
+                  ToolFamily.input,
+                }.contains(family) ||
+                    (family == ToolFamily.app && matchedApp != null))))
         ? effectiveRisk >= RiskTier.r3
         : effectiveRisk >= RiskTier.r2;
 

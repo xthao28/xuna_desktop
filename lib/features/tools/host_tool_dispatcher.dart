@@ -943,6 +943,112 @@ class HostToolDispatcher {
     );
   }
 
+  /// Returns the current policy, allow/deny rules, and discovered apps for `xuna/get_policy` (UDC-18).
+  Future<XtpResponse> getPolicy({required Object requestId}) async {
+    final policy = policyStore.evaluator.policy;
+    final discovered = appScanner.discoverApps().map((a) => a.id).toList();
+    final result = <String, Object?>{
+      'schemaVersion': 1,
+      'trustPreset': policy?.trustPreset.value ?? 'standard',
+      'allowApps': policy?.apps.map((a) => a.id).toList() ?? const <String>[],
+      'denyApps': policy?.denyApps ?? const <String>[],
+      'allowDomains': policy?.urlDomains ?? const <String>[],
+      'denyDomains': policy?.denyDomains ?? const <String>[],
+      'discoveredApps': discovered,
+    };
+    return XtpResponse(id: requestId, result: result);
+  }
+
+  /// Validates and saves updated policy rules for `xuna/set_policy` (UDC-18).
+  ///
+  /// Safety hard guard: Immediately rejects with `policy_blocked` if any app in
+  /// `allowApps` is empty or matches `isHardDeniedAppOrProcess` (15 Terminal GUIs:
+  /// Terminal, iTerm, iTerm2, Warp, Alacritty, Kitty, WezTerm, wezterm-gui, Ghostty,
+  /// Hyper, cmd, powershell, pwsh, wt, wsl, conhost, bash, zsh).
+  ///
+  /// R3 phone-signed approval gate is strictly preserved regardless of preset.
+  Future<XtpFrame> setPolicy({
+    required Object requestId,
+    required SetPolicyParams params,
+  }) async {
+    for (final app in params.allowApps) {
+      if (app.trim().isEmpty || isHardDeniedAppOrProcess(app)) {
+        return XtpErrorResponse(
+          id: requestId,
+          code: JsonRpcErrorCode.invalidParams,
+          message:
+              'policy_blocked: Application "$app" is restricted or disallowed',
+        );
+      }
+    }
+
+    final currentPolicy = policyStore.evaluator.policy;
+    final preset = TrustPreset.fromValue(params.trustPreset);
+
+    final updatedApps = <AllowedAppConfig>[];
+    for (final appId in params.allowApps) {
+      if (params.denyApps.any(
+        (d) => d.trim().toLowerCase() == appId.trim().toLowerCase(),
+      )) {
+        continue;
+      }
+      final existing = currentPolicy?.findApp(appId);
+      if (existing != null) {
+        updatedApps.add(existing);
+      } else {
+        final discovered = appScanner.findApp(appId);
+        if (discovered != null) {
+          updatedApps.add(
+            AllowedAppConfig(
+              id: discovered.id,
+              name: discovered.name,
+              kind: discovered.kind,
+              target: discovered.target,
+              risk: RiskTier.r2,
+            ),
+          );
+        } else {
+          updatedApps.add(
+            AllowedAppConfig(
+              id: appId,
+              name: appId,
+              kind:
+                  Platform.isMacOS ? AppLaunchKind.bundle : AppLaunchKind.exe,
+              target: appId,
+              risk: RiskTier.r2,
+            ),
+          );
+        }
+      }
+    }
+
+    final updatedPolicy = HostPolicy(
+      schemaVersion: 1,
+      trustPreset: preset,
+      families:
+          currentPolicy?.families ??
+          <ToolFamily, FamilyPolicyDecision>{
+            for (final f in ToolFamily.values) f: FamilyPolicyDecision.allow,
+          },
+      apps: List.unmodifiable(updatedApps),
+      urlDomains: List.unmodifiable(params.allowDomains),
+      workflows: currentPolicy?.workflows ?? const <WorkflowConfig>[],
+      players: currentPolicy?.players ?? const <String>[],
+      denyApps: List.unmodifiable(params.denyApps),
+      denyDomains: List.unmodifiable(params.denyDomains),
+    );
+
+    await policyStore.savePolicy(updatedPolicy);
+
+    return XtpResponse(
+      id: requestId,
+      result: const <String, Object?>{
+        'schemaVersion': 1,
+        'status': 'ok',
+      },
+    );
+  }
+
   Future<void> _recordOutcome({
     required String invocationId,
     required String toolName,

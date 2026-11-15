@@ -63,6 +63,8 @@ const Set<String> knownXtpRequestMethods = <String>{
   'tools/call',
   'xuna/preflight',
   'ping',
+  'xuna/get_policy',
+  'xuna/set_policy',
 };
 
 const Set<String> knownXtpNotificationMethods = <String>{
@@ -524,6 +526,30 @@ class PingParams extends XtpRequestParams {
   const PingParams();
 }
 
+/// `xuna/get_policy` request params (UDC-18).
+class GetPolicyParams extends XtpRequestParams {
+  const GetPolicyParams();
+}
+
+/// `xuna/set_policy` request params (UDC-18).
+class SetPolicyParams extends XtpRequestParams {
+  const SetPolicyParams({
+    this.schemaVersion = 1,
+    required this.trustPreset,
+    this.allowApps = const <String>[],
+    this.denyApps = const <String>[],
+    this.allowDomains = const <String>[],
+    this.denyDomains = const <String>[],
+  });
+
+  final int schemaVersion;
+  final String trustPreset;
+  final List<String> allowApps;
+  final List<String> denyApps;
+  final List<String> allowDomains;
+  final List<String> denyDomains;
+}
+
 /// Base class for typed notification parameters.
 sealed class XtpNotificationParams {
   const XtpNotificationParams();
@@ -646,6 +672,11 @@ XtpRequestParams _parseRequestParams(
       case 'ping':
         _requireExactParamsKeys(params, const <String>{});
         return const PingParams();
+      case 'xuna/get_policy':
+        _requireExactParamsKeys(params, const <String>{});
+        return const GetPolicyParams();
+      case 'xuna/set_policy':
+        return _parseSetPolicyParams(params);
       default:
         throw XtpProtocolException(
           jsonRpcCode: JsonRpcErrorCode.methodNotFound,
@@ -800,6 +831,46 @@ ToolsCallParams _parseToolsCallParams(Map<String, Object?> params) {
     invocationId: invocationId,
     deadlineMs: deadlineMs,
     approval: approval,
+  );
+}
+
+SetPolicyParams _parseSetPolicyParams(Map<String, Object?> params) {
+  _requireExactParamsKeys(
+    params,
+    const <String>{'trustPreset'},
+    optionalKeys: const <String>{
+      'schemaVersion',
+      'allowApps',
+      'denyApps',
+      'allowDomains',
+      'denyDomains',
+    },
+  );
+  final trustPreset = _requireStringParam(params, 'trustPreset');
+  final schemaVersion = params.containsKey('schemaVersion')
+      ? _requireIntParam(params, 'schemaVersion')
+      : 1;
+
+  List<String> parseStringList(Object? val, String name) {
+    if (val == null) return const <String>[];
+    if (val is! List) throw FormatException('$name must be a list');
+    final result = <String>[];
+    for (final item in val) {
+      if (item is! String) {
+        throw FormatException('$name items must be strings');
+      }
+      result.add(item);
+    }
+    return result;
+  }
+
+  return SetPolicyParams(
+    schemaVersion: schemaVersion,
+    trustPreset: trustPreset,
+    allowApps: parseStringList(params['allowApps'], 'allowApps'),
+    denyApps: parseStringList(params['denyApps'], 'denyApps'),
+    allowDomains: parseStringList(params['allowDomains'], 'allowDomains'),
+    denyDomains: parseStringList(params['denyDomains'], 'denyDomains'),
   );
 }
 
@@ -1110,6 +1181,43 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
           throw const FormatException('Invalid xuna/errorCode');
         }
       }
+    } on FormatException catch (error) {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message: error.message,
+        requestId: requestId,
+      );
+    }
+    return;
+  }
+  if (_hasOnlyKeys(result, const <String>{'schemaVersion', 'status'})) {
+    if (result['schemaVersion'] != 1 || result['status'] != 'ok') {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message: 'Invalid set_policy response',
+        requestId: requestId,
+      );
+    }
+    return;
+  }
+  if (result.containsKey('trustPreset') &&
+      result.containsKey('discoveredApps') &&
+      result.containsKey('allowApps')) {
+    try {
+      _requireExactParamsKeys(
+        result,
+        const <String>{
+          'schemaVersion',
+          'trustPreset',
+          'allowApps',
+          'discoveredApps',
+        },
+        optionalKeys: const <String>{
+          'denyApps',
+          'allowDomains',
+          'denyDomains',
+        },
+      );
     } on FormatException catch (error) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,

@@ -349,6 +349,8 @@ class LanOfflineServer {
               case PreflightParams():
               case HelloEnrollParams():
               case HelloReconnectParams():
+              case GetPolicyParams():
+              case SetPolicyParams():
                 sendFrame(
                   XtpErrorResponse(
                     id: frame.id,

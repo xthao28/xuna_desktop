@@ -470,6 +470,12 @@ class XtpSessionClient {
         _sendFrame(
           await dispatcher.preflight(requestId: request.id, params: typed),
         );
+      case GetPolicyParams():
+        _sendFrame(await dispatcher.getPolicy(requestId: request.id));
+      case SetPolicyParams():
+        _sendFrame(
+          await dispatcher.setPolicy(requestId: request.id, params: typed),
+        );
       case HelloEnrollParams():
       case HelloReconnectParams():
       case ProofParams():

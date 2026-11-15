@@ -184,6 +184,8 @@ class HostPolicy {
     required this.urlDomains,
     required this.workflows,
     required this.players,
+    this.denyApps = const <String>[],
+    this.denyDomains = const <String>[],
   }) {
     if (schemaVersion != 1) {
       throw FormatException('Unsupported policy schemaVersion: $schemaVersion');
@@ -201,7 +203,7 @@ class HostPolicy {
         'workflows',
         'players',
       },
-      optionalKeys: const <String>{'trustPreset'},
+      optionalKeys: const <String>{'trustPreset', 'denyApps', 'denyDomains'},
       context: 'HostPolicy',
     );
     if (json['schemaVersion'] != 1) {
@@ -268,6 +270,30 @@ class HostPolicy {
       players.add(item);
     }
 
+    final denyAppsRaw = json['denyApps'];
+    final denyApps = <String>[];
+    if (denyAppsRaw != null) {
+      if (denyAppsRaw is! List) throw const FormatException('denyApps must be a list');
+      for (final item in denyAppsRaw) {
+        if (item is! String) throw const FormatException('denyApps items must be strings');
+        denyApps.add(item);
+      }
+    }
+
+    final denyDomainsRaw = json['denyDomains'];
+    final denyDomains = <String>[];
+    if (denyDomainsRaw != null) {
+      if (denyDomainsRaw is! List) {
+        throw const FormatException('denyDomains must be a list');
+      }
+      for (final item in denyDomainsRaw) {
+        if (item is! String) {
+          throw const FormatException('denyDomains items must be strings');
+        }
+        denyDomains.add(item);
+      }
+    }
+
     return HostPolicy(
       schemaVersion: 1,
       trustPreset: trustPreset,
@@ -276,6 +302,8 @@ class HostPolicy {
       urlDomains: List.unmodifiable(urlDomains),
       workflows: List.unmodifiable(workflows),
       players: List.unmodifiable(players),
+      denyApps: List.unmodifiable(denyApps),
+      denyDomains: List.unmodifiable(denyDomains),
     );
   }
 
@@ -286,6 +314,8 @@ class HostPolicy {
   final List<String> urlDomains;
   final List<WorkflowConfig> workflows;
   final List<String> players;
+  final List<String> denyApps;
+  final List<String> denyDomains;
 
   bool isFamilyAllowed(ToolFamily family) {
     if (family == ToolFamily.host) {
@@ -299,6 +329,67 @@ class HostPolicy {
       if (app.id == id) return app;
     }
     return null;
+  }
+
+  /// Returns `true` when [candidate] matches any owner-configured [denyApps]
+  /// entry (case-insensitive exact match or basename without `.app`/`.exe`).
+  bool isAppDenied(String? candidate) {
+    if (candidate == null || denyApps.isEmpty) return false;
+    final norm = _normalizeAppToken(candidate);
+    if (norm.isEmpty) return false;
+    final base = _stripAppExtension(norm);
+    for (final entry in denyApps) {
+      final deniedNorm = _normalizeAppToken(entry);
+      if (deniedNorm.isEmpty) continue;
+      final deniedBase = _stripAppExtension(deniedNorm);
+      if (norm == deniedNorm || base == deniedBase) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Returns `true` when [asciiHost] equals or is a subdomain of any entry in
+  /// [denyDomains] (case-insensitive).
+  bool isDomainDenied(String? asciiHost) {
+    if (asciiHost == null || asciiHost.isEmpty || denyDomains.isEmpty) {
+      return false;
+    }
+    final host = asciiHost.trim().toLowerCase();
+    if (host.isEmpty) return false;
+    for (final entry in denyDomains) {
+      var denied = entry.trim().toLowerCase();
+      while (denied.startsWith('.')) {
+        denied = denied.substring(1);
+      }
+      if (denied.isEmpty) continue;
+      if (host == denied || host.endsWith('.$denied')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static String _normalizeAppToken(String raw) {
+    var s = raw.trim().toLowerCase().replaceAll(r'\', '/');
+    while (s.endsWith('/') && s.length > 1) {
+      s = s.substring(0, s.length - 1);
+    }
+    final slash = s.lastIndexOf('/');
+    if (slash != -1 && slash < s.length - 1) {
+      s = s.substring(slash + 1);
+    }
+    return s;
+  }
+
+  static String _stripAppExtension(String token) {
+    if (token.endsWith('.app') && token.length > 4) {
+      return token.substring(0, token.length - 4);
+    }
+    if (token.endsWith('.exe') && token.length > 4) {
+      return token.substring(0, token.length - 4);
+    }
+    return token;
   }
 
   WorkflowConfig? findWorkflow(String id) {
@@ -319,6 +410,8 @@ class HostPolicy {
         'urlDomains': urlDomains,
         'workflows': workflows.map((w) => w.toJson()).toList(),
         'players': players,
+        'denyApps': denyApps,
+        'denyDomains': denyDomains,
       };
 }
 
