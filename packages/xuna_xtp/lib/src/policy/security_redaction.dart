@@ -82,6 +82,20 @@ const Set<String> hardDeniedAppsAndProcesses = <String>{
   'wsl.exe',
   'conhost',
   'conhost.exe',
+  'warp',
+  'dev.warp.warp-stable',
+  'alacritty',
+  'org.alacritty',
+  'kitty',
+  'net.kovidgoyal.kitty',
+  'wezterm',
+  'wezterm-gui',
+  'wezterm-gui.exe',
+  'com.github.wez.wezterm',
+  'ghostty',
+  'com.mitchellh.ghostty',
+  'hyper',
+  'co.zeit.hyper',
   // Password managers & credential stores
   '1password',
   '1password.exe',
@@ -102,6 +116,8 @@ const Set<String> hardDeniedAppsAndProcesses = <String>{
   // System & security settings
   'systemsettings',
   'systemsettings.exe',
+  'system_settings',
+  'com.apple.systemsettings',
   'control',
   'control.exe',
   'regedit',
@@ -133,13 +149,21 @@ const Set<String> hardDeniedAppsAndProcesses = <String>{
   'vnpay',
 };
 
+String _stripDelimiters(String s) => s.replaceAll(RegExp(r'[-_\s]'), '');
+
+final Set<String> _normalizedHardDeniedAppsAndProcesses =
+    hardDeniedAppsAndProcesses.map(_stripDelimiters).toSet();
+
 /// Returns `true` if [appIdOrProcess] is on XUNA's hard-refusal denylist
 /// (terminals, password managers, banking apps, or system security panes).
 bool isHardDeniedAppOrProcess(String? appIdOrProcess) {
   if (appIdOrProcess == null || appIdOrProcess.trim().isEmpty) return true;
   final raw = appIdOrProcess.trim().toLowerCase();
-  final baseName = raw.split(RegExp(r'[/\\]')).last;
+  final trimmedPath = raw.replaceAll(RegExp(r'[/\\]+$'), '');
+  if (trimmedPath.isEmpty) return true;
+  final baseName = trimmedPath.split(RegExp(r'[/\\]')).last;
   if (hardDeniedAppsAndProcesses.contains(raw) ||
+      hardDeniedAppsAndProcesses.contains(trimmedPath) ||
       hardDeniedAppsAndProcesses.contains(baseName)) {
     return true;
   }
@@ -151,6 +175,27 @@ bool isHardDeniedAppOrProcess(String? appIdOrProcess) {
   if (hardDeniedAppsAndProcesses.contains(withoutExt)) {
     return true;
   }
+
+  // Normalize delimiters (e.g. system_settings or system-settings -> systemsettings)
+  final strippedRaw = _stripDelimiters(raw);
+  final strippedTrimmed = _stripDelimiters(trimmedPath);
+  final strippedBase = _stripDelimiters(baseName);
+  final strippedWithoutExt = _stripDelimiters(withoutExt);
+
+  if (hardDeniedAppsAndProcesses.contains(strippedRaw) ||
+      hardDeniedAppsAndProcesses.contains(strippedTrimmed) ||
+      hardDeniedAppsAndProcesses.contains(strippedBase) ||
+      hardDeniedAppsAndProcesses.contains(strippedWithoutExt)) {
+    return true;
+  }
+
+  if (_normalizedHardDeniedAppsAndProcesses.contains(strippedRaw) ||
+      _normalizedHardDeniedAppsAndProcesses.contains(strippedTrimmed) ||
+      _normalizedHardDeniedAppsAndProcesses.contains(strippedBase) ||
+      _normalizedHardDeniedAppsAndProcesses.contains(strippedWithoutExt)) {
+    return true;
+  }
+
   return false;
 }
 

@@ -51,10 +51,6 @@ InputStepRisk classifyInputStepRisk({
         return const InputStepRisk(RiskTier.r3, 'unclassified_target');
       }
       final text = arguments['text'];
-      // A line break typed into a composer is an Enter: it can send.
-      if (text is String && (text.contains('\n') || text.contains('\r'))) {
-        return const InputStepRisk(RiskTier.r3, 'multiline_text');
-      }
       // `headed` types real keystrokes instead of setting the value, so any
       // key the app binds (Enter-to-send, shortcuts) can fire.
       if (arguments['headed'] == true) {
@@ -71,6 +67,45 @@ InputStepRisk classifyInputStepRisk({
       if (combo is! String) {
         return const InputStepRisk(RiskTier.r3, 'activation_key');
       }
+
+      final canonical = canonicalInputKeyCombo(combo);
+      final rawLower = combo.trim().toLowerCase();
+
+      // Safe editing shortcuts (Feature F9): Cmd/Ctrl + N/A/C/V
+      const safeEditingKeys = <String>{
+        'cmd+n',
+        'cmd+a',
+        'cmd+c',
+        'cmd+v',
+        'ctrl+n',
+        'ctrl+a',
+        'ctrl+c',
+        'ctrl+v',
+      };
+      if (safeEditingKeys.contains(canonical) ||
+          safeEditingKeys.contains(rawLower)) {
+        return const InputStepRisk(RiskTier.r2, 'editing_key');
+      }
+
+      // Draft line breaks (Feature F9): Enter/Return/Shift+Enter/Shift+Return in draft text roles
+      final isLineBreak = canonical == 'enter' ||
+          canonical == 'shift+enter' ||
+          rawLower == 'enter' ||
+          rawLower == 'return' ||
+          rawLower == 'shift+enter' ||
+          rawLower == 'shift+return';
+
+      if (isLineBreak && focusedRole == 'searchfield') {
+        if (canonical == 'enter' || rawLower == 'enter' || rawLower == 'return') {
+          return const InputStepRisk(RiskTier.r2, 'search_submit');
+        }
+        return const InputStepRisk(RiskTier.r3, 'activation_key');
+      }
+
+      if (isLineBreak && draftTextRoles.contains(focusedRole)) {
+        return const InputStepRisk(RiskTier.r2, 'draft_line_break');
+      }
+
       if (!isActivationKeyCombo(combo)) {
         return const InputStepRisk(RiskTier.r2, 'navigation_key');
       }
@@ -79,9 +114,6 @@ InputStepRisk classifyInputStepRisk({
         return const InputStepRisk(RiskTier.r3, 'activation_key');
       }
       final key = parts.single.trim().toLowerCase();
-      if ((key == 'enter' || key == 'return') && focusedRole == 'searchfield') {
-        return const InputStepRisk(RiskTier.r2, 'search_submit');
-      }
       if (key == 'space' && draftTextRoles.contains(focusedRole)) {
         return const InputStepRisk(RiskTier.r2, 'text_space');
       }

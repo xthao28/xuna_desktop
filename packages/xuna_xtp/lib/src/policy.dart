@@ -73,7 +73,7 @@ class HostPolicyEvaluator {
     String? hostId,
     List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
     bool isInApprovedCuSession = false,
-    bool allowZeroConfigAppDiscovery = false,
+    bool allowZeroConfigAppDiscovery = true,
     bool allowPublicHttpsDomains = false,
   }) {
     final now = (nowUtc ?? DateTime.now()).toUtc();
@@ -124,6 +124,9 @@ class HostPolicyEvaluator {
       );
     }
 
+    final effectiveAllowZeroConfig =
+        allowZeroConfigAppDiscovery && policy.allowsZeroConfigAppDiscovery;
+
     final argResult = validateToolArguments(
       toolName: toolName,
       arguments: arguments,
@@ -133,7 +136,7 @@ class HostPolicyEvaluator {
       hostId: hostId,
       pinnedPhonePublicKeys: pinnedPhonePublicKeys,
       isInApprovedCuSession: isInApprovedCuSession,
-      allowZeroConfigAppDiscovery: allowZeroConfigAppDiscovery,
+      allowZeroConfigAppDiscovery: effectiveAllowZeroConfig,
       allowPublicHttpsDomains: allowPublicHttpsDomains,
       evaluateStep: evaluateInvocation,
     );
@@ -147,14 +150,15 @@ class HostPolicyEvaluator {
     final normalizedUrlHost = argResult.normalizedUrlHost;
 
     // UDC-8 §4.2: Inside an already-approved computer-use session, R2
-    // observation/input tools do not require per-call approval; R3 tools
+    // observation/input/app tools do not require per-call approval; R3 tools
     // ALWAYS require a phone-signed single-use approval.
     final requiresApproval = isInApprovedCuSession &&
-            const <ToolFamily>{
+            (const <ToolFamily>{
               ToolFamily.screen,
               ToolFamily.ui,
               ToolFamily.input,
-            }.contains(family)
+            }.contains(family) ||
+                (family == ToolFamily.app && matchedApp != null))
         ? effectiveRisk >= RiskTier.r3
         : effectiveRisk >= RiskTier.r2;
 
@@ -258,3 +262,11 @@ bool _bytesEqual(Uint8List a, Uint8List b) {
   }
   return diff == 0;
 }
+
+/// Extension on [HostPolicy] to determine whether zero-config app discovery
+/// is permitted by the active trust preset.
+extension HostPolicyZeroConfigExtension on HostPolicy? {
+  bool get allowsZeroConfigAppDiscovery =>
+      (this?.trustPreset ?? TrustPreset.standard) != TrustPreset.strict;
+}
+

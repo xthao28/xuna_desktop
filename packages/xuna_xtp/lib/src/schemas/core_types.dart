@@ -408,7 +408,7 @@ const Set<String> _deniedInputKeyCombos = <String>{
   'alt+f4',
 };
 
-String? _canonicalInputKeyCombo(String raw) {
+String? canonicalInputKeyCombo(String raw) {
   final trimmed = raw.trim();
   if (trimmed.isEmpty || trimmed.length > 40) return null;
   var spec = trimmed;
@@ -451,7 +451,7 @@ String? _canonicalInputKeyCombo(String raw) {
 /// app shortcuts work in any app.
 bool isAllowedInputKeyCombo(String combo) {
   if (allowedInputKeyCombos.contains(combo)) return true;
-  final canonical = _canonicalInputKeyCombo(combo);
+  final canonical = canonicalInputKeyCombo(combo);
   if (canonical == null) return false;
   return !_deniedInputKeyCombos.contains(canonical);
 }
@@ -460,7 +460,7 @@ bool isAllowedInputKeyCombo(String combo) {
 /// that activate the focused control, so `input.key` treats them as R3 and
 /// requires a phone-signed approval for every press.
 bool isActivationKeyCombo(String combo) {
-  final canonical = _canonicalInputKeyCombo(combo);
+  final canonical = canonicalInputKeyCombo(combo);
   if (canonical == null) return false;
   final key = canonical.split('+').last;
   return key == 'enter' || key == 'space';

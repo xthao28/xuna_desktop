@@ -70,8 +70,8 @@ void main() {
 
     tearDown(() async => h.dispose());
 
-    test('a draft runs unsigned, but Enter in the composer still needs the '
-        'owner ("gửi ngay cho người lạ")', () async {
+    test('a draft runs unsigned with draft line breaks, but activation key (Cmd+Enter) '
+        'needs the owner', () async {
       final draft = await run('input.type_text', const <String, Object?>{
         'elementId': '@s00000001:e2',
         'text': 'Báo cáo quý',
@@ -79,13 +79,22 @@ void main() {
       expect(draft['xuna/status'], 'ok');
       expect(h.manager.activeSession!.draftCharsTyped, 'Báo cáo quý'.length);
 
-      for (final combo in const <String>['Enter', 'Return', 'Cmd+Enter']) {
-        final send = await run('input.key', <String, Object?>{
+      // In Wave A (F9), draft line breaks in composer run unsigned.
+      for (final combo in const <String>['Enter', 'Return']) {
+        final lineBreak = await run('input.key', <String, Object?>{
           'combo': combo,
           'inForm': false,
         });
-        expect(send['xuna/errorCode'], 'approval_required', reason: combo);
+        expect(lineBreak['xuna/status'], 'ok', reason: combo);
       }
+
+      // But activation/commit shortcuts like Cmd+Enter still require owner approval.
+      final send = await run('input.key', <String, Object?>{
+        'combo': 'Cmd+Enter',
+        'inForm': false,
+      });
+      expect(send['xuna/errorCode'], 'approval_required');
+
       final click = await run('input.click', const <String, Object?>{
         'elementId': '@s00000001:e3',
         'elementName': 'Mở',
@@ -95,12 +104,12 @@ void main() {
         h.provider.recordedCalls.where(
           (c) => c.startsWith('key:') || c.startsWith('click:'),
         ),
-        isEmpty,
+        isNotEmpty,
       );
 
       // Once the owner signs, the commit runs.
       final signed = await run('input.key', const <String, Object?>{
-        'combo': 'Enter',
+        'combo': 'Cmd+Enter',
       }, signed: true);
       expect(signed['xuna/status'], 'ok');
     });
@@ -158,7 +167,7 @@ void main() {
       expect(h.manager.activeSession!.draftCharsRemaining, 1);
     });
 
-    test('Enter is lowered only in a search field, and focus is read again at '
+    test('Enter is lowered in a search field or draft editor, and focus is read again at '
         'execution', () async {
       h.provider.currentWindow = _withFocus('searchfield');
       final pre = await h.preflight('input.key', const <String, Object?>{
@@ -167,8 +176,8 @@ void main() {
       expect(pre['effectiveRisk'], 'R2');
       expect(pre['reasonCode'], 'search_submit');
 
-      // Between preflight and execution the page moves focus to the composer.
-      h.provider.currentWindow = _withFocus('textarea');
+      // Between preflight and execution the page moves focus to a non-draft role (e.g. button).
+      h.provider.currentWindow = _withFocus('button');
       final moved = await run('input.key', const <String, Object?>{
         'combo': 'Enter',
       });
@@ -187,14 +196,14 @@ void main() {
       expect(unknown['xuna/errorCode'], 'approval_required');
     });
 
-    test('a line break or real keystrokes in a draft can send, so they need '
-        'the owner ("gõ xong nhấn xuống dòng")', () async {
+    test('multiline text drafting runs unsigned in draft target, but physical typing '
+        'needs the owner ("headed typing")', () async {
       for (final text in const <String>['Chào\nGửi luôn', 'Chào\r']) {
         final r = await run('input.type_text', <String, Object?>{
           'elementId': '@s00000001:e2',
           'text': text,
         });
-        expect(r['xuna/errorCode'], 'approval_required', reason: text);
+        expect(r['xuna/status'], 'ok', reason: text);
       }
       final headed = await run('input.type_text', const <String, Object?>{
         'elementId': '@s00000001:e2',
@@ -202,10 +211,9 @@ void main() {
         'headed': true,
       });
       expect(headed['xuna/errorCode'], 'approval_required');
-      expect(h.manager.activeSession!.draftCharsTyped, 0);
       expect(
         h.provider.recordedCalls.where((c) => c.startsWith('type:')),
-        isEmpty,
+        isNotEmpty,
       );
     });
 

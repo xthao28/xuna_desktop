@@ -2654,15 +2654,22 @@ void main() {
           final result = press(args);
           expect(result.allowed, isTrue, reason: '$args');
           expect(result.effectiveRisk, equals(RiskTier.r2), reason: '$args');
-          // The live classifier is the gate: unknown focus is R3, and so is
-          // focus in a text field for Enter, whatever `inForm` says.
+          // The live classifier is the gate: unknown focus is R3.
+          // Under F9, draft line breaks (Enter/Return/Shift+Return) and Space
+          // in a textfield are R2.
           for (final focus in const <String?>[null, 'textfield', 'button']) {
             final live = classifyInputStepRisk(
               toolName: 'input.key',
               arguments: args,
               focusedRole: focus,
             );
-            final lowered = (args['combo'] == 'Space' && focus == 'textfield');
+            final comboStr = (args['combo'] as String).toLowerCase();
+            final isDraftLineBreak = comboStr == 'enter' ||
+                comboStr == 'return' ||
+                comboStr == 'shift+enter' ||
+                comboStr == 'shift+return';
+            final lowered = focus == 'textfield' &&
+                (args['combo'] == 'Space' || isDraftLineBreak);
             expect(
               live.risk,
               equals(lowered ? RiskTier.r2 : RiskTier.r3),
@@ -2811,6 +2818,7 @@ void main() {
         const policyJson = '''
 {
   "schemaVersion": 1,
+  "trustPreset": "standard",
   "families": {"cu": "allow", "url": "allow", "workflow": "allow"},
   "apps": [],
   "urlDomains": ["github.com"],
@@ -2831,6 +2839,7 @@ void main() {
             'maxSteps': 6,
             'maxMinutes': 3,
           },
+          allowZeroConfigAppDiscovery: false,
           nowUtc: now,
         );
         expect(strictStart.allowed, isFalse);
@@ -3254,6 +3263,345 @@ void main() {
         uiNodeSignature(<String, Object?>{'role': 'Button', 'name': 'x' * 70}),
         'button\u0000${'x' * 60}',
       );
+    });
+  });
+
+  group('Milestone M3 — Policy, Presets & Input Risk (Features F7, F8, F9)', () {
+    test('F7: hard-denial blocks modern terminals, system settings, and delimiter variants', () {
+      final deniedModernTerminals = <String>[
+        'warp',
+        'Warp',
+        'dev.warp.warp-stable',
+        'dev.warp.Warp-Stable',
+        'alacritty',
+        'Alacritty.app',
+        'org.alacritty',
+        'kitty',
+        'Kitty.app',
+        'net.kovidgoyal.kitty',
+        'wezterm',
+        'WezTerm.app',
+        'com.github.wez.wezterm',
+        'ghostty',
+        'Ghostty.app',
+        'com.mitchellh.ghostty',
+        'hyper',
+        'Hyper.app',
+        'co.zeit.hyper',
+        '/Applications/Ghostty.app',
+        'C:\\tools\\alacritty.exe',
+      ];
+      for (final term in deniedModernTerminals) {
+        expect(isHardDeniedAppOrProcess(term), isTrue, reason: term);
+      }
+
+      final deniedSettingsVariants = <String>[
+        'systemsettings',
+        'system_settings',
+        'system-settings',
+        'System Settings',
+        'System Settings.app',
+        'com.apple.systemsettings',
+        'System-Preferences',
+        'system_preferences',
+        'com.apple.systempreferences',
+        '/System/Applications/System Settings.app',
+      ];
+      for (final setting in deniedSettingsVariants) {
+        expect(isHardDeniedAppOrProcess(setting), isTrue, reason: setting);
+      }
+
+      // Legitimate non-denied apps are allowed
+      final allowedApps = <String>[
+        'notes',
+        'Notes',
+        'com.apple.Notes',
+        'calculator',
+        'textedit',
+        'finder',
+        'slack',
+      ];
+      for (final app in allowedApps) {
+        expect(isHardDeniedAppOrProcess(app), isFalse, reason: app);
+      }
+    });
+
+    test('F8: TrustPreset enum parsing, serialization, and backward compatibility', () {
+      expect(TrustPreset.fromValue('strict'), equals(TrustPreset.strict));
+      expect(TrustPreset.fromValue('standard'), equals(TrustPreset.standard));
+      expect(TrustPreset.fromValue('autopilot'), equals(TrustPreset.autopilot));
+      expect(
+        () => TrustPreset.fromValue('invalid_preset'),
+        throwsA(isA<FormatException>()),
+      );
+
+      // Deserialization with explicit trustPreset
+      final policyJsonStrict = <String, Object?>{
+        'schemaVersion': 1,
+        'trustPreset': 'strict',
+        'families': <String, Object?>{'cu': 'allow'},
+        'apps': <Object?>[],
+        'urlDomains': <Object?>[],
+        'workflows': <Object?>[],
+        'players': <Object?>[],
+      };
+      final parsedStrict = HostPolicy.fromJson(policyJsonStrict);
+      expect(parsedStrict.trustPreset, equals(TrustPreset.strict));
+
+      final policyJsonAutopilot = <String, Object?>{
+        'schemaVersion': 1,
+        'trustPreset': 'autopilot',
+        'families': <String, Object?>{'cu': 'allow'},
+        'apps': <Object?>[],
+        'urlDomains': <Object?>[],
+        'workflows': <Object?>[],
+        'players': <Object?>[],
+      };
+      final parsedAutopilot = HostPolicy.fromJson(policyJsonAutopilot);
+      expect(parsedAutopilot.trustPreset, equals(TrustPreset.autopilot));
+
+      // Backward compatibility: legacy JSON lacking trustPreset defaults to standard
+      final legacyPolicyJson = <String, Object?>{
+        'schemaVersion': 1,
+        'families': <String, Object?>{'cu': 'allow'},
+        'apps': <Object?>[],
+        'urlDomains': <Object?>[],
+        'workflows': <Object?>[],
+        'players': <Object?>[],
+      };
+      final parsedLegacy = HostPolicy.fromJson(legacyPolicyJson);
+      expect(parsedLegacy.trustPreset, equals(TrustPreset.standard));
+
+      // Serialization round-trip includes trustPreset
+      final serialized = parsedStrict.toJson();
+      expect(serialized['trustPreset'], equals('strict'));
+      final reloaded = HostPolicy.fromJson(serialized);
+      expect(reloaded.trustPreset, equals(TrustPreset.strict));
+
+      final serializedDefault = parsedLegacy.toJson();
+      expect(serializedDefault['trustPreset'], equals('standard'));
+    });
+
+    test('F8: HostPolicyEvaluator propagates trustPreset to zero-config discovery', () {
+      final now = DateTime.utc(2026, 11, 14, 12, 0);
+
+      // Standard preset enables zero-config app discovery by default
+      final standardPolicy = HostPolicy(
+        schemaVersion: 1,
+        trustPreset: TrustPreset.standard,
+        families: const <ToolFamily, FamilyPolicyDecision>{ToolFamily.cu: FamilyPolicyDecision.allow},
+        apps: const <AllowedAppConfig>[],
+        urlDomains: const <String>[],
+        workflows: const <WorkflowConfig>[],
+        players: const <String>[],
+      );
+      final standardEvaluator = HostPolicyEvaluator.healthy(standardPolicy);
+      final standardEval = standardEvaluator.evaluateInvocation(
+        toolName: 'cu.session_start',
+        arguments: const <String, Object?>{
+          'goal': 'Ghi chú đơn nghỉ phép',
+          'apps': <String>['notes'],
+          'domains': <String>[],
+          'maxSteps': 10,
+          'maxMinutes': 5,
+        },
+        nowUtc: now,
+      );
+      // In standard preset, zero-config discovery passes through to R3 approval gate
+      expect(standardEval.effectiveRisk, equals(RiskTier.r3));
+      expect(standardEval.errorCode, equals('approval_required'));
+
+      // Strict preset denies unallowlisted apps as policy_blocked
+      final strictPolicy = HostPolicy(
+        schemaVersion: 1,
+        trustPreset: TrustPreset.strict,
+        families: const <ToolFamily, FamilyPolicyDecision>{ToolFamily.cu: FamilyPolicyDecision.allow},
+        apps: const <AllowedAppConfig>[],
+        urlDomains: const <String>[],
+        workflows: const <WorkflowConfig>[],
+        players: const <String>[],
+      );
+      final strictEvaluator = HostPolicyEvaluator.healthy(strictPolicy);
+      final strictEval = strictEvaluator.evaluateInvocation(
+        toolName: 'cu.session_start',
+        arguments: const <String, Object?>{
+          'goal': 'Ghi chú đơn nghỉ phép',
+          'apps': <String>['notes'],
+          'domains': <String>[],
+          'maxSteps': 10,
+          'maxMinutes': 5,
+        },
+        nowUtc: now,
+      );
+      expect(strictEval.allowed, isFalse);
+      expect(strictEval.errorCode, equals('policy_blocked'));
+    });
+
+    test('F9: classifyInputStepRisk for multiline text, editing shortcuts, and draft line breaks', () {
+      final draftTarget = <String, Object?>{
+        'role': 'textarea',
+        'editable': true,
+        'readOnly': false,
+        'name': 'Ghi chú',
+      };
+      const multilineText = 'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM\nĐộc lập - Tự do - Hạnh phúc\n\nĐƠN XIN NGHỈ PHÉP';
+
+      // Multiline text in draft target within budget is R2 draft_text
+      final r2Draft = classifyInputStepRisk(
+        toolName: 'input.type_text',
+        arguments: const <String, Object?>{'text': multilineText},
+        liveTarget: draftTarget,
+        draftCharsRemaining: 500,
+      );
+      expect(r2Draft.risk, equals(RiskTier.r2));
+      expect(r2Draft.reasonCode, equals('draft_text'));
+
+      // Multiline text exceeding budget is R3 draft_budget_exceeded
+      final r3Budget = classifyInputStepRisk(
+        toolName: 'input.type_text',
+        arguments: const <String, Object?>{'text': multilineText},
+        liveTarget: draftTarget,
+        draftCharsRemaining: 10,
+      );
+      expect(r3Budget.risk, equals(RiskTier.r3));
+      expect(r3Budget.reasonCode, equals('draft_budget_exceeded'));
+
+      // Multiline text with headed: true is R3 physical_typing
+      final r3Headed = classifyInputStepRisk(
+        toolName: 'input.type_text',
+        arguments: const <String, Object?>{
+          'text': multilineText,
+          'headed': true,
+        },
+        liveTarget: draftTarget,
+        draftCharsRemaining: 500,
+      );
+      expect(r3Headed.risk, equals(RiskTier.r3));
+      expect(r3Headed.reasonCode, equals('physical_typing'));
+
+      // Multiline text in non-draft target is R3 unclassified_target
+      final r3NonDraft = classifyInputStepRisk(
+        toolName: 'input.type_text',
+        arguments: const <String, Object?>{'text': multilineText},
+        liveTarget: null,
+        draftCharsRemaining: 500,
+      );
+      expect(r3NonDraft.risk, equals(RiskTier.r3));
+      expect(r3NonDraft.reasonCode, equals('unclassified_target'));
+
+      // Safe editing shortcuts (Cmd+N, Cmd+A, Cmd+C, Cmd+V, Ctrl+...)
+      for (final combo in const <String>[
+        'Cmd+N',
+        'cmd+n',
+        'Cmd+A',
+        'cmd+a',
+        'Cmd+C',
+        'cmd+c',
+        'Cmd+V',
+        'cmd+v',
+        'Ctrl+N',
+        'ctrl+n',
+        'Ctrl+A',
+        'ctrl+a',
+        'Ctrl+C',
+        'ctrl+c',
+        'Ctrl+V',
+        'ctrl+v',
+        '⌘+n',
+        '⌘+v',
+      ]) {
+        final r = classifyInputStepRisk(
+          toolName: 'input.key',
+          arguments: <String, Object?>{'combo': combo},
+        );
+        expect(r.risk, equals(RiskTier.r2), reason: combo);
+        expect(r.reasonCode, equals('editing_key'), reason: combo);
+      }
+
+      // Draft line breaks: Enter, Return, Shift+Enter, Shift+Return in draft text roles
+      for (final role in const <String>['textarea', 'textfield', 'searchbox']) {
+        for (final combo in const <String>['Enter', 'Return', 'Shift+Enter', 'shift+return', 'Shift+Return']) {
+          final r = classifyInputStepRisk(
+            toolName: 'input.key',
+            arguments: <String, Object?>{'combo': combo},
+            focusedRole: role,
+          );
+          expect(r.risk, equals(RiskTier.r2), reason: '$combo in $role');
+          expect(r.reasonCode, equals('draft_line_break'), reason: '$combo in $role');
+        }
+      }
+
+      // Enter/Return in searchfield is R2 search_submit
+      for (final combo in const <String>['Enter', 'Return']) {
+        final r = classifyInputStepRisk(
+          toolName: 'input.key',
+          arguments: <String, Object?>{'combo': combo},
+          focusedRole: 'searchfield',
+        );
+        expect(r.risk, equals(RiskTier.r2));
+        expect(r.reasonCode, equals('search_submit'));
+      }
+
+      // Activation key in non-draft role or without focus is R3 activation_key
+      for (final combo in const <String>['Enter', 'Return', 'Shift+Enter']) {
+        final rNull = classifyInputStepRisk(
+          toolName: 'input.key',
+          arguments: <String, Object?>{'combo': combo},
+          focusedRole: null,
+        );
+        expect(rNull.risk, equals(RiskTier.r3), reason: '$combo with null focus');
+        expect(rNull.reasonCode, equals('activation_key'));
+
+        final rButton = classifyInputStepRisk(
+          toolName: 'input.key',
+          arguments: <String, Object?>{'combo': combo},
+          focusedRole: 'button',
+        );
+        expect(rButton.risk, equals(RiskTier.r3), reason: '$combo with button focus');
+        expect(rButton.reasonCode, equals('activation_key'));
+      }
+
+      // Consequential buttons strictly R3
+      final consequentialNames = <String>[
+        'Gửi',
+        'Send',
+        'Publish',
+        'Xóa',
+        'Delete',
+        'Thanh toán',
+        'Pay',
+        'Đăng',
+        'Nộp',
+        'Submit',
+        'Xoá bài viết',
+        'Confirm payment',
+      ];
+      for (final name in consequentialNames) {
+        final rClick = classifyInputStepRisk(
+          toolName: 'input.click',
+          arguments: <String, Object?>{'elementName': name},
+          liveTarget: <String, Object?>{'name': name, 'role': 'button'},
+        );
+        expect(rClick.risk, equals(RiskTier.r3), reason: name);
+        expect(rClick.reasonCode, equals('consequential_target'), reason: name);
+      }
+
+      // Password fields strictly R3 / unclassified
+      final passwordTarget = <String, Object?>{
+        'role': 'textfield',
+        'isPassword': true,
+        'editable': true,
+        'name': 'Mật khẩu',
+      };
+      expect(isDraftTextTarget(passwordTarget), isFalse);
+      final rPassword = classifyInputStepRisk(
+        toolName: 'input.type_text',
+        arguments: const <String, Object?>{'text': 'secret123'},
+        liveTarget: passwordTarget,
+        draftCharsRemaining: 500,
+      );
+      expect(rPassword.risk, equals(RiskTier.r3));
+      expect(rPassword.reasonCode, equals('unclassified_target'));
     });
   });
 }

@@ -100,6 +100,7 @@ class HostPolicyStore {
   Future<HostPolicyEvaluator> writeDefaultPolicy() {
     final defaultPolicy = HostPolicy(
       schemaVersion: 1,
+      trustPreset: TrustPreset.standard,
       families: <ToolFamily, FamilyPolicyDecision>{
         for (final family in _defaultDesktopFamilies)
           family: FamilyPolicyDecision.allow,

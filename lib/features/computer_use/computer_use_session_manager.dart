@@ -2131,6 +2131,11 @@ class ComputerUseSessionManager {
       // before anything is typed.
       session.draftCharsTyped += (arguments['text'] as String).length;
       session.hasUncommittedDraft = true;
+    } else if (toolName == 'input.key' &&
+        !hasR3Approval &&
+        (stepRisk.reasonCode == 'draft_line_break' ||
+            stepRisk.reasonCode == 'editing_key')) {
+      session.hasUncommittedDraft = true;
     } else if (hasR3Approval &&
         (toolName == 'input.click' || toolName == 'input.key')) {
       // The owner signed a possible commit; drafts before it are settled.

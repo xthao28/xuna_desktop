@@ -157,10 +157,28 @@ class WorkflowConfig {
       };
 }
 
+/// Trust preset governing autonomous desktop behavior (Wave A R3 / Feature F8).
+enum TrustPreset {
+  strict('strict'),
+  standard('standard'),
+  autopilot('autopilot');
+
+  const TrustPreset(this.value);
+  final String value;
+
+  static TrustPreset fromValue(String value) {
+    for (final preset in values) {
+      if (preset.value == value) return preset;
+    }
+    throw FormatException('Unknown TrustPreset: $value');
+  }
+}
+
 /// Validated `host-policy.json` model (`UDC-3` §5.6.4).
 class HostPolicy {
   HostPolicy({
     this.schemaVersion = 1,
+    this.trustPreset = TrustPreset.standard,
     required this.families,
     required this.apps,
     required this.urlDomains,
@@ -183,6 +201,7 @@ class HostPolicy {
         'workflows',
         'players',
       },
+      optionalKeys: const <String>{'trustPreset'},
       context: 'HostPolicy',
     );
     if (json['schemaVersion'] != 1) {
@@ -190,6 +209,13 @@ class HostPolicy {
         'Unsupported policy schemaVersion: ${json['schemaVersion']}',
       );
     }
+
+    final rawPreset = json['trustPreset'];
+    final trustPreset = rawPreset != null
+        ? (rawPreset is String
+            ? TrustPreset.fromValue(rawPreset)
+            : throw const FormatException('Expected string for "trustPreset"'))
+        : TrustPreset.standard;
 
     final familiesRaw = _requireMap(json, 'families');
     final families = <ToolFamily, FamilyPolicyDecision>{};
@@ -244,6 +270,7 @@ class HostPolicy {
 
     return HostPolicy(
       schemaVersion: 1,
+      trustPreset: trustPreset,
       families: Map.unmodifiable(families),
       apps: List.unmodifiable(apps),
       urlDomains: List.unmodifiable(urlDomains),
@@ -253,6 +280,7 @@ class HostPolicy {
   }
 
   final int schemaVersion;
+  final TrustPreset trustPreset;
   final Map<ToolFamily, FamilyPolicyDecision> families;
   final List<AllowedAppConfig> apps;
   final List<String> urlDomains;
@@ -282,6 +310,7 @@ class HostPolicy {
 
   Map<String, Object?> toJson() => <String, Object?>{
         'schemaVersion': schemaVersion,
+        'trustPreset': trustPreset.value,
         'families': <String, Object?>{
           for (final entry in families.entries)
             entry.key.wire: entry.value.wire,
@@ -333,6 +362,7 @@ Map<String, Object?> castPolicyObjectMap(Object? raw, String context) {
 void _requireExactKeys(
   Map<String, Object?> map,
   Set<String> requiredKeys, {
+  Set<String> optionalKeys = const <String>{},
   required String context,
 }) {
   for (final req in requiredKeys) {
@@ -341,7 +371,7 @@ void _requireExactKeys(
     }
   }
   for (final key in map.keys) {
-    if (!requiredKeys.contains(key)) {
+    if (!requiredKeys.contains(key) && !optionalKeys.contains(key)) {
       throw FormatException('Unexpected key "$key" in $context');
     }
   }
