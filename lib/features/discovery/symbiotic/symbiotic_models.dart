@@ -1,6 +1,8 @@
 /// Data models for XUNA Symbiotic Desktop Services (`UDC-15`, `SYM-1`, `SYM-2`, `FORGE`, `CLAW`, `WORKSHOP`).
 library;
 
+import 'dart:convert';
+
 /// Active localhost development port entry (`UDC-15` S15.3).
 class DevPortEntry {
   const DevPortEntry({
@@ -188,6 +190,7 @@ class ForgedSkillEntry {
     this.versionHistory = const <String>['v1: Khởi tạo kỹ năng gốc'],
     this.autoTriggerOnDelta = false,
     this.selfTestPassed = true,
+    this.structuredSteps = const <Map<String, Object?>>[],
   });
 
   final String skillId;
@@ -218,6 +221,32 @@ class ForgedSkillEntry {
   final List<String> versionHistory;
   final bool autoTriggerOnDelta;
   final bool selfTestPassed;
+  final List<Map<String, Object?>> structuredSteps;
+
+  /// Returns structured tool-call steps for execution via `HostToolDispatcher.subStepExecutor` (`UDC-18` Wave D).
+  List<Map<String, Object?>> get executableSteps {
+    if (structuredSteps.isNotEmpty) return structuredSteps;
+    final res = <Map<String, Object?>>[];
+    for (final step in scriptSteps) {
+      final trimmed = step.trim();
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+          final decoded = jsonDecode(trimmed);
+          if (decoded is Map) {
+            res.add(decoded.map((k, v) => MapEntry<String, Object?>(k.toString(), v)));
+            continue;
+          }
+        } catch (_) {}
+      }
+      if (trimmed.contains('.') && !trimmed.contains(' ') && !trimmed.startsWith('[')) {
+        res.add(<String, Object?>{
+          'tool': trimmed,
+          'arguments': <String, Object?>{},
+        });
+      }
+    }
+    return List<Map<String, Object?>>.unmodifiable(res);
+  }
 
   ForgedSkillEntry copyWith({
     String? goal,
@@ -241,6 +270,7 @@ class ForgedSkillEntry {
     List<String>? versionHistory,
     bool? autoTriggerOnDelta,
     bool? selfTestPassed,
+    List<Map<String, Object?>>? structuredSteps,
   }) => ForgedSkillEntry(
     skillId: skillId,
     titleVi: titleVi,
@@ -270,6 +300,7 @@ class ForgedSkillEntry {
     versionHistory: versionHistory ?? this.versionHistory,
     autoTriggerOnDelta: autoTriggerOnDelta ?? this.autoTriggerOnDelta,
     selfTestPassed: selfTestPassed ?? this.selfTestPassed,
+    structuredSteps: structuredSteps ?? this.structuredSteps,
   );
 
   Map<String, Object?> toWireJson() => <String, Object?>{
@@ -289,6 +320,7 @@ class ForgedSkillEntry {
     'selfDebugIterations': selfDebugIterations,
     'parameterFields': parameterFields,
     'scriptSteps': scriptSteps,
+    if (structuredSteps.isNotEmpty) 'structuredSteps': structuredSteps,
     'summaryVi': summaryVi,
     'createdAt': createdAt,
     'runCount': runCount,
@@ -338,6 +370,23 @@ class ForgedSkillEntry {
           'default': '{}',
         },
       ];
+    }
+
+    List<Map<String, Object?>> readStructuredSteps(Object? raw) {
+      if (raw is List) {
+        final out = <Map<String, Object?>>[];
+        for (final item in raw) {
+          if (item is Map) {
+            out.add(
+              item.map((k, v) => MapEntry<String, Object?>(k.toString(), v)),
+            );
+          }
+        }
+        if (out.isNotEmpty) {
+          return List<Map<String, Object?>>.unmodifiable(out);
+        }
+      }
+      return const <Map<String, Object?>>[];
     }
 
     final skillId = (json['skillId'] as String? ?? '').trim();
@@ -396,6 +445,7 @@ class ForgedSkillEntry {
         json['versionHistory'],
         const <String>['v1: Khởi tạo kỹ năng gốc'],
       ),
+      structuredSteps: readStructuredSteps(json['structuredSteps']),
       autoTriggerOnDelta: (json['autoTriggerOnDelta'] as bool?) ?? false,
       selfTestPassed: selfTestPassed,
     );

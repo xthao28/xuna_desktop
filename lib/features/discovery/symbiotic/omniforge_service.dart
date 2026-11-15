@@ -10,14 +10,18 @@ export 'sandboxed_tool_runner.dart';
 
 /// XUNA OmniForge Citizen Toolsmith & Show-Me-Once service (`FORGE-1`, `FORGE-2`, `FORGE-3`, `UNIV-2`, `FORGE-LATM`).
 class OmniForgeService {
-  OmniForgeService({SandboxedToolRunner? sandboxRunner})
-      : sandboxRunner = sandboxRunner ?? SandboxedToolRunner() {
+  OmniForgeService({
+    SandboxedToolRunner? sandboxRunner,
+    Directory? workshopDirectory,
+  })  : sandboxRunner = sandboxRunner ?? SandboxedToolRunner(),
+        _customWorkshopDirectory = workshopDirectory {
     if (!Platform.environment.containsKey('FLUTTER_TEST')) {
       _loadPersistedWorkshopSkillsFromDisk();
     }
   }
 
   final SandboxedToolRunner sandboxRunner;
+  final Directory? _customWorkshopDirectory;
   int _forgeSeq = 0;
   int _undoSnapSeq = 0;
   bool _teachRecordingActive = false;
@@ -63,6 +67,59 @@ class OmniForgeService {
         } catch (_) {}
       }
     } catch (_) {}
+  }
+
+  String _resolveDefaultWorkshopDirectory([String? customFolder]) {
+    if (customFolder != null && customFolder.trim().isNotEmpty) {
+      return customFolder.trim();
+    }
+    if (_customWorkshopDirectory != null) {
+      return _customWorkshopDirectory.path;
+    }
+    final home =
+        Platform.environment['HOME'] ??
+        Platform.environment['USERPROFILE'] ??
+        Directory.systemTemp.path;
+    return '$home/Documents/XUNA_Workspace/XUNA_Skill_Workshop';
+  }
+
+  /// Persists [entry] as a disk recipe at `$workshopDir/${entry.skillId}/recipe.json` (`UDC-18` Wave D).
+  void saveSkillToDisk(ForgedSkillEntry entry, [String? workshopFolder]) {
+    try {
+      final base = _resolveDefaultWorkshopDirectory(workshopFolder);
+      final skillDir = Directory('$base${Platform.pathSeparator}${entry.skillId}');
+      skillDir.createSync(recursive: true);
+      final recipeFile = File('${skillDir.path}${Platform.pathSeparator}recipe.json');
+      recipeFile.writeAsStringSync(
+        const JsonEncoder.withIndent('  ').convert(entry.toDiskRecipeJson()),
+        flush: true,
+      );
+    } catch (_) {}
+  }
+
+  /// Deletes the custom skill directory at `$workshopDir/$skillId` from disk (`UDC-18` Wave D).
+  void deleteSkillFromDisk(String skillId, [String? workshopFolder]) {
+    try {
+      final base = _resolveDefaultWorkshopDirectory(workshopFolder);
+      final skillDir = Directory('$base${Platform.pathSeparator}$skillId');
+      if (skillDir.existsSync()) {
+        skillDir.deleteSync(recursive: true);
+      }
+    } catch (_) {}
+  }
+
+  /// Finds a forged skill by ID, tool name, or namespaced custom alias (`UDC-18` Wave D).
+  ForgedSkillEntry? findForgedSkill(String skillId) {
+    final needle = skillId.trim().toLowerCase();
+    for (final s in _forgedSkills) {
+      if (s.skillId.toLowerCase() == needle ||
+          (s.toolName.isNotEmpty && s.toolName.toLowerCase() == needle) ||
+          'forge.custom_${s.toolName}'.toLowerCase() == needle ||
+          'custom.${s.toolName}'.toLowerCase() == needle) {
+        return s;
+      }
+    }
+    return null;
   }
 
   /// Whether a `Show-Me-Once` (`teach.record_session`) demonstration is currently recording.
@@ -160,6 +217,7 @@ class OmniForgeService {
     String? scriptCode,
     String? testArgsJson,
     String? skillIdToUpdate,
+    List<Map<String, Object?>>? structuredSteps,
     DateTime? nowUtc,
   }) {
     _forgeSeq++;
@@ -528,6 +586,7 @@ class OmniForgeService {
       version: nextVersion,
       versionHistory: nextHistory,
       selfTestPassed: selfTestPassed,
+      structuredSteps: structuredSteps ?? const <Map<String, Object?>>[],
     );
     if (updateIdx >= 0) {
       _forgedSkills[updateIdx] = entry;
@@ -537,6 +596,7 @@ class OmniForgeService {
         _forgedSkills.removeLast();
       }
     }
+    saveSkillToDisk(entry);
     return entry;
   }
 
@@ -740,9 +800,14 @@ class OmniForgeService {
     return descriptors;
   }
 
-  /// Lists, deletes, or exports a portable JSON recipe from [_forgedSkills] (`FORGE-1`).
+  /// Lists, saves, deletes, or exports a portable JSON recipe from [_forgedSkills] (`FORGE-1`, `UDC-18` Wave D).
   ({List<Map<String, Object?>> skills, String exportedRecipeJson})
-  listAndManageForgedSkills({String action = 'list', String? skillId}) {
+  listAndManageForgedSkills({
+    String action = 'list',
+    String? skillId,
+    Map<String, Object?>? skillRecipe,
+    String? workshopFolder,
+  }) {
     if (_forgedSkills.isEmpty && action == 'list') {
       synthesizeSkill(
         goal:
@@ -752,16 +817,46 @@ class OmniForgeService {
     }
 
     var exported = '';
-    if (action == 'delete_one' && skillId != null) {
+    if ((action == 'save' || action == 'create') && skillRecipe != null) {
+      final entry = ForgedSkillEntry.fromDiskRecipeJson(skillRecipe);
+      if (entry.scriptCode.isNotEmpty) {
+        final check = validateSynthesizedToolScript(
+          scriptCode: entry.scriptCode,
+          runtime: entry.runtime,
+        );
+        if (check.safe) {
+          final idx = _forgedSkills.indexWhere(
+            (s) => s.skillId.toLowerCase() == entry.skillId.toLowerCase(),
+          );
+          if (idx >= 0) {
+            _forgedSkills[idx] = entry;
+          } else {
+            _forgedSkills.insert(0, entry);
+          }
+          saveSkillToDisk(entry, workshopFolder);
+        }
+      } else {
+        final idx = _forgedSkills.indexWhere(
+          (s) => s.skillId.toLowerCase() == entry.skillId.toLowerCase(),
+        );
+        if (idx >= 0) {
+          _forgedSkills[idx] = entry;
+        } else {
+          _forgedSkills.insert(0, entry);
+        }
+        saveSkillToDisk(entry, workshopFolder);
+      }
+    } else if ((action == 'delete' || action == 'delete_one') && skillId != null) {
       _forgedSkills.removeWhere(
         (s) => s.skillId.toLowerCase() == skillId.trim().toLowerCase(),
       );
+      deleteSkillFromDisk(skillId.trim(), workshopFolder);
     } else if (action == 'export_recipe' && skillId != null) {
       final found = _forgedSkills
           .where((s) => s.skillId.toLowerCase() == skillId.trim().toLowerCase())
           .firstOrNull;
       if (found != null) {
-        exported = jsonEncode(found.toWireJson());
+        exported = jsonEncode(found.toDiskRecipeJson());
       }
     }
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -42,6 +43,7 @@ class AutoSymbioticService {
     Future<String> Function()? lanIpResolver,
     Future<SystemVitalsSnapshot> Function()? vitalsReader,
     SandboxedToolRunner? sandboxRunner,
+    Directory? workshopDirectory,
   }) {
     vitals = SymbioticVitalsService(
       clipboardWriter: clipboardWriter,
@@ -51,7 +53,10 @@ class AutoSymbioticService {
     );
     workspacePocket = WorkspacePocketService();
     watchdogCoach = WatchdogCoachService(vitalsService: vitals);
-    forge = OmniForgeService(sandboxRunner: sandboxRunner);
+    forge = OmniForgeService(
+      sandboxRunner: sandboxRunner,
+      workshopDirectory: workshopDirectory,
+    );
     late final HeartbeatCanvasService hbCanvas;
     pipeline = UniversalPipelineService(
       forgeService: forge,
@@ -277,6 +282,7 @@ class AutoSymbioticService {
     String? scriptCode,
     String? testArgsJson,
     String? skillIdToUpdate,
+    List<Map<String, Object?>>? structuredSteps,
     DateTime? nowUtc,
   }) => forge.synthesizeSkill(
     goal: goal,
@@ -288,6 +294,7 @@ class AutoSymbioticService {
     scriptCode: scriptCode,
     testArgsJson: testArgsJson,
     skillIdToUpdate: skillIdToUpdate,
+    structuredSteps: structuredSteps,
     nowUtc: nowUtc,
   );
 
@@ -325,8 +332,21 @@ class AutoSymbioticService {
   }) => forge.buildDynamicToolDescriptors(defaultPermission: defaultPermission);
 
   ({List<Map<String, Object?>> skills, String exportedRecipeJson})
-  listAndManageForgedSkills({String action = 'list', String? skillId}) =>
-      forge.listAndManageForgedSkills(action: action, skillId: skillId);
+  listAndManageForgedSkills({
+    String action = 'list',
+    String? skillId,
+    Map<String, Object?>? skillRecipe,
+    String? workshopFolder,
+  }) =>
+      forge.listAndManageForgedSkills(
+        action: action,
+        skillId: skillId,
+        skillRecipe: skillRecipe,
+        workshopFolder: workshopFolder,
+      );
+
+  ForgedSkillEntry? findForgedSkill(String skillId) =>
+      forge.findForgedSkill(skillId);
 
   List<ForgedSkillEntry> listForgedSkillEntries() =>
       forge.listForgedSkillEntries();

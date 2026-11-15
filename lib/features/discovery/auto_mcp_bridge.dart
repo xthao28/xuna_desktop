@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Metadata for a locally configured MCP server discovered on the host (`UDC-12` S12.3).
@@ -119,8 +121,21 @@ class AutoMcpBridge {
     return false;
   }
 
+  static const int maxToolOutputBytes = 6144;
+  // ignore: constant_identifier_names
+  static const int MAX_TOOL_OUTPUT_BYTES = 6144;
+
+  /// Bounds [raw] output text to at most [maxToolOutputBytes] in UTF-8 bytes (`UDC-18` Wave D).
+  static String boundToolOutput(String raw) {
+    final bytes = utf8.encode(raw);
+    if (bytes.length <= maxToolOutputBytes) {
+      return raw;
+    }
+    return utf8.decode(bytes.sublist(0, maxToolOutputBytes), allowMalformed: true);
+  }
+
   /// Calls [toolName] on [server] with [payloadJson] and redacts any sensitive tokens
-  /// from the summary before returning.
+  /// from the summary before returning. Bounded to <= 6144 bytes.
   Future<String> callTool({
     required DiscoveredMcpServer server,
     required String toolName,
@@ -139,7 +154,92 @@ class AutoMcpBridge {
     final rawSummary = invoker != null
         ? await invoker(server, toolName, payload)
         : await _defaultInvokeMcpTool(server, toolName, payload);
-    return redactSensitiveTokens(rawSummary, maxChars: 400);
+    final bounded = boundToolOutput(rawSummary);
+    return redactBrowserSnapshot(bounded, maxBytes: maxToolOutputBytes).text;
+  }
+
+  /// Lists available tools on [server] via MCP JSON-RPC `tools/list` protocol (`UDC-18` Wave D).
+  Future<List<Map<String, Object?>>> listTools(DiscoveredMcpServer server) async {
+    return _defaultListMcpTools(server);
+  }
+
+  static Future<void> _validateAntiSsrf(Uri uri) async {
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+    if (uri.host.trim().isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+    if (uri.userInfo.isNotEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'ssrf_blocked',
+      );
+    }
+    if (uri.hasPort && (uri.port <= 0 || uri.port > 65535)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+
+    final hostLower = uri.host.trim().toLowerCase();
+
+    // Stage 1: Check known local/forbidden hostname literals
+    if (isForbiddenLiteralOrLocalHost(hostLower)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'ssrf_blocked',
+      );
+    }
+
+    // Stage 2: Direct IP parsing check
+    final directIp = InternetAddress.tryParse(hostLower);
+    if (directIp != null) {
+      if (!isPublicIpAddress(directIp.rawAddress)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'ssrf_blocked',
+        );
+      }
+      return;
+    }
+
+    // Stage 3: Post-DNS lookup check
+    try {
+      final addresses = await InternetAddress.lookup(hostLower)
+          .timeout(const Duration(seconds: 3));
+      if (addresses.isEmpty) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_connection_failed',
+        );
+      }
+      for (final addr in addresses) {
+        if (!isPublicIpAddress(addr.rawAddress)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.denied,
+            errorCode: 'ssrf_blocked',
+          );
+        }
+      }
+    } on SocketException {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_connection_failed',
+      );
+    } on TimeoutException {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_connection_failed',
+      );
+    }
   }
 
   Future<String> _defaultInvokeMcpTool(
@@ -147,89 +247,463 @@ class AutoMcpBridge {
     String toolName,
     Map<String, Object?> payload,
   ) async {
-    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      try {
-        if (server.transport == 'http' &&
-            server.url != null &&
-            server.url!.trim().isNotEmpty) {
-          final client = HttpClient()
-            ..connectionTimeout = const Duration(seconds: 3);
-          try {
-            final req = await client.postUrl(Uri.parse(server.url!.trim()));
-            req.headers.contentType = ContentType.json;
-            final body = jsonEncode(<String, Object?>{
-              'jsonrpc': '2.0',
-              'id': 1,
-              'method': 'tools/call',
-              'params': <String, Object?>{
-                'name': toolName,
-                'arguments': payload,
-              },
-            });
-            req.add(utf8.encode(body));
-            final resp = await req.close().timeout(const Duration(seconds: 4));
-            final rawResp = await resp.transform(utf8.decoder).join();
-            if (rawResp.trim().isNotEmpty) {
-              return 'Đã gọi ${server.id}.$toolName: ${rawResp.trim()}';
-            }
-          } finally {
-            client.close(force: true);
-          }
-        } else if (server.transport == 'stdio' &&
-            server.command != null &&
-            server.command!.trim().isNotEmpty) {
-          final proc = await Process.start(
-            server.command!.trim(),
-            server.args,
-            runInShell: Platform.isWindows,
+    if (server.transport == 'stdio') {
+      return _invokeStdioMcpTool(server, toolName, payload);
+    } else if (server.transport == 'http') {
+      return _invokeHttpMcpTool(server, toolName, payload);
+    } else {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+  }
+
+  Future<String> _invokeStdioMcpTool(
+    DiscoveredMcpServer server,
+    String toolName,
+    Map<String, Object?> payload,
+  ) async {
+    final command = server.command?.trim();
+    if (command == null || command.isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+
+    if (isHardDeniedAppOrProcess(command)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'policy_blocked',
+      );
+    }
+
+    final _McpStdioSession session;
+    try {
+      session = await _McpStdioSession.start(command, server.args);
+    } catch (_) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_connection_failed',
+      );
+    }
+
+    try {
+      // Step 1: Handshake initialize
+      final initResp = await session.request(
+        id: 1,
+        method: 'initialize',
+        params: <String, Object?>{
+          'protocolVersion': '2024-11-05',
+          'capabilities': <String, Object?>{},
+          'clientInfo': <String, Object?>{
+            'name': 'xuna_desktop',
+            'version': '0.1.0',
+          },
+        },
+        timeout: const Duration(seconds: 5),
+      ).catchError((_) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_handshake_failed',
+        );
+      });
+
+      if (initResp.containsKey('error') || initResp['result'] == null) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_handshake_failed',
+        );
+      }
+
+      // Step 2: Handshake initialized notification
+      session.notify(method: 'notifications/initialized');
+
+      // Step 3: tools/call
+      final callResp = await session.request(
+        id: 2,
+        method: 'tools/call',
+        params: <String, Object?>{
+          'name': toolName,
+          'arguments': payload,
+        },
+        timeout: const Duration(seconds: 10),
+      ).catchError((_) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_tool_failed',
+        );
+      });
+
+      if (callResp.containsKey('error')) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_tool_failed',
+        );
+      }
+
+      final result = callResp['result'];
+      if (result is Map) {
+        if (result['isError'] == true) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_tool_failed',
           );
-          try {
-            final initReq = jsonEncode(<String, Object?>{
-              'jsonrpc': '2.0',
-              'id': 1,
-              'method': 'initialize',
-              'params': <String, Object?>{
-                'protocolVersion': '2024-11-05',
-                'capabilities': <String, Object?>{},
-                'clientInfo': <String, Object?>{
-                  'name': 'xuna_desktop',
-                  'version': '0.1.0',
-                },
-              },
-            });
-            final callReq = jsonEncode(<String, Object?>{
-              'jsonrpc': '2.0',
-              'id': 2,
-              'method': 'tools/call',
-              'params': <String, Object?>{
-                'name': toolName,
-                'arguments': payload,
-              },
-            });
-            proc.stdin.writeln(initReq);
-            proc.stdin.writeln(callReq);
-            await proc.stdin.close();
-            final out = await proc.stdout
-                .transform(utf8.decoder)
-                .join()
-                .timeout(const Duration(seconds: 4), onTimeout: () => '');
-            if (out.trim().isNotEmpty) {
-              final lines = out
-                  .split('\n')
-                  .map((l) => l.trim())
-                  .where((l) => l.isNotEmpty)
-                  .toList();
-              if (lines.isNotEmpty) {
-                return 'Đã gọi ${server.id}.$toolName: ${lines.last}';
-              }
+        }
+        final content = result['content'];
+        if (content is List) {
+          final textSegments = <String>[];
+          for (final c in content) {
+            if (c is Map && c['text'] != null) {
+              textSegments.add(c['text'].toString());
             }
-          } finally {
-            proc.kill();
+          }
+          if (textSegments.isNotEmpty) {
+            return boundToolOutput(textSegments.join('\n'));
           }
         }
-      } catch (_) {}
+        if (result['text'] != null) {
+          return boundToolOutput(result['text'].toString());
+        }
+        return boundToolOutput(jsonEncode(result));
+      } else if (result != null) {
+        return boundToolOutput(result.toString());
+      }
+
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_tool_failed',
+      );
+    } finally {
+      await session.close();
     }
-    return 'Đã gọi ${server.id}.$toolName (${server.transport}).';
+  }
+
+  Future<String> _invokeHttpMcpTool(
+    DiscoveredMcpServer server,
+    String toolName,
+    Map<String, Object?> payload,
+  ) async {
+    final rawUrl = server.url?.trim();
+    if (rawUrl == null || rawUrl.isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+
+    await _validateAntiSsrf(uri);
+
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+    try {
+      // Step 1: Handshake initialize
+      final initReq = await client.postUrl(uri).catchError((_) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_connection_failed',
+        );
+      });
+      initReq.headers.contentType = ContentType.json;
+      initReq.add(utf8.encode(jsonEncode(<String, Object?>{
+        'jsonrpc': '2.0',
+        'id': 1,
+        'method': 'initialize',
+        'params': <String, Object?>{
+          'protocolVersion': '2024-11-05',
+          'capabilities': <String, Object?>{},
+          'clientInfo': <String, Object?>{
+            'name': 'xuna_desktop',
+            'version': '0.1.0',
+          },
+        },
+      })));
+      final initResp = await initReq.close().timeout(const Duration(seconds: 5)).catchError((_) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_handshake_failed',
+        );
+      });
+      if (initResp.statusCode != 200) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_handshake_failed',
+        );
+      }
+      final rawInit = await initResp.transform(utf8.decoder).join();
+      final decodedInit = jsonDecode(rawInit);
+      if (decodedInit is! Map || decodedInit.containsKey('error')) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_handshake_failed',
+        );
+      }
+
+      // Step 2: tools/call
+      final callReq = await client.postUrl(uri).catchError((_) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_connection_failed',
+        );
+      });
+      callReq.headers.contentType = ContentType.json;
+      callReq.add(utf8.encode(jsonEncode(<String, Object?>{
+        'jsonrpc': '2.0',
+        'id': 2,
+        'method': 'tools/call',
+        'params': <String, Object?>{
+          'name': toolName,
+          'arguments': payload,
+        },
+      })));
+      final callResp = await callReq.close().timeout(const Duration(seconds: 10)).catchError((_) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_tool_failed',
+        );
+      });
+      if (callResp.statusCode != 200) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_tool_failed',
+        );
+      }
+      final rawCall = await callResp.transform(utf8.decoder).join();
+      final decodedCall = jsonDecode(rawCall);
+      if (decodedCall is! Map || decodedCall.containsKey('error')) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_tool_failed',
+        );
+      }
+      final result = decodedCall['result'];
+      if (result is Map) {
+        if (result['isError'] == true) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_tool_failed',
+          );
+        }
+        final content = result['content'];
+        if (content is List) {
+          final textSegments = <String>[];
+          for (final c in content) {
+            if (c is Map && c['text'] != null) {
+              textSegments.add(c['text'].toString());
+            }
+          }
+          if (textSegments.isNotEmpty) {
+            return boundToolOutput(textSegments.join('\n'));
+          }
+        }
+        if (result['text'] != null) {
+          return boundToolOutput(result['text'].toString());
+        }
+        return boundToolOutput(jsonEncode(result));
+      } else if (result != null) {
+        return boundToolOutput(result.toString());
+      }
+
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_tool_failed',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<List<Map<String, Object?>>> _defaultListMcpTools(
+    DiscoveredMcpServer server,
+  ) async {
+    if (server.transport == 'stdio') {
+      final command = server.command?.trim();
+      if (command == null || command.isEmpty) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'mcp_server_not_configured',
+        );
+      }
+      if (isHardDeniedAppOrProcess(command)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'policy_blocked',
+        );
+      }
+
+      final _McpStdioSession session;
+      try {
+        session = await _McpStdioSession.start(command, server.args);
+      } catch (_) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_connection_failed',
+        );
+      }
+
+      try {
+        final initResp = await session.request(
+          id: 1,
+          method: 'initialize',
+          params: <String, Object?>{
+            'protocolVersion': '2024-11-05',
+            'capabilities': <String, Object?>{},
+            'clientInfo': <String, Object?>{
+              'name': 'xuna_desktop',
+              'version': '0.1.0',
+            },
+          },
+          timeout: const Duration(seconds: 5),
+        ).catchError((_) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_handshake_failed',
+          );
+        });
+        if (initResp.containsKey('error') || initResp['result'] == null) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_handshake_failed',
+          );
+        }
+        session.notify(method: 'notifications/initialized');
+
+        final listResp = await session.request(
+          id: 2,
+          method: 'tools/list',
+          params: <String, Object?>{},
+          timeout: const Duration(seconds: 5),
+        ).catchError((_) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_tool_failed',
+          );
+        });
+
+        if (listResp.containsKey('error')) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_tool_failed',
+          );
+        }
+        final result = listResp['result'];
+        if (result is Map && result['tools'] is List) {
+          final toolsList = result['tools'] as List;
+          return toolsList
+              .whereType<Map>()
+              .map((m) => m.map((k, v) => MapEntry(k.toString(), v)))
+              .toList();
+        }
+        return const <Map<String, Object?>>[];
+      } finally {
+        await session.close();
+      }
+    } else if (server.transport == 'http') {
+      final rawUrl = server.url?.trim();
+      if (rawUrl == null || rawUrl.isEmpty) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'mcp_server_not_configured',
+        );
+      }
+      final uri = Uri.tryParse(rawUrl);
+      if (uri == null) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'mcp_server_not_configured',
+        );
+      }
+      await _validateAntiSsrf(uri);
+
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      try {
+        final initReq = await client.postUrl(uri).catchError((_) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_connection_failed',
+          );
+        });
+        initReq.headers.contentType = ContentType.json;
+        initReq.add(utf8.encode(jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': 1,
+          'method': 'initialize',
+          'params': <String, Object?>{
+            'protocolVersion': '2024-11-05',
+            'capabilities': <String, Object?>{},
+            'clientInfo': <String, Object?>{
+              'name': 'xuna_desktop',
+              'version': '0.1.0',
+            },
+          },
+        })));
+        final initResp = await initReq.close().timeout(const Duration(seconds: 5)).catchError((_) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_handshake_failed',
+          );
+        });
+        if (initResp.statusCode != 200) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_handshake_failed',
+          );
+        }
+
+        final listReq = await client.postUrl(uri).catchError((_) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_connection_failed',
+          );
+        });
+        listReq.headers.contentType = ContentType.json;
+        listReq.add(utf8.encode(jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'id': 2,
+          'method': 'tools/list',
+          'params': <String, Object?>{},
+        })));
+        final listResp = await listReq.close().timeout(const Duration(seconds: 5)).catchError((_) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_tool_failed',
+          );
+        });
+        if (listResp.statusCode != 200) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'mcp_tool_failed',
+          );
+        }
+        final rawList = await listResp.transform(utf8.decoder).join();
+        final decodedList = jsonDecode(rawList);
+        if (decodedList is Map && decodedList['result'] is Map) {
+          final res = decodedList['result'] as Map;
+          if (res['tools'] is List) {
+            final toolsList = res['tools'] as List;
+            return toolsList
+                .whereType<Map>()
+                .map((m) => m.map((k, v) => MapEntry(k.toString(), v)))
+                .toList();
+          }
+        }
+        return const <Map<String, Object?>>[];
+      } finally {
+        client.close(force: true);
+      }
+    } else {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
   }
 
   static void _parseMcpConfigFile(
@@ -321,5 +795,123 @@ class AutoMcpBridge {
       ));
     }
     return out;
+  }
+}
+
+/// JSON-RPC 2.0 stdio session with line-delimited communication and ID dispatch (`UDC-18` Wave D).
+class _McpStdioSession {
+  _McpStdioSession._(this._process, this._stdoutLines);
+
+  final Process _process;
+  final Stream<String> _stdoutLines;
+  late final StreamSubscription<String> _sub;
+  final Map<int, Completer<Map<String, Object?>>> _pendingRequests =
+      <int, Completer<Map<String, Object?>>>{};
+  bool _closed = false;
+
+  static Future<_McpStdioSession> start(
+    String command,
+    List<String> args,
+  ) async {
+    final process = await Process.start(
+      command,
+      args,
+      runInShell: false,
+    );
+    final stdoutLines = process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    final session = _McpStdioSession._(process, stdoutLines);
+    session._init();
+    return session;
+  }
+
+  void _init() {
+    _sub = _stdoutLines.listen(
+      (line) {
+        final trimmed = line.trim();
+        if (trimmed.isEmpty) return;
+        try {
+          final decoded = jsonDecode(trimmed);
+          if (decoded is Map) {
+            final id = decoded['id'];
+            if (id is int && _pendingRequests.containsKey(id)) {
+              _pendingRequests.remove(id)!.complete(
+                decoded.map((k, v) => MapEntry(k.toString(), v)),
+              );
+            }
+          }
+        } catch (_) {}
+      },
+      onError: (err) {
+        _failAll(err);
+      },
+      onDone: () {
+        _failAll(StateError('MCP process stdout closed'));
+      },
+    );
+  }
+
+  void _failAll(Object error) {
+    for (final completer in _pendingRequests.values) {
+      if (!completer.isCompleted) {
+        completer.completeError(error);
+      }
+    }
+    _pendingRequests.clear();
+  }
+
+  Future<Map<String, Object?>> request({
+    required int id,
+    required String method,
+    Map<String, Object?>? params,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    if (_closed) throw StateError('Session closed');
+    final completer = Completer<Map<String, Object?>>();
+    _pendingRequests[id] = completer;
+
+    final req = <String, Object?>{
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      if (params != null) 'params': params,
+    };
+    _process.stdin.writeln(jsonEncode(req));
+
+    return completer.future.timeout(timeout);
+  }
+
+  void notify({
+    required String method,
+    Map<String, Object?>? params,
+  }) {
+    if (_closed) return;
+    final msg = <String, Object?>{
+      'jsonrpc': '2.0',
+      'method': method,
+      if (params != null) 'params': params,
+    };
+    _process.stdin.writeln(jsonEncode(msg));
+  }
+
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    _failAll(StateError('Session closed'));
+    await _sub.cancel();
+    try {
+      await _process.stdin.close();
+    } catch (_) {}
+    try {
+      _process.kill();
+    } catch (_) {}
+    try {
+      await _process.exitCode.timeout(const Duration(milliseconds: 500));
+    } catch (_) {
+      try {
+        _process.kill();
+      } catch (_) {}
+    }
   }
 }

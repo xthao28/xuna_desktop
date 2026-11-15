@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
@@ -107,6 +108,39 @@ class ForgeSynthesizeSkillTool extends HostToolHandler {
   }
 }
 
+Map<String, Object?> _interpolateStepArgs(
+  Map<String, Object?> args,
+  Map<String, String> params,
+) {
+  if (params.isEmpty) return args;
+  final result = <String, Object?>{};
+  for (final entry in args.entries) {
+    final val = entry.value;
+    if (val is String) {
+      result[entry.key] = interpolateSkillTemplate(val, params);
+    } else if (val is Map) {
+      result[entry.key] = _interpolateStepArgs(
+        val.map((k, v) => MapEntry(k.toString(), v)),
+        params,
+      );
+    } else if (val is List) {
+      result[entry.key] = val.map((item) {
+        if (item is String) return interpolateSkillTemplate(item, params);
+        if (item is Map) {
+          return _interpolateStepArgs(
+            item.map((k, v) => MapEntry(k.toString(), v)),
+            params,
+          );
+        }
+        return item;
+      }).toList();
+    } else {
+      result[entry.key] = val;
+    }
+  }
+  return result;
+}
+
 class ForgeRunSkillTool extends HostToolHandler {
   const ForgeRunSkillTool();
 
@@ -115,11 +149,144 @@ class ForgeRunSkillTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final skillId = context.arguments['skillId'] as String;
+    final rawSkillId = context.arguments['skillId'];
+    if (rawSkillId == null || rawSkillId.toString().trim().isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'missing_param',
+      );
+    }
+    final skillId = rawSkillId.toString().trim();
     final maxItems = context.arguments['maxItems'] as int?;
     final outputFolder = context.arguments['outputFolder'] as String?;
     final exportCsv = (context.arguments['exportCsv'] as bool?) ?? true;
     final argsJson = context.arguments['argsJson'] as String?;
+    final stringParams = <String, String>{};
+    if (argsJson != null && argsJson.trim().isNotEmpty) {
+      final Object? decoded;
+      try {
+        decoded = jsonDecode(argsJson);
+      } on FormatException {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      if (decoded is! Map) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      for (final entry in decoded.entries) {
+        final val = entry.value?.toString() ?? '';
+        if (!isSafeTemplateParameterValue(val)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.invalidArgs,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        stringParams[entry.key.toString()] = val;
+      }
+    }
+
+    final skill = context.symbioticService.findForgedSkill(skillId);
+    if (skill == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'skill_not_found',
+      );
+    }
+
+    final steps = skill.executableSteps;
+
+    // If the skill defines structured tool steps, execute them sequentially via subStepExecutor
+    if (steps.isNotEmpty) {
+      final executor = context.subStepExecutor;
+      if (executor == null) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'platform_unsupported',
+        );
+      }
+      final executedSteps = <Map<String, Object?>>[];
+      for (var i = 0; i < steps.length; i++) {
+        if (context.cancellationToken.isCancelled) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'cancelled',
+          );
+        }
+        final step = steps[i];
+        final stepTool = step['tool'] as String? ?? '';
+        if (stepTool.isEmpty) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.invalidArgs,
+            errorCode: 'schema_mismatch',
+          );
+        }
+        if (isHardDeniedAppOrProcess(stepTool)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.denied,
+            errorCode: 'policy_blocked',
+          );
+        }
+        final rawArgs = (step['arguments'] as Map?)
+                ?.map((k, v) => MapEntry(k.toString(), v)) ??
+            <String, Object?>{};
+        final interpolatedArgs = _interpolateStepArgs(rawArgs, stringParams);
+
+        final checkApp = interpolatedArgs['appId']?.toString() ??
+            interpolatedArgs['app']?.toString() ??
+            interpolatedArgs['process']?.toString();
+        if (checkApp != null && isHardDeniedAppOrProcess(checkApp)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.denied,
+            errorCode: 'policy_blocked',
+          );
+        }
+
+        // Sub-step execution: ANY error (R3 phone signature invalid, policy blocked, etc.)
+        // propagates end-to-end to caller without swallowing (Rule H4).
+        final stepOutput = await executor(stepTool, interpolatedArgs);
+        executedSteps.add(<String, Object?>{
+          'step': i + 1,
+          'tool': stepTool,
+          'output': stepOutput.structuredContent,
+        });
+      }
+
+      final snapSeq = context.symbioticService.forge.nextUndoSnapSeq();
+      final undoId = 'undo-forge-$snapSeq';
+      final summary =
+          'Đã thực thi thành công kỹ năng "${skill.titleVi}" (${executedSteps.length} bước).';
+      context.actionLedger.pushEntry(
+        ReversibleActionEntry(
+          originalTool: 'forge.run_skill',
+          inverseTool: 'forge.list_and_manage',
+          inverseArgs: const <String, Object?>{'action': 'list'},
+          description: 'hoàn tác phiên chạy công cụ $skillId ($undoId)',
+          recordedAt: context.nowUtc,
+        ),
+      );
+
+      return ToolHandlerOutput(
+        text: summary,
+        structuredContent: <String, Object?>{
+          'skillId': skill.skillId,
+          'titleVi': skill.titleVi,
+          'exitCode': 0,
+          'processedCount': executedSteps.length,
+          'completedSteps': executedSteps.length,
+          'steps': executedSteps,
+          'undoSnapshotId': undoId,
+          'summaryVi': summary,
+        },
+        toastBody: 'đã chạy xong kỹ năng ${skill.titleVi}',
+      );
+    }
+
+    // Otherwise (sandbox script or native pipeline), run via symbioticService.runForgedSkill
     final res = context.symbioticService.runForgedSkill(
       skillId: skillId,
       maxItems: maxItems,
@@ -128,116 +295,23 @@ class ForgeRunSkillTool extends HostToolHandler {
       argsJson: argsJson,
       nowUtc: context.nowUtc,
     );
+    if (res.exitCode != 0) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'script_execution_failed',
+      );
+    }
+
     context.actionLedger.pushEntry(
       ReversibleActionEntry(
         originalTool: 'forge.run_skill',
         inverseTool: 'forge.list_and_manage',
         inverseArgs: const <String, Object?>{'action': 'list'},
-        description:
-            'hoàn tác phiên chạy công cụ $skillId (${res.undoSnapshotId})',
+        description: 'hoàn tác phiên chạy công cụ $skillId (${res.undoSnapshotId})',
         recordedAt: context.nowUtc,
       ),
     );
-    if (!Platform.environment.containsKey('FLUTTER_TEST')) {
-      try {
-        final realDir = _resolveWorkspaceSkillDir(res.outputDirectory);
-        Directory(realDir).createSync(recursive: true);
-        final list = context.symbioticService.listForgedSkillEntries();
-        final idx = list.indexWhere((s) => s.skillId == res.skillId);
-        final entry = idx >= 0
-            ? list[idx]
-            : (list.isNotEmpty ? list.first : null);
-        final home =
-            Platform.environment['HOME'] ??
-            Platform.environment['USERPROFILE'] ??
-            Directory.systemTemp.path;
-        final scanDirCandidates = <String>[
-          realDir,
-          '$home/Downloads',
-          '$home/Documents',
-        ];
-        final discoveredFiles = <FileSystemEntity>[];
-        for (final cand in scanDirCandidates) {
-          final d = Directory(cand);
-          if (d.existsSync()) {
-            try {
-              final items = d
-                  .listSync(followLinks: false)
-                  .whereType<File>()
-                  .take(50)
-                  .toList();
-              if (items.isNotEmpty) {
-                discoveredFiles.addAll(items);
-                break;
-              }
-            } catch (_) {}
-          }
-        }
-        final rows = <Map<String, Object?>>[
-          if (discoveredFiles.isNotEmpty)
-            for (var i = 0; i < discoveredFiles.length; i++)
-              () {
-                final f = discoveredFiles[i] as File;
-                final name = f.uri.pathSegments.last;
-                var preview = '';
-                try {
-                  final raw = context.symbioticService.pipeline
-                      .extractTextFromFileSync(f);
-                  if (raw.isNotEmpty) {
-                    final parsed = context.symbioticService.pipeline
-                        .parseUniversalContent(raw, sourceName: name);
-                    if (parsed.isNotEmpty) {
-                      preview = parsed.first.entries
-                          .take(4)
-                          .map((e) => '${e.key}: ${e.value}')
-                          .join(' | ');
-                    } else {
-                      preview = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
-                      if (preview.length > 140) {
-                        preview = '${preview.substring(0, 140)}...';
-                      }
-                    }
-                  }
-                } catch (_) {}
-                return <String, Object?>{
-                  'STT': i + 1,
-                  'TenTep': name,
-                  'DuongDan': f.path,
-                  'KichThuocBytes': f.lengthSync(),
-                  if (preview.isNotEmpty) 'NoiDungTrichXuat': preview,
-                  'NgayCapNhat': f.lastModifiedSync().toIso8601String(),
-                };
-              }()
-          else if (entry != null)
-            for (var i = 0; i < entry.scriptSteps.length; i++)
-              <String, Object?>{
-                'Buoc': i + 1,
-                'ThaoTac': entry.scriptSteps[i],
-                'MucTieu': entry.goal,
-              }
-          else
-            <String, Object?>{
-              'SkillId': res.skillId,
-              'SoMucXuLy': res.processedCount,
-              'ThuMuc': realDir,
-            },
-        ];
-        final csvPath = context.symbioticService.pipeline
-            .exportUniversalArtifactToDisk(
-              filePath: '$realDir/BangKe_TongHop.csv',
-              format: 'csv',
-              titleVi: entry?.titleVi ?? res.skillId,
-              rows: rows,
-            );
-        if (Platform.isMacOS && File(csvPath).existsSync()) {
-          await Process.run('/usr/bin/open', <String>['-R', csvPath]);
-        } else if (Platform.isWindows && File(csvPath).existsSync()) {
-          await Process.run('explorer.exe', <String>[
-            '/select,${csvPath.replaceAll('/', '\\')}',
-          ]);
-        }
-      } catch (_) {}
-    }
+
     return ToolHandlerOutput(
       text: res.summaryVi,
       structuredContent: <String, Object?>{
@@ -268,9 +342,15 @@ class ForgeListAndManageTool extends HostToolHandler {
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final action = (context.arguments['action'] as String?) ?? 'list';
     final skillId = context.arguments['skillId'] as String?;
+    final skillRecipe =
+        context.arguments['skillRecipe'] as Map<String, Object?>?;
+    final workshopFolder =
+        context.arguments['workshopFolder'] as String?;
     final res = context.symbioticService.listAndManageForgedSkills(
       action: action,
       skillId: skillId,
+      skillRecipe: skillRecipe,
+      workshopFolder: workshopFolder,
     );
     return ToolHandlerOutput(
       text: 'Kho công cụ XUNA hiện có ${res.skills.length} kỹ năng.',

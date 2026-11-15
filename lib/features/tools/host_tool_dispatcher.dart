@@ -182,8 +182,9 @@ class ReversibleActionLedger {
 typedef SubStepExecutor =
     Future<ToolHandlerOutput> Function(
       String toolName,
-      Map<String, Object?> arguments,
-    );
+      Map<String, Object?> arguments, [
+      ApprovalToken? approval,
+    ]);
 
 /// Context passed to a [HostToolHandler] during execution.
 class ToolExecutionContext {
@@ -593,25 +594,61 @@ class HostToolDispatcher {
     try {
       Future<ToolHandlerOutput> executeSubStep(
         String stepToolName,
-        Map<String, Object?> stepArgs,
-      ) async {
-        final subHandler = _handlers[stepToolName];
-        if (subHandler == null) {
+        Map<String, Object?> stepArgs, [
+        ApprovalToken? stepApproval,
+      ]) async {
+        // Terminal GUI hard-denial defense (Wave D Feature 7)
+        if (isHardDeniedAppOrProcess(stepToolName)) {
           throw const XunaHostChannelException(
-            status: XtpStatus.unsupported,
-            errorCode: 'platform_unsupported',
+            status: XtpStatus.denied,
+            errorCode: 'policy_blocked',
           );
         }
-        final syntheticApproval = ApprovalToken(
-          approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c98',
-          scope: 'once',
-          expiresAt: effectiveNow.add(const Duration(minutes: 5)),
-          argsSha256: argsSha256(stepArgs),
-        );
+        final checkApp = stepArgs['appId']?.toString() ??
+            stepArgs['app']?.toString() ??
+            stepArgs['process']?.toString();
+        if (checkApp != null && isHardDeniedAppOrProcess(checkApp)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.denied,
+            errorCode: 'policy_blocked',
+          );
+        }
+
+        // Resolve effective approval:
+        // Eradicate synthetic approvals (hardcoded fake IDs).
+        // If an approval is explicitly provided for this step, use it.
+        // Otherwise, if the parent outer tool call carries a valid unexpired approval,
+        // R2 sub-steps may inherit that parent approval token with signature: null (unsigned).
+        // Any R3 sub-step strictly requires a fresh phone-signed P-256 signature, failing with
+        // 'approval_signature_invalid' if absent or unsigned.
+        ApprovalToken? effectiveApproval = stepApproval;
+        if (effectiveApproval == null && stepArgs.containsKey('_approval')) {
+          final raw = stepArgs['_approval'];
+          if (raw is ApprovalToken) {
+            effectiveApproval = raw;
+          } else if (raw is Map) {
+            effectiveApproval = ApprovalToken.fromJson(
+              raw.map((k, v) => MapEntry(k.toString(), v)),
+            );
+          }
+        }
+        final parentApproval = params.approval;
+        if (effectiveApproval == null &&
+            parentApproval != null &&
+            parentApproval.expiresAt.isAfter(effectiveNow)) {
+          effectiveApproval = ApprovalToken(
+            approvalId: parentApproval.approvalId,
+            scope: parentApproval.scope,
+            expiresAt: parentApproval.expiresAt,
+            argsSha256: argsSha256(stepArgs),
+            signature: null, // Sub-steps are never pre-signed with phone key
+          );
+        }
+
         final subEval = evaluator.evaluateInvocation(
           toolName: stepToolName,
           arguments: stepArgs,
-          approval: syntheticApproval,
+          approval: effectiveApproval,
           isStopped: stopController.isStopped,
           hostId: enrolled?.hostId,
           pinnedPhonePublicKeys:
@@ -624,6 +661,14 @@ class HostToolDispatcher {
           throw XunaHostChannelException(
             status: subEval.status,
             errorCode: subEval.errorCode ?? 'policy_blocked',
+          );
+        }
+
+        final subHandler = _handlers[stepToolName];
+        if (subHandler == null) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.unsupported,
+            errorCode: 'platform_unsupported',
           );
         }
         final subContext = ToolExecutionContext(

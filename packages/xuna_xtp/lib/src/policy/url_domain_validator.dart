@@ -193,7 +193,7 @@ UrlValidationResult validateHttpsUrlAgainstAllowlist(
 bool isAllowedHttpsCurrentUrl(String rawUrl) =>
     validateHttpsUrlAgainstAllowlist(rawUrl, const <String>[]).validUrl;
 
-bool _isForbiddenLiteralOrLocalHost(String host) {
+bool isForbiddenLiteralOrLocalHost(String host) {
   final lower = host.toLowerCase();
   if (lower == 'localhost' ||
       lower == 'localhost.localdomain' ||
@@ -224,6 +224,19 @@ bool _isForbiddenLiteralOrLocalHost(String host) {
     return true;
   }
   return false;
+}
+
+bool _isForbiddenLiteralOrLocalHost(String host) =>
+    isForbiddenLiteralOrLocalHost(host);
+
+/// Multi-stage anti-SSRF verification for HTTP endpoints (`UDC-18` Wave D).
+/// Returns `true` if safe public host/IP, `false` if SSRF / private / loopback / metadata.
+bool isSafePublicEndpointHost(String host) {
+  final normalized = _normalizeFullWidthToAscii(host).trim().toLowerCase();
+  if (normalized.isEmpty || isForbiddenLiteralOrLocalHost(normalized)) {
+    return false;
+  }
+  return true;
 }
 
 /// Converts a domain name (potentially containing Unicode IDN labels) into

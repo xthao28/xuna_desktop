@@ -911,12 +911,14 @@ PolicyEvaluationResult validateToolArguments({
       final outputFolder = arguments['outputFolder'];
       final exportCsv = arguments['exportCsv'];
       final argsJson = arguments['argsJson'];
+      final stepArgs = arguments['stepArgs'];
       const allowedRunKeys = <String>{
         'skillId',
         'maxItems',
         'outputFolder',
         'exportCsv',
         'argsJson',
+        'stepArgs',
       };
       if (arguments.keys.any((k) => !allowedRunKeys.contains(k)) ||
           skillId is! String ||
@@ -927,6 +929,7 @@ PolicyEvaluationResult validateToolArguments({
               (outputFolder is! String ||
                   !isValidSandboxFolderName(outputFolder))) ||
           (exportCsv != null && exportCsv is! bool) ||
+          (stepArgs != null && stepArgs is! Map) ||
           (argsJson != null &&
               (argsJson is! String ||
                   argsJson.length > 2000 ||
