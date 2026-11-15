@@ -44,6 +44,9 @@ InputStepRisk classifyInputStepRisk({
   String? focusedRole,
   int? draftCharsRemaining,
   bool hasUncommittedDraft = false,
+  List<Map<String, Object?>>? activeWindowNodes,
+  double? windowWidth,
+  double? windowHeight,
 }) {
   switch (toolName) {
     case 'input.type_text':
@@ -121,27 +124,202 @@ InputStepRisk classifyInputStepRisk({
     case 'input.scroll':
       return const InputStepRisk(RiskTier.r2, 'scroll');
     case 'input.click':
-      if (liveTarget == null) {
+      var target = liveTarget;
+      final xNorm = (arguments['xNorm'] as num?)?.toDouble();
+      final yNorm = (arguments['yNorm'] as num?)?.toDouble();
+      final isCoordClick = xNorm != null && yNorm != null;
+
+      if (target == null && isCoordClick && activeWindowNodes != null) {
+        target = hitTestNodeAtCoordinates(
+          nodes: activeWindowNodes,
+          xNorm: xNorm,
+          yNorm: yNorm,
+          windowWidth: windowWidth,
+          windowHeight: windowHeight,
+        );
+      }
+
+      if (target == null) {
         return const InputStepRisk(RiskTier.r3, 'unclassified_target');
       }
-      final liveName = liveTarget['name'];
-      // While unsigned draft text sits in the window, an element with no name
-      // (an icon-only Send) cannot be told apart from a commit.
-      if (hasUncommittedDraft &&
-          (liveName is! String || liveName.trim().isEmpty)) {
-        return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+
+      if (isPasswordUiNode(target)) {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
       }
+
+      final liveName = target['name'];
       final declaredName = arguments['elementName'];
+
+      // While unsigned draft text sits in the window:
+      // If coordinate click cannot be verified as safe editable text -> R3 unclassified_target
+      // If element name is missing/empty -> R3 unclassified_target
+      if (hasUncommittedDraft) {
+        if (isCoordClick && !isDraftTextTarget(target)) {
+          return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+        }
+        if (liveName is! String || liveName.trim().isEmpty) {
+          return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+        }
+      }
+
       if (isConsequentialElementName(liveName is String ? liveName : null) ||
           isConsequentialElementName(
             declaredName is String ? declaredName : null,
           )) {
         return const InputStepRisk(RiskTier.r3, 'consequential_target');
       }
+
+      return const InputStepRisk(RiskTier.r2, 'navigation_target');
+    case 'input.drag':
+      var startTarget = liveTarget;
+      Map<String, Object?>? endTarget;
+
+      final fromXRaw = arguments['fromXNorm'] ?? arguments['startXNorm'];
+      final fromYRaw = arguments['fromYNorm'] ?? arguments['startYNorm'];
+      final toXRaw = arguments['toXNorm'] ?? arguments['endXNorm'];
+      final toYRaw = arguments['toYNorm'] ?? arguments['endYNorm'];
+
+      final fromXNorm = fromXRaw is num ? fromXRaw.toDouble() : null;
+      final fromYNorm = fromYRaw is num ? fromYRaw.toDouble() : null;
+      final toXNorm = toXRaw is num ? toXRaw.toDouble() : null;
+      final toYNorm = toYRaw is num ? toYRaw.toDouble() : null;
+
+      if (activeWindowNodes != null) {
+        if (startTarget == null && fromXNorm != null && fromYNorm != null) {
+          startTarget = hitTestNodeAtCoordinates(
+            nodes: activeWindowNodes,
+            xNorm: fromXNorm,
+            yNorm: fromYNorm,
+            windowWidth: windowWidth,
+            windowHeight: windowHeight,
+          );
+        }
+        if (toXNorm != null && toYNorm != null) {
+          endTarget = hitTestNodeAtCoordinates(
+            nodes: activeWindowNodes,
+            xNorm: toXNorm,
+            yNorm: toYNorm,
+            windowWidth: windowWidth,
+            windowHeight: windowHeight,
+          );
+        }
+      }
+
+      if ((startTarget != null && isPasswordUiNode(startTarget)) ||
+          (endTarget != null && isPasswordUiNode(endTarget))) {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+      }
+
+      if (hasUncommittedDraft) {
+        return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+      }
+
+      final startName = startTarget?['name'] as String?;
+      final endName = endTarget?['name'] as String?;
+      if (isConsequentialElementName(startName) ||
+          isConsequentialElementName(endName)) {
+        return const InputStepRisk(RiskTier.r3, 'consequential_target');
+      }
+
+      if (startTarget == null && endTarget == null) {
+        return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+      }
+
       return const InputStepRisk(RiskTier.r2, 'navigation_target');
     default:
       return const InputStepRisk(RiskTier.r3, 'unclassified_tool');
   }
+}
+
+/// Performs a reverse hit-test on [nodes] using normalized coordinates [xNorm]
+/// and [yNorm] in `[0.0, 1.0]`.
+///
+/// Finds the leaf or smallest-area bounding box containing the point.
+Map<String, Object?>? hitTestNodeAtCoordinates({
+  required List<Map<String, Object?>> nodes,
+  required double xNorm,
+  required double yNorm,
+  double? windowWidth,
+  double? windowHeight,
+}) {
+  Map<String, Object?>? bestMatch;
+  double smallestArea = double.infinity;
+
+  double? inferredWidth = windowWidth;
+  double? inferredHeight = windowHeight;
+  if (inferredWidth == null || inferredHeight == null) {
+    double maxX = 0;
+    double maxY = 0;
+    for (final node in nodes) {
+      final rawBounds = node['bounds'] ?? node['boxNorm'] ?? node['box'];
+      if (rawBounds is List && rawBounds.length >= 4) {
+        final x2 = (rawBounds[2] as num?)?.toDouble() ?? 0;
+        final y2 = (rawBounds[3] as num?)?.toDouble() ?? 0;
+        if (x2 > maxX) maxX = x2;
+        if (y2 > maxY) maxY = y2;
+      } else if (rawBounds is Map) {
+        final x = (rawBounds['x'] as num?)?.toDouble() ?? 0;
+        final y = (rawBounds['y'] as num?)?.toDouble() ?? 0;
+        final w = (rawBounds['width'] as num?)?.toDouble() ?? 0;
+        final h = (rawBounds['height'] as num?)?.toDouble() ?? 0;
+        if (x + w > maxX) maxX = x + w;
+        if (y + h > maxY) maxY = y + h;
+      }
+    }
+    if (maxX > 1.0 && (inferredWidth == null || inferredWidth <= 0)) {
+      inferredWidth = maxX;
+    }
+    if (maxY > 1.0 && (inferredHeight == null || inferredHeight <= 0)) {
+      inferredHeight = maxY;
+    }
+  }
+
+  for (final node in nodes) {
+    final rawBounds = node['bounds'] ?? node['boxNorm'] ?? node['box'];
+    double? xMin;
+    double? yMin;
+    double? xMax;
+    double? yMax;
+
+    if (rawBounds is List && rawBounds.length >= 4) {
+      xMin = (rawBounds[0] as num?)?.toDouble();
+      yMin = (rawBounds[1] as num?)?.toDouble();
+      xMax = (rawBounds[2] as num?)?.toDouble();
+      yMax = (rawBounds[3] as num?)?.toDouble();
+    } else if (rawBounds is Map) {
+      xMin = (rawBounds['x'] as num?)?.toDouble();
+      yMin = (rawBounds['y'] as num?)?.toDouble();
+      final w = (rawBounds['width'] as num?)?.toDouble();
+      final h = (rawBounds['height'] as num?)?.toDouble();
+      if (xMin != null && yMin != null && w != null && h != null) {
+        xMax = xMin + w;
+        yMax = yMin + h;
+      }
+    }
+
+    if (xMin == null || yMin == null || xMax == null || yMax == null) continue;
+
+    if (xNorm <= 1.0 && yNorm <= 1.0) {
+      if (xMax > 1.0 && inferredWidth != null && inferredWidth > 0) {
+        xMin /= inferredWidth;
+        xMax /= inferredWidth;
+      }
+      if (yMax > 1.0 && inferredHeight != null && inferredHeight > 0) {
+        yMin /= inferredHeight;
+        yMax /= inferredHeight;
+      }
+    }
+
+    if (xNorm >= xMin && xNorm <= xMax && yNorm >= yMin && yNorm <= yMax) {
+      final area = ((xMax - xMin) * (yMax - yMin)).abs();
+      if (area <= smallestArea) {
+        smallestArea = area;
+        bestMatch = node;
+      }
+    }
+  }
+
+  return bestMatch;
 }
 
 /// Normalised roles of ordinary text fields a session may draft into without a

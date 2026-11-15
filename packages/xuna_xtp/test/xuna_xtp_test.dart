@@ -341,11 +341,25 @@ void main() {
       }
     });
 
-    test('rejects floating-point numbers', () {
+    test('formats finite floats per RFC 8785 and rejects NaN/Infinity', () {
       expect(
-        () => canonicalJson(<String, Object?>{'ratio': 0.5}),
-        throwsFormatException,
+        canonicalJson(<String, Object?>{'zero': -0.0, 'one': 1.0, 'half': 0.5}),
+        equals('{"half":0.5,"one":1,"zero":0}'),
       );
+      expect(
+        canonicalJson(<String, Object?>{'zero': 0, 'one': 1, 'half': 0.5}),
+        equals('{"half":0.5,"one":1,"zero":0}'),
+      );
+      for (final bad in <double>[
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        expect(
+          () => canonicalJson(<String, Object?>{'bad': bad}),
+          throwsFormatException,
+        );
+      }
     });
   });
 
@@ -913,7 +927,7 @@ void main() {
       expect(evaluator.isHealthy, isTrue);
 
       final cuTools = buildComputerUseTools();
-      expect(cuTools, hasLength(10));
+      expect(cuTools, hasLength(12));
       expect(
         cuTools.map((t) => t.name).toList(),
         equals(<String>[
@@ -921,8 +935,10 @@ void main() {
           'cu.session_extend',
           'screen.capture',
           'ui.inspect',
+          'ui.observe_hybrid',
           'ui.find',
           'input.click',
+          'input.drag',
           'input.type_text',
           'input.key',
           'input.scroll',

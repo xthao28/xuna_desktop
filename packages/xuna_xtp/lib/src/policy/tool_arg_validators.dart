@@ -1807,6 +1807,53 @@ PolicyEvaluationResult validateToolArguments({
         );
       }
       effectiveRisk = RiskTier.r2;
+    case 'ui.observe_hybrid':
+      if (!isInApprovedCuSession) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'cu_session_required',
+        );
+      }
+      final scope = arguments['scope'];
+      final maxNodes = arguments['maxNodes'];
+      final maxEdge = arguments['maxEdge'];
+      final skeleton = arguments['skeleton'];
+      final interactiveOnly = arguments['interactiveOnly'];
+      final rootElementId = arguments['rootElementId'];
+      final collapseWebWrappers = arguments['collapseWebWrappers'];
+      const allowedObserveHybridKeys = <String>{
+        'scope',
+        'maxNodes',
+        'maxEdge',
+        'skeleton',
+        'interactiveOnly',
+        'rootElementId',
+        'collapseWebWrappers',
+      };
+      if (arguments.keys.any((k) => !allowedObserveHybridKeys.contains(k)) ||
+          scope != 'active_window' ||
+          (maxNodes != null &&
+              (maxNodes is! int || maxNodes < 1 || maxNodes > 300)) ||
+          (maxEdge != null &&
+              (maxEdge is! int || maxEdge < 320 || maxEdge > 1280)) ||
+          (skeleton != null && skeleton is! bool) ||
+          (interactiveOnly != null && interactiveOnly is! bool) ||
+          (collapseWebWrappers != null && collapseWebWrappers is! bool) ||
+          (rootElementId != null &&
+              (rootElementId is! String ||
+                  rootElementId.trim().isEmpty ||
+                  rootElementId.length > 64 ||
+                  !isSafeAgentPrompt(rootElementId)))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
     case 'ui.find':
       if (!isInApprovedCuSession) {
         return const PolicyEvaluationResult(
@@ -1856,6 +1903,8 @@ PolicyEvaluationResult validateToolArguments({
       final elementName = arguments['elementName'];
       final x = arguments['x'];
       final y = arguments['y'];
+      final xNorm = arguments['xNorm'];
+      final yNorm = arguments['yNorm'];
       final headed = arguments['headed'];
       final waitFor = arguments['waitFor'];
       final waitForGone = arguments['waitForGone'];
@@ -1864,13 +1913,29 @@ PolicyEvaluationResult validateToolArguments({
         'elementName',
         'x',
         'y',
+        'xNorm',
+        'yNorm',
         'headed',
         'waitFor',
         'waitForGone',
       };
       final hasElement = elementId is String && elementId.isNotEmpty;
-      final hasCoords = x is int && y is int;
+      final hasIntCoords = x is int && y is int;
+      final hasNormCoords = xNorm is num &&
+          yNorm is num &&
+          xNorm >= 0.0 &&
+          xNorm <= 1.0 &&
+          yNorm >= 0.0 &&
+          yNorm <= 1.0;
+      final hasCoords = hasIntCoords || hasNormCoords;
+      final normCoordsInvalid =
+          (xNorm != null && (xNorm is! num || xNorm < 0.0 || xNorm > 1.0)) ||
+          (yNorm != null && (yNorm is! num || yNorm < 0.0 || yNorm > 1.0)) ||
+          (xNorm != null && yNorm == null) ||
+          (xNorm == null && yNorm != null);
+
       if (arguments.keys.any((k) => !allowedClickKeys.contains(k)) ||
+          normCoordsInvalid ||
           (!hasElement && !hasCoords) ||
           (elementName != null && elementName is! String) ||
           (headed != null && headed is! bool) ||
@@ -1895,6 +1960,130 @@ PolicyEvaluationResult validateToolArguments({
       effectiveRisk = isConsequentialElementName(elementName as String?)
           ? RiskTier.r3
           : RiskTier.r2;
+    case 'input.drag':
+      if (!isInApprovedCuSession) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'cu_session_required',
+        );
+      }
+      const allowedDragKeys = <String>{
+        'fromXNorm',
+        'fromYNorm',
+        'toXNorm',
+        'toYNorm',
+        'startXNorm',
+        'startYNorm',
+        'endXNorm',
+        'endYNorm',
+        'fromX',
+        'fromY',
+        'toX',
+        'toY',
+        'startX',
+        'startY',
+        'endX',
+        'endY',
+        'fromElementId',
+        'toElementId',
+        'durationMs',
+        'headed',
+        'waitFor',
+        'waitForGone',
+      };
+      if (arguments.keys.any((k) => !allowedDragKeys.contains(k))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final fromXNorm = arguments['fromXNorm'] ?? arguments['startXNorm'];
+      final fromYNorm = arguments['fromYNorm'] ?? arguments['startYNorm'];
+      final toXNorm = arguments['toXNorm'] ?? arguments['endXNorm'];
+      final toYNorm = arguments['toYNorm'] ?? arguments['endYNorm'];
+
+      final fromX = arguments['fromX'] ?? arguments['startX'];
+      final fromY = arguments['fromY'] ?? arguments['startY'];
+      final toX = arguments['toX'] ?? arguments['endX'];
+      final toY = arguments['toY'] ?? arguments['endY'];
+
+      final fromElementId = arguments['fromElementId'];
+      final toElementId = arguments['toElementId'];
+
+      final hasNormCoords = fromXNorm is num &&
+          fromYNorm is num &&
+          toXNorm is num &&
+          toYNorm is num &&
+          fromXNorm >= 0.0 &&
+          fromXNorm <= 1.0 &&
+          fromYNorm >= 0.0 &&
+          fromYNorm <= 1.0 &&
+          toXNorm >= 0.0 &&
+          toXNorm <= 1.0 &&
+          toYNorm >= 0.0 &&
+          toYNorm <= 1.0;
+
+      final hasIntCoords =
+          fromX is int && fromY is int && toX is int && toY is int;
+
+      final hasElements = fromElementId is String &&
+          fromElementId.isNotEmpty &&
+          toElementId is String &&
+          toElementId.isNotEmpty;
+
+      if (!hasNormCoords && !hasIntCoords && !hasElements) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+
+      final durationMs = arguments['durationMs'];
+      if (durationMs != null &&
+          (durationMs is! int || durationMs < 50 || durationMs > 5000)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final headed = arguments['headed'];
+      if (headed != null && headed is! bool) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      final waitFor = arguments['waitFor'];
+      final waitForGone = arguments['waitForGone'];
+      if ((waitFor != null && waitForGone != null) ||
+          (waitFor != null &&
+              (waitFor is! String ||
+                  waitFor.trim().isEmpty ||
+                  waitFor.length > 120 ||
+                  !isSafeAgentPrompt(waitFor))) ||
+          (waitForGone != null &&
+              (waitForGone is! String ||
+                  waitForGone.trim().isEmpty ||
+                  waitForGone.length > 120 ||
+                  !isSafeAgentPrompt(waitForGone)))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r2;
     case 'input.type_text':
       if (!isInApprovedCuSession) {
         return const PolicyEvaluationResult(

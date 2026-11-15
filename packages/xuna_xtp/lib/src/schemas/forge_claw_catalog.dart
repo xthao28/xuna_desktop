@@ -1086,6 +1086,12 @@ List<ToolDescriptor> buildComputerUseTools({
       // What changed in the window since before the action, with refs for
       // new elements in the current snapshot (UDC-17 S17.4).
       'changes': <String, Object?>{'type': 'object'},
+      'settled': <String, Object?>{'type': 'boolean'},
+      'settleMs': <String, Object?>{
+        'type': 'integer',
+        'minimum': 0,
+        'maximum': 1500,
+      },
     },
     'required': <String>['effect'],
     'additionalProperties': false,
@@ -1298,6 +1304,92 @@ List<ToolDescriptor> buildComputerUseTools({
       ),
     ),
     ToolDescriptor(
+      name: 'ui.observe_hybrid',
+      description:
+          'Observe active window combining compact accessibility tree (with normalized bounding boxes [0.0, 1.0]) and active-window JPEG screenshot. Fails closed if screen recording permission is missing.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'scope': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['active_window'],
+          },
+          'maxNodes': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 300,
+          },
+          'maxEdge': <String, Object?>{
+            'type': 'integer',
+            'minimum': 320,
+            'maximum': 1280,
+          },
+          'skeleton': <String, Object?>{'type': 'boolean'},
+          'interactiveOnly': <String, Object?>{'type': 'boolean'},
+          'rootElementId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 64,
+          },
+          'collapseWebWrappers': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['scope'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'appId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'surfaces': <String, Object?>{'type': 'array'},
+          'collapsedWrappersCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+          },
+          'devicePixelRatio': <String, Object?>{'type': 'number'},
+          'windowBounds': <String, Object?>{'type': 'object'},
+          'nodes': <String, Object?>{'type': 'array'},
+          'screenshot': <String, Object?>{
+            'type': 'object',
+            'properties': <String, Object?>{
+              'mimeType': <String, Object?>{
+                'type': 'string',
+                'enum': <String>['image/jpeg'],
+              },
+              'width': <String, Object?>{'type': 'integer'},
+              'height': <String, Object?>{'type': 'integer'},
+              'dataBase64': <String, Object?>{'type': 'string'},
+            },
+            'required': <String>['mimeType', 'width', 'height', 'dataBase64'],
+            'additionalProperties': false,
+          },
+          'image': <String, Object?>{
+            'type': 'object',
+            'properties': <String, Object?>{
+              'mimeType': <String, Object?>{
+                'type': 'string',
+                'enum': <String>['image/jpeg'],
+              },
+              'width': <String, Object?>{'type': 'integer'},
+              'height': <String, Object?>{'type': 'integer'},
+              'dataBase64': <String, Object?>{'type': 'string'},
+            },
+            'required': <String>['mimeType', 'width', 'height', 'dataBase64'],
+            'additionalProperties': false,
+          },
+        },
+        'required': <String>['appId', 'windowTitle', 'nodes'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.ui,
+        risk: RiskTier.r2,
+        observes: true,
+        reversible: true,
+        permission: screenCapturePermission ?? defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
       name: 'ui.find',
       description:
           'Find active-window elements by name (case-insensitive substring) and/or role. Returns up to maxResults candidates with refs for input.*, never picks one. Field contents are not searched. Earlier refs stay valid until the next ui.inspect.',
@@ -1364,6 +1456,93 @@ List<ToolDescriptor> buildComputerUseTools({
           'elementName': <String, Object?>{'type': 'string', 'maxLength': 120},
           'x': <String, Object?>{'type': 'integer'},
           'y': <String, Object?>{'type': 'integer'},
+          'xNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'yNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'headed': <String, Object?>{'type': 'boolean'},
+          'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'waitForGone': <String, Object?>{'type': 'string', 'maxLength': 120},
+        },
+        'additionalProperties': false,
+      },
+      outputSchema: effectOutputSchema,
+      policy: ToolPolicyMeta(
+        family: ToolFamily.input,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'input.drag',
+      description:
+          'Drag pointer between normalized coordinates [0.0, 1.0] or resolved element refs within the active allowlisted window, with actionability checks and settle verification.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'fromXNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'fromYNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'toXNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'toYNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'startXNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'startYNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'endXNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'endYNorm': <String, Object?>{
+            'type': 'number',
+            'minimum': 0.0,
+            'maximum': 1.0,
+          },
+          'fromX': <String, Object?>{'type': 'integer'},
+          'fromY': <String, Object?>{'type': 'integer'},
+          'toX': <String, Object?>{'type': 'integer'},
+          'toY': <String, Object?>{'type': 'integer'},
+          'startX': <String, Object?>{'type': 'integer'},
+          'startY': <String, Object?>{'type': 'integer'},
+          'endX': <String, Object?>{'type': 'integer'},
+          'endY': <String, Object?>{'type': 'integer'},
+          'fromElementId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'toElementId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'durationMs': <String, Object?>{
+            'type': 'integer',
+            'minimum': 50,
+            'maximum': 5000,
+          },
           'headed': <String, Object?>{'type': 'boolean'},
           'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
           'waitForGone': <String, Object?>{'type': 'string', 'maxLength': 120},

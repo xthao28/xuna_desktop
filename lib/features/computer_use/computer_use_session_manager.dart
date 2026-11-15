@@ -21,6 +21,11 @@ class ActiveWindowObservation {
     this.pid = 1000,
     this.windowId = 1,
     this.focusedRole,
+    this.windowX = 0,
+    this.windowY = 0,
+    this.windowWidth = 1280,
+    this.windowHeight = 720,
+    this.devicePixelRatio = 1.0,
   });
 
   final String appId;
@@ -38,6 +43,11 @@ class ActiveWindowObservation {
   final bool isElevated;
   final int pid;
   final int windowId;
+  final int windowX;
+  final int windowY;
+  final int windowWidth;
+  final int windowHeight;
+  final double devicePixelRatio;
 
   /// Computes a canonical state fingerprint over window title and nodes so the
   /// agent can verify whether an `input.*` action actually changed the UI
@@ -64,6 +74,26 @@ class ScreenCaptureObservation {
   final String dataBase64;
 }
 
+/// Combined accessibility tree and screenshot observation returned by `ui.observe_hybrid`.
+class HybridObservation {
+  const HybridObservation({
+    required this.window,
+    required this.screenshot,
+    this.devicePixelRatio = 1.0,
+    this.windowBounds = const <String, Object?>{
+      'x': 0,
+      'y': 0,
+      'width': 1280,
+      'height': 720,
+    },
+  });
+
+  final ActiveWindowObservation window;
+  final ScreenCaptureObservation screenshot;
+  final double devicePixelRatio;
+  final Map<String, Object?> windowBounds;
+}
+
 /// Provider abstraction for desktop computer use (`UDC-8` §4.1):
 /// backed either by a bounded `cua-driver mcp` child process
 /// ([CuaDriverComputerUseProvider]), a `vercel-labs/agent-desktop mcp` child
@@ -82,11 +112,33 @@ abstract interface class ComputerUseProvider {
     required int maxEdge,
   });
 
+  Future<HybridObservation> observeHybrid({
+    required int maxNodes,
+    required int maxEdge,
+    bool skeleton = false,
+    bool interactiveOnly = false,
+    String? rootElementId,
+    bool collapseWebWrappers = false,
+  });
+
   Future<void> performClick({
     required ActiveWindowObservation window,
     String? elementId,
     int? x,
     int? y,
+  });
+
+  Future<void> performDrag({
+    required ActiveWindowObservation window,
+    int? fromX,
+    int? fromY,
+    int? toX,
+    int? toY,
+    double? fromXNorm,
+    double? fromYNorm,
+    double? toXNorm,
+    double? toYNorm,
+    int? durationMs,
   });
 
   Future<void> performTypeText({
@@ -303,6 +355,71 @@ class CuaDriverComputerUseProvider implements ComputerUseProvider {
         targetPid: window.pid,
         targetWindowId: window.windowId,
       ),
+    );
+  }
+
+  @override
+  Future<void> performDrag({
+    required ActiveWindowObservation window,
+    int? fromX,
+    int? fromY,
+    int? toX,
+    int? toY,
+    double? fromXNorm,
+    double? fromYNorm,
+    double? toXNorm,
+    double? toYNorm,
+    int? durationMs,
+  }) async {
+    final client = _requireClient();
+    final args = <String, Object?>{
+      if (fromX != null) 'fromX': fromX,
+      if (fromY != null) 'fromY': fromY,
+      if (toX != null) 'toX': toX,
+      if (toY != null) 'toY': toY,
+      if (fromXNorm != null) 'fromXNorm': fromXNorm,
+      if (fromYNorm != null) 'fromYNorm': fromYNorm,
+      if (toXNorm != null) 'toXNorm': toXNorm,
+      if (toYNorm != null) 'toYNorm': toYNorm,
+      if (durationMs != null) 'durationMs': durationMs,
+    };
+    await client.callTool(
+      name: CuaDriverMap.toCuaDriverTool(
+        xunaToolName: 'input.drag',
+        arguments: args,
+      ),
+      arguments: CuaDriverMap.toCuaDriverArguments(
+        xunaToolName: 'input.drag',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: args,
+        targetPid: window.pid,
+        targetWindowId: window.windowId,
+      ),
+    );
+  }
+
+  @override
+  Future<HybridObservation> observeHybrid({
+    required int maxNodes,
+    required int maxEdge,
+    bool skeleton = false,
+    bool interactiveOnly = false,
+    String? rootElementId,
+    bool collapseWebWrappers = false,
+  }) async {
+    final window = await inspectActiveWindow(maxNodes: maxNodes);
+    final screenshot =
+        await captureScreen(scope: 'active_window', maxEdge: maxEdge);
+    return HybridObservation(
+      window: window,
+      screenshot: screenshot,
+      devicePixelRatio: window.devicePixelRatio,
+      windowBounds: <String, Object?>{
+        'x': window.windowX,
+        'y': window.windowY,
+        'width': window.windowWidth,
+        'height': window.windowHeight,
+      },
     );
   }
 
@@ -613,6 +730,72 @@ class AgentDesktopComputerUseProvider implements ComputerUseProvider {
       ),
     );
     _unwrapEnvelopeOrThrow(raw);
+  }
+
+  @override
+  Future<void> performDrag({
+    required ActiveWindowObservation window,
+    int? fromX,
+    int? fromY,
+    int? toX,
+    int? toY,
+    double? fromXNorm,
+    double? fromYNorm,
+    double? toXNorm,
+    double? toYNorm,
+    int? durationMs,
+  }) async {
+    final client = _requireClient();
+    final args = <String, Object?>{
+      if (fromX != null) 'fromX': fromX,
+      if (fromY != null) 'fromY': fromY,
+      if (toX != null) 'toX': toX,
+      if (toY != null) 'toY': toY,
+      if (fromXNorm != null) 'fromXNorm': fromXNorm,
+      if (fromYNorm != null) 'fromYNorm': fromYNorm,
+      if (toXNorm != null) 'toXNorm': toXNorm,
+      if (toYNorm != null) 'toYNorm': toYNorm,
+      if (durationMs != null) 'durationMs': durationMs,
+    };
+    final raw = await client.callTool(
+      name: AgentDesktopDriverMap.toAgentDesktopTool(
+        xunaToolName: 'input.drag',
+        arguments: args,
+      ),
+      arguments: AgentDesktopDriverMap.toAgentDesktopArguments(
+        xunaToolName: 'input.drag',
+        sessionId: _activeSessionId ?? 'default',
+        arguments: args,
+        targetApp: window.appId,
+        targetWindowId: window.windowId,
+      ),
+    );
+    _unwrapEnvelopeOrThrow(raw);
+  }
+
+  @override
+  Future<HybridObservation> observeHybrid({
+    required int maxNodes,
+    required int maxEdge,
+    bool skeleton = false,
+    bool interactiveOnly = false,
+    String? rootElementId,
+    bool collapseWebWrappers = false,
+  }) async {
+    final window = await inspectActiveWindow(maxNodes: maxNodes);
+    final screenshot =
+        await captureScreen(scope: 'active_window', maxEdge: maxEdge);
+    return HybridObservation(
+      window: window,
+      screenshot: screenshot,
+      devicePixelRatio: window.devicePixelRatio,
+      windowBounds: <String, Object?>{
+        'x': window.windowX,
+        'y': window.windowY,
+        'width': window.windowWidth,
+        'height': window.windowHeight,
+      },
+    );
   }
 
   @override
@@ -977,6 +1160,67 @@ class NativeHostChannelComputerUseProvider implements ComputerUseProvider {
   }
 
   @override
+  Future<void> performDrag({
+    required ActiveWindowObservation window,
+    int? fromX,
+    int? fromY,
+    int? toX,
+    int? toY,
+    double? fromXNorm,
+    double? fromYNorm,
+    double? toXNorm,
+    double? toYNorm,
+    int? durationMs,
+  }) async {
+    if (_externalDelegate != null) {
+      await _externalDelegate!.performDrag(
+        window: window,
+        fromX: fromX,
+        fromY: fromY,
+        toX: toX,
+        toY: toY,
+        fromXNorm: fromXNorm,
+        fromYNorm: fromYNorm,
+        toXNorm: toXNorm,
+        toYNorm: toYNorm,
+        durationMs: durationMs,
+      );
+      return;
+    }
+    throw const XunaHostChannelException(
+      status: XtpStatus.unsupported,
+      errorCode: 'drag_unsupported',
+      message:
+          'Native host channel without external driver does not support drag.',
+    );
+  }
+
+  @override
+  Future<HybridObservation> observeHybrid({
+    required int maxNodes,
+    required int maxEdge,
+    bool skeleton = false,
+    bool interactiveOnly = false,
+    String? rootElementId,
+    bool collapseWebWrappers = false,
+  }) async {
+    final window = await inspectActiveWindow(maxNodes: maxNodes);
+    final screenshot =
+        await captureScreen(scope: 'active_window', maxEdge: maxEdge);
+    return HybridObservation(
+      window: window,
+      screenshot: screenshot,
+      devicePixelRatio: window.devicePixelRatio,
+      windowBounds: <String, Object?>{
+        'x': window.windowX,
+        'y': window.windowY,
+        'width': window.windowWidth,
+        'height': window.windowHeight,
+      },
+    );
+  }
+
+  @override
   Future<void> endSession({required String sessionId}) async {
     final delegate = _externalDelegate;
     _externalDelegate = null;
@@ -1116,6 +1360,8 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
 
   ActiveWindowObservation currentWindow;
   bool simulateSilentUipiDrop;
+  bool failCapture = false;
+  String? captureErrorCode;
   String? lastManifestYaml;
   final List<String> recordedCalls = <String>[];
   int _mutationCounter = 0;
@@ -1144,6 +1390,11 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
       windowId: currentWindow.windowId,
       nodes: currentWindow.nodes.take(maxNodes).toList(),
       focusedRole: currentWindow.focusedRole,
+      windowX: currentWindow.windowX,
+      windowY: currentWindow.windowY,
+      windowWidth: currentWindow.windowWidth,
+      windowHeight: currentWindow.windowHeight,
+      devicePixelRatio: currentWindow.devicePixelRatio,
     );
   }
 
@@ -1152,11 +1403,48 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
     required String scope,
     required int maxEdge,
   }) async {
+    if (failCapture) {
+      throw XunaHostChannelException(
+        status: captureErrorCode == 'platform_unsupported'
+            ? XtpStatus.unsupported
+            : (captureErrorCode == 'screen_recording'
+                ? XtpStatus.needsPermission
+                : XtpStatus.failed),
+        errorCode: captureErrorCode ?? 'capture_failed',
+        message: 'Simulated screen capture failure',
+      );
+    }
     recordedCalls.add('capture:$scope:$maxEdge');
     return ScreenCaptureObservation(
       width: maxEdge,
       height: (maxEdge * 9) ~/ 16,
       dataBase64: 'dGVzdC1qcGVnLWJ5dGVz',
+    );
+  }
+
+  @override
+  Future<HybridObservation> observeHybrid({
+    required int maxNodes,
+    required int maxEdge,
+    bool skeleton = false,
+    bool interactiveOnly = false,
+    String? rootElementId,
+    bool collapseWebWrappers = false,
+  }) async {
+    recordedCalls.add('observeHybrid:$maxNodes:$maxEdge');
+    final window = await inspectActiveWindow(maxNodes: maxNodes);
+    final screenshot =
+        await captureScreen(scope: 'active_window', maxEdge: maxEdge);
+    return HybridObservation(
+      window: window,
+      screenshot: screenshot,
+      devicePixelRatio: window.devicePixelRatio,
+      windowBounds: <String, Object?>{
+        'x': window.windowX,
+        'y': window.windowY,
+        'width': window.windowWidth,
+        'height': window.windowHeight,
+      },
     );
   }
 
@@ -1169,6 +1457,25 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
   }) async {
     recordedCalls.add('click:${elementId ?? "$x,$y"}');
     _mutateWindowIfAllowed('click:${elementId ?? "$x,$y"}');
+  }
+
+  @override
+  Future<void> performDrag({
+    required ActiveWindowObservation window,
+    int? fromX,
+    int? fromY,
+    int? toX,
+    int? toY,
+    double? fromXNorm,
+    double? fromYNorm,
+    double? toXNorm,
+    double? toYNorm,
+    int? durationMs,
+  }) async {
+    final tag =
+        'drag:${fromX ?? fromXNorm},${fromY ?? fromYNorm}->${toX ?? toXNorm},${toY ?? toYNorm}';
+    recordedCalls.add(tag);
+    _mutateWindowIfAllowed(tag);
   }
 
   @override
@@ -1219,6 +1526,11 @@ class FallbackUiaAxComputerUseProvider implements ComputerUseProvider {
       windowId: currentWindow.windowId,
       nodes: currentWindow.nodes,
       focusedRole: currentWindow.focusedRole,
+      windowX: currentWindow.windowX,
+      windowY: currentWindow.windowY,
+      windowWidth: currentWindow.windowWidth,
+      windowHeight: currentWindow.windowHeight,
+      devicePixelRatio: currentWindow.devicePixelRatio,
     );
   }
 }
@@ -1355,6 +1667,8 @@ class ComputerUseSessionManager {
     required this.provider,
     required this.stopController,
     this.appScanner,
+    this.uiSettlePollIntervalMs = 100,
+    this.uiSettleMaxMs = 1500,
   }) {
     stopController.addCancelListener(_onEmergencyStop);
   }
@@ -1362,11 +1676,14 @@ class ComputerUseSessionManager {
   final ComputerUseProvider provider;
   final EmergencyStopController stopController;
   final AutoAppScanner? appScanner;
+  final int uiSettlePollIntervalMs;
+  final int uiSettleMaxMs;
 
   ComputerUseSessionState? _activeSession;
   int _sessionCounter = 0;
   final StreamController<ComputerUseSessionState?> _stateController =
       StreamController<ComputerUseSessionState?>.broadcast();
+  bool hasScreenCapturePermission = true;
 
   ComputerUseSessionState? get activeSession => _activeSession;
   bool get hasActiveSession => _activeSession != null;
@@ -1788,6 +2105,23 @@ class ComputerUseSessionManager {
   static String _identitySignature(SnapshotElementIdentity identity) =>
       '${identity.role.trim().toLowerCase()}\u0000${identity.name}';
 
+  static Map<String, Object?> _sanitizeArgsForSignature(
+    Map<String, Object?> args,
+  ) {
+    return args.map((k, v) {
+      if (v is double) {
+        return MapEntry(k, v.toStringAsFixed(6));
+      }
+      if (v is Map) {
+        return MapEntry(
+          k,
+          _sanitizeArgsForSignature(v.cast<String, Object?>()),
+        );
+      }
+      return MapEntry(k, v);
+    });
+  }
+
   /// Finds elements of the active window by name and/or role (`ui.find`,
   /// UDC-17 S17.4) after the same hard refusals as [inspectWindow].
   ///
@@ -2042,17 +2376,208 @@ class ComputerUseSessionManager {
     DateTime? nowUtc,
   }) async {
     final session = _requireActiveSession(nowUtc: nowUtc);
+    if (!hasScreenCapturePermission) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.needsPermission,
+        errorCode: 'screen_recording',
+        message: 'Screen recording permission is required on host.',
+      );
+    }
+    if (!supportsScreenCapture) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'platform_unsupported',
+        message: 'Screen capture driver is unavailable on this host platform.',
+      );
+    }
     final window = await provider.inspectActiveWindow(maxNodes: 50);
     _enforceWindowHardRefusals(session: session, window: window);
     final capture = await provider.captureScreen(
       scope: scope,
       maxEdge: maxEdge.clamp(320, 1280),
     );
+    if (capture.dataBase64.trim().isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'capture_failed',
+        message: 'Screen capture returned empty image data.',
+      );
+    }
     return <String, Object?>{
       'mimeType': capture.mimeType,
       'width': capture.width,
       'height': capture.height,
       'dataBase64': capture.dataBase64,
+    };
+  }
+
+  /// Observes the active window combining a compact accessibility tree (with
+  /// normalized bounding boxes [0.0, 1.0]) and an active-window JPEG screenshot
+  /// (`ui.observe_hybrid`).
+  ///
+  /// Zero-Retention (Consent U5): images are never stored on disk or DB.
+  /// Fail closed: missing permissions or capture drivers return errors, never
+  /// fake or blank images (Rules H1, H2).
+  Future<Map<String, Object?>> observeHybrid({
+    required int maxNodes,
+    required int maxEdge,
+    bool skeleton = false,
+    bool interactiveOnly = false,
+    String? rootElementId,
+    bool collapseWebWrappers = false,
+    DateTime? nowUtc,
+  }) async {
+    final session = _requireActiveSession(nowUtc: nowUtc);
+    if (!hasScreenCapturePermission) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.needsPermission,
+        errorCode: 'screen_recording',
+        message: 'Screen recording permission is required for visual observation.',
+      );
+    }
+    if (!supportsScreenCapture) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'platform_unsupported',
+        message: 'Screen capture driver is unavailable on this host platform.',
+      );
+    }
+
+    final window =
+        await provider.inspectActiveWindow(maxNodes: maxNodes.clamp(1, 300));
+    _enforceWindowHardRefusals(session: session, window: window);
+
+    final ScreenCaptureObservation capture;
+    try {
+      capture = await provider.captureScreen(
+        scope: 'active_window',
+        maxEdge: maxEdge.clamp(320, 1280),
+      );
+    } on XunaHostChannelException {
+      rethrow;
+    } catch (e) {
+      throw XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'capture_failed',
+        message: 'Native screen capture failed: $e',
+      );
+    }
+
+    if (capture.dataBase64.trim().isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'capture_failed',
+        message: 'Screen capture returned empty image data.',
+      );
+    }
+
+    final winWidth =
+        window.windowWidth > 0 ? window.windowWidth.toDouble() : 1280.0;
+    final winHeight =
+        window.windowHeight > 0 ? window.windowHeight.toDouble() : 720.0;
+
+    final normalizedNodes = <Map<String, Object?>>[];
+    for (final raw in window.nodes) {
+      final node = Map<String, Object?>.from(raw);
+      final rawBounds = node['bounds'] ?? node['boxNorm'] ?? node['box'];
+      if (rawBounds is List && rawBounds.length >= 4) {
+        final b0 = (rawBounds[0] as num?)?.toDouble() ?? 0.0;
+        final b1 = (rawBounds[1] as num?)?.toDouble() ?? 0.0;
+        final b2 = (rawBounds[2] as num?)?.toDouble() ?? 0.0;
+        final b3 = (rawBounds[3] as num?)?.toDouble() ?? 0.0;
+        if (b0 <= 1.0 && b1 <= 1.0 && b2 <= 1.0 && b3 <= 1.0) {
+          node['bounds'] = <double>[b0, b1, b2, b3];
+        } else {
+          node['bounds'] = <double>[
+            (b0 / winWidth).clamp(0.0, 1.0),
+            (b1 / winHeight).clamp(0.0, 1.0),
+            (b2 / winWidth).clamp(0.0, 1.0),
+            (b3 / winHeight).clamp(0.0, 1.0),
+          ];
+        }
+      } else if (rawBounds is Map) {
+        final x = (rawBounds['x'] as num?)?.toDouble() ?? 0.0;
+        final y = (rawBounds['y'] as num?)?.toDouble() ?? 0.0;
+        final w = (rawBounds['width'] as num?)?.toDouble() ?? 0.0;
+        final h = (rawBounds['height'] as num?)?.toDouble() ?? 0.0;
+        node['bounds'] = <double>[
+          (x / winWidth).clamp(0.0, 1.0),
+          (y / winHeight).clamp(0.0, 1.0),
+          ((x + w) / winWidth).clamp(0.0, 1.0),
+          ((y + h) / winHeight).clamp(0.0, 1.0),
+        ];
+      }
+      normalizedNodes.add(node);
+    }
+
+    final winWithNormalized = ActiveWindowObservation(
+      appId: window.appId,
+      processName: window.processName,
+      windowTitle: window.windowTitle,
+      nodes: normalizedNodes,
+      browserUrl: window.browserUrl,
+      isElevated: window.isElevated,
+      pid: window.pid,
+      windowId: window.windowId,
+      focusedRole: window.focusedRole,
+      windowX: window.windowX,
+      windowY: window.windowY,
+      windowWidth: window.windowWidth,
+      windowHeight: window.windowHeight,
+      devicePixelRatio: window.devicePixelRatio,
+    );
+
+    final snapshotId = session.mintNextSnapshotId();
+    final collapsedWrappersCount = collapseWebWrappers
+        ? winWithNormalized.nodes.where(isTransparentWebWrapperNode).length
+        : 0;
+    final surfaces = extractOverlaySurfaces(winWithNormalized.nodes);
+    final redactedNodes = redactUiTreeNodes(
+      winWithNormalized.nodes,
+      maxNodes: maxNodes.clamp(1, 300),
+      snapshotId: snapshotId,
+      collapseWebWrappers: collapseWebWrappers,
+      skeleton: skeleton,
+      interactiveOnly: interactiveOnly,
+      rootElementId: rootElementId,
+    );
+
+    for (final node in redactedNodes) {
+      _registerSnapshotNode(session, node, snapshotId);
+    }
+
+    for (var i = 0;
+        i < redactedNodes.length && i < winWithNormalized.nodes.length;
+        i++) {
+      final normBounds = winWithNormalized.nodes[i]['bounds'];
+      if (normBounds is List) {
+        redactedNodes[i]['bounds'] = normBounds;
+      }
+    }
+
+    final screenshotObj = <String, Object?>{
+      'mimeType': capture.mimeType,
+      'width': capture.width,
+      'height': capture.height,
+      'dataBase64': capture.dataBase64,
+    };
+
+    return <String, Object?>{
+      'appId': window.appId,
+      'windowTitle': window.windowTitle,
+      'snapshotId': snapshotId,
+      'surfaces': surfaces,
+      'collapsedWrappersCount': collapsedWrappersCount,
+      'devicePixelRatio': window.devicePixelRatio,
+      'windowBounds': <String, Object?>{
+        'x': window.windowX,
+        'y': window.windowY,
+        'width': window.windowWidth,
+        'height': window.windowHeight,
+      },
+      'nodes': redactedNodes,
+      'screenshot': screenshotObj,
+      'image': screenshotObj,
     };
   }
 
@@ -2088,8 +2613,53 @@ class ComputerUseSessionManager {
       toolName: toolName,
       rawElementId: rawElementId,
     );
-    final targetNode = resolvedTarget.targetNode;
+    var targetNode = resolvedTarget.targetNode;
     final effectiveElementId = resolvedTarget.effectiveElementId;
+
+    if (toolName == 'input.click' && targetNode == null) {
+      final xNorm = (arguments['xNorm'] as num?)?.toDouble();
+      final yNorm = (arguments['yNorm'] as num?)?.toDouble();
+      if (xNorm != null && yNorm != null) {
+        targetNode = hitTestNodeAtCoordinates(
+          nodes: beforeWindow.nodes,
+          xNorm: xNorm,
+          yNorm: yNorm,
+          windowWidth: beforeWindow.windowWidth.toDouble(),
+          windowHeight: beforeWindow.windowHeight.toDouble(),
+        );
+      }
+    } else if (toolName == 'input.drag' && targetNode == null) {
+      final fromXNorm = (arguments['fromXNorm'] as num?)?.toDouble();
+      final fromYNorm = (arguments['fromYNorm'] as num?)?.toDouble();
+      final toXNorm = (arguments['toXNorm'] as num?)?.toDouble();
+      final toYNorm = (arguments['toYNorm'] as num?)?.toDouble();
+      final startHit = fromXNorm != null && fromYNorm != null
+          ? hitTestNodeAtCoordinates(
+              nodes: beforeWindow.nodes,
+              xNorm: fromXNorm,
+              yNorm: fromYNorm,
+              windowWidth: beforeWindow.windowWidth.toDouble(),
+              windowHeight: beforeWindow.windowHeight.toDouble(),
+            )
+          : null;
+      final endHit = toXNorm != null && toYNorm != null
+          ? hitTestNodeAtCoordinates(
+              nodes: beforeWindow.nodes,
+              xNorm: toXNorm,
+              yNorm: toYNorm,
+              windowWidth: beforeWindow.windowWidth.toDouble(),
+              windowHeight: beforeWindow.windowHeight.toDouble(),
+            )
+          : null;
+      if ((startHit != null && isPasswordUiNode(startHit)) ||
+          (endHit != null && isPasswordUiNode(endHit))) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'password_field_forbidden',
+        );
+      }
+      targetNode = startHit ?? endHit;
+    }
 
     if (targetNode != null && isPasswordUiNode(targetNode)) {
       throw const XunaHostChannelException(
@@ -2101,6 +2671,7 @@ class ComputerUseSessionManager {
     // "Quên mật khẩu" is not typing into a password field (UDC-17 S17.6).
     final explicitElementName = arguments['elementName'] as String?;
     if (toolName != 'input.click' &&
+        toolName != 'input.drag' &&
         explicitElementName != null &&
         isPasswordUiNode(<String, Object?>{'name': explicitElementName})) {
       throw const XunaHostChannelException(
@@ -2116,10 +2687,19 @@ class ComputerUseSessionManager {
       toolName: toolName,
       arguments: arguments,
       liveTarget: targetNode,
+      activeWindowNodes: beforeWindow.nodes,
+      windowWidth: beforeWindow.windowWidth.toDouble(),
+      windowHeight: beforeWindow.windowHeight.toDouble(),
       focusedRole: beforeWindow.focusedRole,
       draftCharsRemaining: session.draftCharsRemaining,
       hasUncommittedDraft: session.hasUncommittedDraft,
     );
+    if (stepRisk.reasonCode == 'password_field_forbidden') {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'password_field_forbidden',
+      );
+    }
     if (stepRisk.risk >= RiskTier.r3 && !hasR3Approval) {
       throw const XunaHostChannelException(
         status: XtpStatus.denied,
@@ -2137,7 +2717,9 @@ class ComputerUseSessionManager {
             stepRisk.reasonCode == 'editing_key')) {
       session.hasUncommittedDraft = true;
     } else if (hasR3Approval &&
-        (toolName == 'input.click' || toolName == 'input.key')) {
+        (toolName == 'input.click' ||
+            toolName == 'input.drag' ||
+            toolName == 'input.key')) {
       // The owner signed a possible commit; drafts before it are settled.
       session.hasUncommittedDraft = false;
     }
@@ -2155,7 +2737,7 @@ class ComputerUseSessionManager {
     // element right after it changed nothing on screen stops the session. A
     // repeat after a visible change (next page, a "+" stepper) is progress:
     // refs survive actions now (UDC-17 S17.4), so it has the same arguments.
-    final actionSignature = '$toolName:${argsSha256(arguments)}';
+    final actionSignature = '$toolName:${argsSha256(_sanitizeArgsForSignature(arguments))}';
     if (session.lastActionSignature == actionSignature) {
       await endSession(sessionId: session.sessionId, outcome: 'stopped');
       throw const XunaHostChannelException(
@@ -2182,11 +2764,72 @@ class ComputerUseSessionManager {
 
     switch (toolName) {
       case 'input.click':
+        int? effX = arguments['x'] as int?;
+        int? effY = arguments['y'] as int?;
+        final xNorm = (arguments['xNorm'] as num?)?.toDouble();
+        final yNorm = (arguments['yNorm'] as num?)?.toDouble();
+        if ((effX == null || effY == null) && xNorm != null && yNorm != null) {
+          final dpr = beforeWindow.devicePixelRatio > 0
+              ? beforeWindow.devicePixelRatio
+              : 1.0;
+          final winW =
+              beforeWindow.windowWidth > 0 ? beforeWindow.windowWidth : 1280;
+          final winH =
+              beforeWindow.windowHeight > 0 ? beforeWindow.windowHeight : 720;
+          final logicalX = beforeWindow.windowX + (xNorm * winW);
+          final logicalY = beforeWindow.windowY + (yNorm * winH);
+          effX = (logicalX * dpr).round();
+          effY = (logicalY * dpr).round();
+        }
         await provider.performClick(
           window: beforeWindow,
           elementId: effectiveElementId,
-          x: arguments['x'] as int?,
-          y: arguments['y'] as int?,
+          x: effX,
+          y: effY,
+        );
+      case 'input.drag':
+        int? effFromX = arguments['fromX'] as int?;
+        int? effFromY = arguments['fromY'] as int?;
+        int? effToX = arguments['toX'] as int?;
+        int? effToY = arguments['toY'] as int?;
+        final fromXNorm = (arguments['fromXNorm'] as num?)?.toDouble();
+        final fromYNorm = (arguments['fromYNorm'] as num?)?.toDouble();
+        final toXNorm = (arguments['toXNorm'] as num?)?.toDouble();
+        final toYNorm = (arguments['toYNorm'] as num?)?.toDouble();
+        final dpr = beforeWindow.devicePixelRatio > 0
+            ? beforeWindow.devicePixelRatio
+            : 1.0;
+        final winW =
+            beforeWindow.windowWidth > 0 ? beforeWindow.windowWidth : 1280;
+        final winH =
+            beforeWindow.windowHeight > 0 ? beforeWindow.windowHeight : 720;
+        if ((effFromX == null || effFromY == null) &&
+            fromXNorm != null &&
+            fromYNorm != null) {
+          final logicalFromX = beforeWindow.windowX + (fromXNorm * winW);
+          final logicalFromY = beforeWindow.windowY + (fromYNorm * winH);
+          effFromX = (logicalFromX * dpr).round();
+          effFromY = (logicalFromY * dpr).round();
+        }
+        if ((effToX == null || effToY == null) &&
+            toXNorm != null &&
+            toYNorm != null) {
+          final logicalToX = beforeWindow.windowX + (toXNorm * winW);
+          final logicalToY = beforeWindow.windowY + (toYNorm * winH);
+          effToX = (logicalToX * dpr).round();
+          effToY = (logicalToY * dpr).round();
+        }
+        await provider.performDrag(
+          window: beforeWindow,
+          fromX: effFromX,
+          fromY: effFromY,
+          toX: effToX,
+          toY: effToY,
+          fromXNorm: fromXNorm,
+          fromYNorm: fromYNorm,
+          toXNorm: toXNorm,
+          toYNorm: toYNorm,
+          durationMs: arguments['durationMs'] as int?,
         );
       case 'input.type_text':
         final prov = provider;
@@ -2223,11 +2866,13 @@ class ComputerUseSessionManager {
         );
     }
 
-    // Optional bounded post-action wait (`waitFor` / `waitForGone`).
+    // Optional bounded post-action wait (`waitFor` / `waitForGone`) and UI settle polling.
     final waitFor = arguments['waitFor'] as String?;
     final waitForGone = arguments['waitForGone'] as String?;
     bool? waitSatisfied;
     ActiveWindowObservation afterWindow;
+    bool settled = true;
+    int settleMs = 0;
     if ((waitFor != null && waitFor.trim().isNotEmpty) ||
         (waitForGone != null && waitForGone.trim().isNotEmpty)) {
       final waitOutcome = await _pollPostActionWaitCondition(
@@ -2242,8 +2887,16 @@ class ComputerUseSessionManager {
           errorCode: 'wait_timeout',
         );
       }
+      final settleRes = await _pollUiSettle(initialWindow: afterWindow);
+      afterWindow = settleRes.window;
+      settled = settleRes.settled;
+      settleMs = settleRes.settleMs;
     } else {
-      afterWindow = await provider.inspectActiveWindow(maxNodes: 300);
+      final immediateWindow = await provider.inspectActiveWindow(maxNodes: 300);
+      final settleRes = await _pollUiSettle(initialWindow: immediateWindow);
+      afterWindow = settleRes.window;
+      settled = settleRes.settled;
+      settleMs = settleRes.settleMs;
     }
 
     final changed = afterWindow.stateDigest() != beforeDigest;
@@ -2286,6 +2939,8 @@ class ComputerUseSessionManager {
       'effect': changed ? 'changed' : 'no_change',
       'route': route,
       'disposition': disposition,
+      'settled': settled,
+      'settleMs': settleMs,
       if (session.latestSnapshotId != null)
         'snapshotId': session.latestSnapshotId,
       if (openSurfaces.isNotEmpty) 'surfaces': openSurfaces,
@@ -2336,10 +2991,56 @@ class ComputerUseSessionManager {
       toolName: toolName,
       rawElementId: arguments['elementId'] as String?,
     );
-    final targetNode = resolved.targetNode;
+    var targetNode = resolved.targetNode;
+    if (toolName == 'input.click' && targetNode == null) {
+      final xNorm = (arguments['xNorm'] as num?)?.toDouble();
+      final yNorm = (arguments['yNorm'] as num?)?.toDouble();
+      if (xNorm != null && yNorm != null) {
+        targetNode = hitTestNodeAtCoordinates(
+          nodes: window.nodes,
+          xNorm: xNorm,
+          yNorm: yNorm,
+          windowWidth: window.windowWidth.toDouble(),
+          windowHeight: window.windowHeight.toDouble(),
+        );
+      }
+    } else if (toolName == 'input.drag' && targetNode == null) {
+      final fromXNorm = (arguments['fromXNorm'] as num?)?.toDouble();
+      final fromYNorm = (arguments['fromYNorm'] as num?)?.toDouble();
+      final toXNorm = (arguments['toXNorm'] as num?)?.toDouble();
+      final toYNorm = (arguments['toYNorm'] as num?)?.toDouble();
+      final startHit = fromXNorm != null && fromYNorm != null
+          ? hitTestNodeAtCoordinates(
+              nodes: window.nodes,
+              xNorm: fromXNorm,
+              yNorm: fromYNorm,
+              windowWidth: window.windowWidth.toDouble(),
+              windowHeight: window.windowHeight.toDouble(),
+            )
+          : null;
+      final endHit = toXNorm != null && toYNorm != null
+          ? hitTestNodeAtCoordinates(
+              nodes: window.nodes,
+              xNorm: toXNorm,
+              yNorm: toYNorm,
+              windowWidth: window.windowWidth.toDouble(),
+              windowHeight: window.windowHeight.toDouble(),
+            )
+          : null;
+      if ((startHit != null && isPasswordUiNode(startHit)) ||
+          (endHit != null && isPasswordUiNode(endHit))) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'password_field_forbidden',
+        );
+      }
+      targetNode = startHit ?? endHit;
+    }
+
     final declaredName = arguments['elementName'];
     if ((targetNode != null && isPasswordUiNode(targetNode)) ||
         (toolName != 'input.click' &&
+            toolName != 'input.drag' &&
             declaredName is String &&
             isPasswordUiNode(<String, Object?>{'name': declaredName}))) {
       throw const XunaHostChannelException(
@@ -2351,10 +3052,19 @@ class ComputerUseSessionManager {
       toolName: toolName,
       arguments: arguments,
       liveTarget: targetNode,
+      activeWindowNodes: window.nodes,
+      windowWidth: window.windowWidth.toDouble(),
+      windowHeight: window.windowHeight.toDouble(),
       focusedRole: window.focusedRole,
       draftCharsRemaining: session.draftCharsRemaining,
       hasUncommittedDraft: session.hasUncommittedDraft,
     );
+    if (stepRisk.reasonCode == 'password_field_forbidden') {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'password_field_forbidden',
+      );
+    }
     final rawName = targetNode?['name'];
     final label = rawName is String ? sanitizePreflightLabel(rawName) : '';
     return (
@@ -2586,6 +3296,57 @@ class ComputerUseSessionManager {
     }
   }
 
+  /// Polls `provider.inspectActiveWindow` state digest every [uiSettlePollIntervalMs]
+  /// up to [uiSettleMaxMs] (<= 1500ms).
+  /// Exits early when consecutive digests match (diff == 0), reporting
+  /// `settled: bool` and `settleMs: int` (UDC-18 Wave C F6).
+  Future<({ActiveWindowObservation window, bool settled, int settleMs})>
+  _pollUiSettle({
+    required ActiveWindowObservation initialWindow,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    var previousDigest = initialWindow.stateDigest();
+    var latestWindow = initialWindow;
+    final maxMs = uiSettleMaxMs.clamp(0, 1500);
+    final intervalMs = uiSettlePollIntervalMs.clamp(0, 500);
+
+    if (maxMs == 0 || intervalMs == 0) {
+      return (
+        window: initialWindow,
+        settled: true,
+        settleMs: 0,
+      );
+    }
+
+    while (stopwatch.elapsedMilliseconds < maxMs) {
+      final remaining = maxMs - stopwatch.elapsedMilliseconds;
+      if (remaining <= 0) break;
+      await Future<void>.delayed(
+        Duration(milliseconds: remaining < intervalMs ? remaining : intervalMs),
+      );
+      try {
+        latestWindow = await provider.inspectActiveWindow(maxNodes: 300);
+      } catch (_) {
+        break;
+      }
+      final currentDigest = latestWindow.stateDigest();
+      if (currentDigest == previousDigest) {
+        return (
+          window: latestWindow,
+          settled: true,
+          settleMs: stopwatch.elapsedMilliseconds.clamp(0, 1500),
+        );
+      }
+      previousDigest = currentDigest;
+    }
+
+    return (
+      window: latestWindow,
+      settled: false,
+      settleMs: stopwatch.elapsedMilliseconds.clamp(0, 1500),
+    );
+  }
+
   /// Polls `provider.inspectActiveWindow` up to 4 times to verify post-action
   /// [waitFor] or [waitForGone] conditions (`role:<r>`, `name:<n>`,
   /// `window:<title>`, `surface:<kind>`, or text substring).
@@ -2718,14 +3479,16 @@ class ComputerUseSessionManager {
     }
   }
 
-  /// Builds the 10 [HostToolHandler] instances for computer use.
+  /// Builds the 12 [HostToolHandler] instances for computer use.
   List<HostToolHandler> buildHandlers() => <HostToolHandler>[
     CuSessionStartTool(this),
     CuSessionExtendTool(this),
     ScreenCaptureTool(this),
     UiInspectTool(this),
+    UiObserveHybridTool(this),
     UiFindTool(this),
     InputClickTool(this),
+    InputDragTool(this),
     InputTypeTextTool(this),
     InputKeyTool(this),
     InputScrollTool(this),
@@ -2847,6 +3610,37 @@ class UiInspectTool extends HostToolHandler {
   }
 }
 
+class UiObserveHybridTool extends HostToolHandler {
+  const UiObserveHybridTool(this.manager);
+  final ComputerUseSessionManager manager;
+
+  @override
+  String get name => 'ui.observe_hybrid';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final maxNodes = (context.arguments['maxNodes'] as int?) ?? 100;
+    final maxEdge = (context.arguments['maxEdge'] as int?) ?? 1280;
+    final skeleton = context.arguments['skeleton'] == true;
+    final interactiveOnly = context.arguments['interactiveOnly'] == true;
+    final rootElementId = context.arguments['rootElementId'] as String?;
+    final collapseWebWrappers =
+        context.arguments['collapseWebWrappers'] == true;
+    final result = await manager.observeHybrid(
+      maxNodes: maxNodes,
+      maxEdge: maxEdge,
+      skeleton: skeleton,
+      interactiveOnly: interactiveOnly,
+      rootElementId: rootElementId,
+      collapseWebWrappers: collapseWebWrappers,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã quan sát kết hợp (${result['appId']}).',
+      structuredContent: result,
+    );
+  }
+}
+
 class UiFindTool extends HostToolHandler {
   const UiFindTool(this.manager);
   final ComputerUseSessionManager manager;
@@ -2885,6 +3679,27 @@ class InputClickTool extends HostToolHandler {
     );
     return ToolHandlerOutput(
       text: 'Đã nhấn chuột (${result['effect']}).',
+      structuredContent: result,
+    );
+  }
+}
+
+class InputDragTool extends HostToolHandler {
+  const InputDragTool(this.manager);
+  final ComputerUseSessionManager manager;
+
+  @override
+  String get name => 'input.drag';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final result = await manager.executeInputAction(
+      toolName: name,
+      arguments: context.arguments,
+      hasR3Approval: context.hasVerifiedR3Approval,
+    );
+    return ToolHandlerOutput(
+      text: 'Đã kéo thả chuột (${result['effect']}).',
       structuredContent: result,
     );
   }

@@ -31,8 +31,12 @@ class CuaDriverMap {
         return scope == 'screen' ? 'get_desktop_state' : 'get_window_state';
       case 'ui.inspect':
         return 'get_window_state';
+      case 'ui.observe_hybrid':
+        return 'get_window_state';
       case 'input.click':
         return 'click';
+      case 'input.drag':
+        return 'drag';
       case 'input.type_text':
         return 'type_text';
       case 'input.key':
@@ -92,6 +96,16 @@ class CuaDriverMap {
           if (targetWindowId != null) 'window_id': targetWindowId,
           'max_elements': arguments['maxNodes'] ?? 300,
         };
+      case 'ui.observe_hybrid':
+        return <String, Object?>{
+          'session': sessionId,
+          if (targetPid != null) 'pid': targetPid,
+          if (targetWindowId != null) 'window_id': targetWindowId,
+          'max_elements': arguments['maxNodes'] ?? 300,
+          'include_accessibility_tree': true,
+          'include_screenshot': true,
+          'max_edge': arguments['maxEdge'] ?? 1280,
+        };
       case 'input.click':
         final elementId = arguments['elementId'] as String?;
         final x = arguments['x'] as int?;
@@ -104,6 +118,25 @@ class CuaDriverMap {
             'element_token': elementId,
           if (x != null) 'x': x,
           if (y != null) 'y': y,
+          if (arguments['xNorm'] != null) 'x_norm': arguments['xNorm'],
+          if (arguments['yNorm'] != null) 'y_norm': arguments['yNorm'],
+        };
+      case 'input.drag':
+        return <String, Object?>{
+          'session': sessionId,
+          'target': windowTarget,
+          if (arguments['fromX'] != null) 'from_x': arguments['fromX'],
+          if (arguments['fromY'] != null) 'from_y': arguments['fromY'],
+          if (arguments['toX'] != null) 'to_x': arguments['toX'],
+          if (arguments['toY'] != null) 'to_y': arguments['toY'],
+          if (arguments['fromXNorm'] != null)
+            'from_x_norm': arguments['fromXNorm'],
+          if (arguments['fromYNorm'] != null)
+            'from_y_norm': arguments['fromYNorm'],
+          if (arguments['toXNorm'] != null) 'to_x_norm': arguments['toXNorm'],
+          if (arguments['toYNorm'] != null) 'to_y_norm': arguments['toYNorm'],
+          if (arguments['durationMs'] != null)
+            'duration_ms': arguments['durationMs'],
         };
       case 'input.type_text':
         return <String, Object?>{
@@ -313,10 +346,14 @@ class AgentDesktopDriverMap {
         return 'desktop_screenshot';
       case 'ui.inspect':
         return 'desktop_snapshot';
+      case 'ui.observe_hybrid':
+        return 'desktop_snapshot';
       case 'input.click':
         final elementId = arguments['elementId'] as String?;
         final hasRef = elementId != null && elementId.trim().isNotEmpty;
         return hasRef ? 'desktop_click' : 'desktop_mouse_click';
+      case 'input.drag':
+        return 'desktop_drag';
       case 'input.type_text':
         final headed = arguments['headed'] == true;
         return headed ? 'desktop_type' : 'desktop_set_value';
@@ -408,6 +445,19 @@ class AgentDesktopDriverMap {
           if (rootElementId != null && rootElementId.trim().isNotEmpty)
             'root': normalizeRefId(rootElementId),
         };
+      case 'ui.observe_hybrid':
+        final rootElementId = arguments['rootElementId'] as String?;
+        return <String, Object?>{
+          if (targetApp != null && targetApp.isNotEmpty) 'app': targetApp,
+          if (targetWindowId != null) 'window_id': '$targetWindowId',
+          'compact': true,
+          'include_screenshot': true,
+          'format': 'jpeg',
+          if (arguments['interactiveOnly'] == true) 'interactive_only': true,
+          if (arguments['skeleton'] == true) 'skeleton': true,
+          if (rootElementId != null && rootElementId.trim().isNotEmpty)
+            'root': normalizeRefId(rootElementId),
+        };
       case 'input.click':
         final elementId = arguments['elementId'] as String?;
         if (elementId != null && elementId.trim().isNotEmpty) {
@@ -415,7 +465,28 @@ class AgentDesktopDriverMap {
         }
         final x = arguments['x'] as int? ?? 0;
         final y = arguments['y'] as int? ?? 0;
-        return <String, Object?>{'coords': '$x,$y'};
+        return <String, Object?>{
+          'coords': '$x,$y',
+          if (arguments['xNorm'] != null) 'x_norm': arguments['xNorm'],
+          if (arguments['yNorm'] != null) 'y_norm': arguments['yNorm'],
+        };
+      case 'input.drag':
+        final startX = arguments['fromX'] ?? arguments['startX'] ?? 0;
+        final startY = arguments['fromY'] ?? arguments['startY'] ?? 0;
+        final endX = arguments['toX'] ?? arguments['endX'] ?? 0;
+        final endY = arguments['toY'] ?? arguments['endY'] ?? 0;
+        return <String, Object?>{
+          'start_coords': '$startX,$startY',
+          'end_coords': '$endX,$endY',
+          if (arguments['fromXNorm'] != null)
+            'from_x_norm': arguments['fromXNorm'],
+          if (arguments['fromYNorm'] != null)
+            'from_y_norm': arguments['fromYNorm'],
+          if (arguments['toXNorm'] != null) 'to_x_norm': arguments['toXNorm'],
+          if (arguments['toYNorm'] != null) 'to_y_norm': arguments['toYNorm'],
+          if (arguments['durationMs'] != null)
+            'duration_ms': arguments['durationMs'],
+        };
       case 'input.type_text':
         final refId = normalizeRefId(arguments['elementId'] as String);
         final text = arguments['text'] as String;

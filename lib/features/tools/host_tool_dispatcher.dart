@@ -412,6 +412,7 @@ class HostToolDispatcher {
     'heartbeat.configure_and_tick',
     'screen.capture',
     'ui.inspect',
+    'ui.observe_hybrid',
     'ui.find',
     'notes.search',
     'calendar.list_events',
