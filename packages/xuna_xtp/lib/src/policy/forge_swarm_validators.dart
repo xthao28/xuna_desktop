@@ -29,7 +29,7 @@ const Set<String> allowedForgeDocumentExtensions = <String>{
 /// Returns `true` if [ext] (with or without leading `.`) is an allowed safe
 /// document/archive extension and is not in [forbiddenBeamExtensions].
 bool isAllowedForgeFileExtension(String? ext) {
-  if (ext == null) return false;
+  if (ext == null || ext.length > 12) return false;
   final clean = ext.trim().toLowerCase().replaceFirst(RegExp(r'^\.+'), '');
   if (clean.isEmpty || clean.length > 10) return false;
   if (forbiddenBeamExtensions.contains(clean)) return false;
@@ -43,10 +43,9 @@ final RegExp _sandboxFolderRe = RegExp(
 /// rejects parent traversal (`..`), absolute paths (`/`, `\`, `C:`), and hidden
 /// segments starting with `.`.
 bool isValidSandboxFolderName(String? folder) {
-  if (folder == null) return false;
+  if (folder == null || folder.length > 120) return false;
   final trimmed = folder.trim();
   if (trimmed.isEmpty ||
-      trimmed.length > 120 ||
       trimmed.startsWith('/') ||
       trimmed.startsWith(r'\') ||
       trimmed.contains('..') ||
@@ -187,9 +186,9 @@ List<String> inferUniversalPrimitivesForGoal(String goal) {
 /// Validates a dynamic `{{key}}` template parameter value for `skill.chain_and_test` (`WORKSHOP-1`):
 /// rejects path traversal (`..`), shell pipes/commands, and forbidden markdown patterns.
 bool isSafeTemplateParameterValue(String? value) {
-  if (value == null) return false;
+  if (value == null || value.length > 120) return false;
   final trimmed = value.trim();
-  if (trimmed.isEmpty || trimmed.length > 120) return false;
+  if (trimmed.isEmpty) return false;
   if (trimmed.contains('..') ||
       trimmed.contains('|') ||
       trimmed.contains(';') ||

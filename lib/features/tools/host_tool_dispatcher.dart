@@ -205,6 +205,7 @@ class ToolExecutionContext {
     required this.nowUtc,
     this.beamDirectoryPath,
     this.subStepExecutor,
+    this.computerUseManager,
     this.hasVerifiedR3Approval = false,
   });
 
@@ -230,6 +231,7 @@ class ToolExecutionContext {
   final DateTime nowUtc;
   final String? beamDirectoryPath;
   final SubStepExecutor? subStepExecutor;
+  final ComputerUseSessionManager? computerUseManager;
 }
 
 /// Base class for each of the 12 MVP tools (`UDC-3` §5.6.1: one class per tool).
@@ -470,7 +472,7 @@ class HostToolDispatcher {
       ...buildComputerUseTools(
         defaultPermission: perms.accessibility,
         screenCapturePermission: computerUseManager!.supportsScreenCapture
-            ? perms.accessibility
+            ? perms.screenRecording
             : XtpPermissionState.notDetermined,
       ),
     ];
@@ -527,6 +529,8 @@ class HostToolDispatcher {
       pinnedPhonePublicKeys:
           enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
       isInApprovedCuSession: computerUseManager?.hasActiveSession ?? false,
+      cuSessionApprovedApps:
+          computerUseManager?.activeSession?.allowedAppIdentifiers,
       allowZeroConfigAppDiscovery: true,
       allowPublicHttpsDomains: true,
       nowUtc: nowUtc,
@@ -604,7 +608,8 @@ class HostToolDispatcher {
             errorCode: 'policy_blocked',
           );
         }
-        final checkApp = stepArgs['appId']?.toString() ??
+        final checkApp =
+            stepArgs['appId']?.toString() ??
             stepArgs['app']?.toString() ??
             stepArgs['process']?.toString();
         if (checkApp != null && isHardDeniedAppOrProcess(checkApp)) {
@@ -687,6 +692,7 @@ class HostToolDispatcher {
           agentVersion: agentVersion,
           nowUtc: effectiveNow,
           beamDirectoryPath: beamDirectoryPath,
+          computerUseManager: computerUseManager,
         );
         final subOut = await subHandler.execute(subContext);
         actionLedger.record(
@@ -732,6 +738,7 @@ class HostToolDispatcher {
         nowUtc: effectiveNow,
         beamDirectoryPath: beamDirectoryPath,
         subStepExecutor: executeSubStep,
+        computerUseManager: computerUseManager,
       );
 
       final deadline = Duration(milliseconds: params.deadlineMs);
@@ -829,14 +836,44 @@ class HostToolDispatcher {
       }
     }
 
-    final response = XtpResponse.toolCallResult(
-      id: requestId,
-      text: text,
-      structuredContent: structuredContent,
-      status: status,
-      durationMs: stopwatch.elapsedMilliseconds,
-      errorCode: errorCode,
-    );
+    late final XtpResponse response;
+    try {
+      response = XtpResponse.toolCallResult(
+        id: requestId,
+        text: text,
+        structuredContent: structuredContent,
+        status: status,
+        durationMs: stopwatch.elapsedMilliseconds,
+        errorCode: errorCode,
+      );
+    } on XtpProtocolException {
+      status = XtpStatus.failed;
+      errorCode = 'payload_too_large';
+      text =
+          'Kết quả ${params.name} vượt quá giới hạn kích thước khung truyền.';
+      response = XtpResponse.toolCallResult(
+        id: requestId,
+        text: text,
+        structuredContent: const <String, Object?>{
+          'errorCode': 'payload_too_large',
+        },
+        status: status,
+        durationMs: stopwatch.elapsedMilliseconds,
+        errorCode: errorCode,
+      );
+    } catch (_) {
+      status = XtpStatus.failed;
+      errorCode = 'os_error';
+      text = 'Lỗi đóng gói kết quả ${params.name}.';
+      response = XtpResponse.toolCallResult(
+        id: requestId,
+        text: text,
+        structuredContent: const <String, Object?>{'errorCode': 'os_error'},
+        status: status,
+        durationMs: stopwatch.elapsedMilliseconds,
+        errorCode: errorCode,
+      );
+    }
 
     await _recordOutcome(
       invocationId: params.invocationId,
@@ -853,6 +890,7 @@ class HostToolDispatcher {
   /// Input tools whose risk the host decides from the live screen.
   static const Set<String> _liveClassifiedInputTools = <String>{
     'input.click',
+    'input.drag',
     'input.type_text',
     'input.key',
     'input.scroll',
@@ -880,6 +918,8 @@ class HostToolDispatcher {
       pinnedPhonePublicKeys:
           enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
       isInApprovedCuSession: computerUseManager?.hasActiveSession ?? false,
+      cuSessionApprovedApps:
+          computerUseManager?.activeSession?.allowedAppIdentifiers,
       allowZeroConfigAppDiscovery: true,
       allowPublicHttpsDomains: true,
       nowUtc: now,
@@ -899,7 +939,10 @@ class HostToolDispatcher {
     }
 
     if (!evaluation.allowed && evaluation.errorCode != 'approval_required') {
-      return refuse(evaluation.status, evaluation.errorCode ?? 'policy_blocked');
+      return refuse(
+        evaluation.status,
+        evaluation.errorCode ?? 'policy_blocked',
+      );
     }
 
     var risk = evaluation.effectiveRisk;
@@ -986,6 +1029,7 @@ class HostToolDispatcher {
     final preset = TrustPreset.fromValue(params.trustPreset);
 
     final updatedApps = <AllowedAppConfig>[];
+    final seenAppIds = <String>{};
     for (final appId in params.allowApps) {
       if (params.denyApps.any(
         (d) => d.trim().toLowerCase() == appId.trim().toLowerCase(),
@@ -994,30 +1038,46 @@ class HostToolDispatcher {
       }
       final existing = currentPolicy?.findApp(appId);
       if (existing != null) {
-        updatedApps.add(existing);
+        if (seenAppIds.add(existing.id)) {
+          updatedApps.add(existing);
+        }
       } else {
         final discovered = appScanner.findApp(appId);
         if (discovered != null) {
-          updatedApps.add(
-            AllowedAppConfig(
-              id: discovered.id,
-              name: discovered.name,
-              kind: discovered.kind,
-              target: discovered.target,
-              risk: RiskTier.r2,
-            ),
-          );
+          if (seenAppIds.add(discovered.id)) {
+            updatedApps.add(
+              AllowedAppConfig(
+                id: discovered.id,
+                name: discovered.name,
+                kind: discovered.kind,
+                target: discovered.target,
+                risk: RiskTier.r2,
+              ),
+            );
+          }
         } else {
-          updatedApps.add(
-            AllowedAppConfig(
-              id: appId,
-              name: appId,
-              kind:
-                  Platform.isMacOS ? AppLaunchKind.bundle : AppLaunchKind.exe,
-              target: appId,
-              risk: RiskTier.r2,
-            ),
-          );
+          final normalizedId = AutoAppScanner.normalizeId(appId);
+          if (!isValidShortId(normalizedId)) {
+            return XtpErrorResponse(
+              id: requestId,
+              code: JsonRpcErrorCode.invalidParams,
+              message:
+                  'policy_blocked: Application "$appId" has an invalid identifier',
+            );
+          }
+          if (seenAppIds.add(normalizedId)) {
+            updatedApps.add(
+              AllowedAppConfig(
+                id: normalizedId,
+                name: appId.trim(),
+                kind: Platform.isMacOS
+                    ? AppLaunchKind.bundle
+                    : AppLaunchKind.exe,
+                target: appId.trim(),
+                risk: RiskTier.r2,
+              ),
+            );
+          }
         }
       }
     }
@@ -1042,10 +1102,7 @@ class HostToolDispatcher {
 
     return XtpResponse(
       id: requestId,
-      result: const <String, Object?>{
-        'schemaVersion': 1,
-        'status': 'ok',
-      },
+      result: const <String, Object?>{'schemaVersion': 1, 'status': 'ok'},
     );
   }
 

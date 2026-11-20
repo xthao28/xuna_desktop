@@ -435,6 +435,50 @@ void main() {
         ),
         throwsA(isA<XtpProtocolException>()),
       );
+
+      expect(maxXtpFrameBytes, equals(524288));
+      expect(maxMediaStructuredContentBytes, equals(458752));
+
+      // Media/screenshot payloads > 16 KiB succeed inside the 512 KiB frame budget.
+      final mediaResp = XtpResponse.toolCallResult(
+        id: 2,
+        text: 'Observed active window',
+        structuredContent: <String, Object?>{
+          'appId': 'spotify',
+          'windowTitle': 'Spotify',
+          'nodes': <Object?>[],
+          'screenshot': <String, Object?>{
+            'mimeType': 'image/jpeg',
+            'width': 960,
+            'height': 600,
+            'dataBase64': 'A' * 65536,
+          },
+        },
+        status: XtpStatus.ok,
+        durationMs: 42,
+      );
+      final encodedMedia = mediaResp.encode();
+      expect(encodedMedia.length, greaterThan(65536));
+      expect(encodedMedia.length, lessThanOrEqualTo(maxXtpFrameBytes));
+
+      // Media payloads exceeding maxMediaStructuredContentBytes still fail closed.
+      expect(
+        () => XtpResponse.toolCallResult(
+          id: 3,
+          text: 'oversized media',
+          structuredContent: <String, Object?>{
+            'screenshot': <String, Object?>{
+              'mimeType': 'image/jpeg',
+              'width': 1280,
+              'height': 800,
+              'dataBase64': 'A' * (maxMediaStructuredContentBytes + 100),
+            },
+          },
+          status: XtpStatus.ok,
+          durationMs: 10,
+        ),
+        throwsA(isA<XtpProtocolException>()),
+      );
     });
 
     test(
@@ -969,6 +1013,7 @@ void main() {
           'role': 'textfield',
           'name': 'Họ và tên',
           'value': 'Thảo',
+          'bounds': <double>[0.1, 0.2, 0.6, 0.3],
           'enabled': true,
         },
         <String, Object?>{
@@ -976,15 +1021,18 @@ void main() {
           'role': 'password',
           'name': 'Nhập mật khẩu ngân hàng',
           'value': 'secret123!',
+          'bounds': <double>[0.1, 0.35, 0.6, 0.45],
           'enabled': true,
         },
       ]);
       expect(redacted, hasLength(2));
       expect(redacted[0]['name'], equals('Họ và tên'));
       expect(redacted[0].containsKey('value'), isFalse);
+      expect(redacted[0]['bounds'], equals(<double>[0.1, 0.2, 0.6, 0.3]));
       expect(redacted[1]['role'], equals('password'));
       expect(redacted[1]['name'], equals('•••'));
       expect(redacted[1].containsKey('value'), isFalse);
+      expect(redacted[1].containsKey('bounds'), isFalse);
       expect(redacted[1]['isPassword'], isTrue);
 
       // agent-desktop progressive observation helpers: web-wrapper collapsing,
@@ -2124,7 +2172,7 @@ void main() {
       );
 
       final clawPulseTools = buildClawPulseTools();
-      expect(clawPulseTools, hasLength(10));
+      expect(clawPulseTools, hasLength(9));
       expect(
         clawPulseTools.map((t) => t.name).toList(),
         equals(<String>[
@@ -2137,7 +2185,6 @@ void main() {
           'skill.chain_and_test',
           'memory.markdown_vault',
           'browser.semantic_snapshot',
-          'ui.accessibility_tree',
         ]),
       );
 
@@ -2153,7 +2200,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(62));
+      expect(fullCatalog71, hasLength(61));
 
       expect(
         evaluator
@@ -2474,62 +2521,43 @@ void main() {
         isTrue,
       );
 
-      // UIA-1: Zero-Screenshot Native OS UI Automation (ui.accessibility_tree)
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'ui.accessibility_tree',
-              arguments: const <String, Object?>{
-                'action': 'inspect_window',
-                'windowTitle': 'MISA SME 2026 - Quản lý Hóa đơn',
-                'maxNodes': 30,
-              },
-              nowUtc: now,
-            )
-            .allowed,
-        isTrue,
+      // Deprecated ui.accessibility_tree is removed from catalog and fails closed.
+      final deprecatedUiaEval = evaluator.evaluateInvocation(
+        toolName: 'ui.accessibility_tree',
+        arguments: const <String, Object?>{
+          'action': 'inspect_window',
+          'windowTitle': 'Workspace',
+        },
+        nowUtc: now,
       );
-      // ui.accessibility_tree is read-only: it is declared R1 and outside the
-      // approved computer-use session, so every acting action is rejected by
-      // the schema instead of running without an owner approval.
-      for (final acting in const <String>[
-        'invoke_ref',
-        'set_value_ref',
-        'close_window',
-        'drag',
-        'shortcut',
-        'invoke_menu',
-        'browser_type',
-        'bring_to_front',
-      ]) {
-        final res = evaluator.evaluateInvocation(
-          toolName: 'ui.accessibility_tree',
-          arguments: <String, Object?>{
-            'action': acting,
-            'windowTitle': 'MISA SME 2026 - Quản lý Hóa đơn',
-          },
-          nowUtc: now,
-        );
-        expect(res.allowed, isFalse, reason: acting);
-        expect(res.errorCode, equals('schema_mismatch'), reason: acting);
-      }
-      // Targets and text are not accepted any more either.
-      expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'ui.accessibility_tree',
-              arguments: const <String, Object?>{
-                'action': 'inspect_window',
-                'refId': 'ui_3',
-              },
-              nowUtc: now,
-            )
-            .errorCode,
-        equals('schema_mismatch'),
+      expect(deprecatedUiaEval.allowed, isFalse);
+
+      final uiAllowedEvaluator = HostPolicyEvaluator.fromJsonString('''
+{
+  "schemaVersion": 1,
+  "families": {
+    "app": "allow",
+    "ui": "allow"
+  },
+  "apps": [],
+  "urlDomains": [],
+  "workflows": [],
+  "players": []
+}
+''');
+      final directUiaEval = uiAllowedEvaluator.evaluateInvocation(
+        toolName: 'ui.accessibility_tree',
+        arguments: const <String, Object?>{
+          'action': 'inspect_window',
+          'windowTitle': 'Workspace',
+        },
+        nowUtc: now,
       );
-      expect(allowedUiAccessibilityActions,
-          equals(const <String>{'inspect_window'}));
-      final uiaDescriptor = buildMvpToolCatalog(
+      expect(directUiaEval.allowed, isFalse);
+      expect(directUiaEval.status, equals(XtpStatus.unsupported));
+      expect(directUiaEval.errorCode, equals('platform_unsupported'));
+
+      final m0Catalog = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
         includeDevWorkspaceTools: true,
         includeDeskCopilotTools: true,
@@ -2540,30 +2568,40 @@ void main() {
         includeSymbioticSentinelTools: true,
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
-      ).firstWhere((t) => t.name == 'ui.accessibility_tree');
-      final uiaActionEnum = ((uiaDescriptor.inputSchema['properties']!
-          as Map)['action']! as Map)['enum'];
-      expect(uiaActionEnum, equals(const <String>['inspect_window']));
-      final uiaProps = uiaDescriptor.inputSchema['properties']! as Map;
-      expect(uiaProps.containsKey('refId'), isFalse);
-      expect(uiaProps.containsKey('valueText'), isFalse);
+      );
+      expect(m0Catalog.any((t) => t.name == 'ui.accessibility_tree'), isFalse);
+
+      final activeCtxSchema = m0Catalog
+          .firstWhere((t) => t.name == 'window.active_context')
+          .outputSchema;
+      final activeCtxProps = activeCtxSchema['properties']! as Map;
+      expect(activeCtxProps.containsKey('truncated'), isTrue);
+      expect(activeCtxProps.containsKey('runningApps'), isTrue);
+
+      final appLaunchSchema =
+          m0Catalog.firstWhere((t) => t.name == 'app.launch').outputSchema;
+      final appLaunchProps = appLaunchSchema['properties']! as Map;
+      expect(appLaunchProps.containsKey('alreadyRunning'), isTrue);
+      expect(appLaunchProps.containsKey('snapshotId'), isTrue);
+      expect(appLaunchProps.containsKey('nodes'), isTrue);
+
+      final cuStartSchema = buildComputerUseTools()
+          .firstWhere((t) => t.name == 'cu.session_start')
+          .outputSchema;
+      final cuStartProps = cuStartSchema['properties']! as Map;
+      expect(cuStartProps.containsKey('foregroundApp'), isTrue);
+      expect(cuStartProps.containsKey('windowTitle'), isTrue);
+      expect(cuStartProps.containsKey('targetAlreadyFocused'), isTrue);
+      expect(cuStartProps.containsKey('snapshotId'), isTrue);
+      expect(cuStartProps.containsKey('nodes'), isTrue);
       expect(
-        evaluator
-            .evaluateInvocation(
-              toolName: 'ui.accessibility_tree',
-              arguments: const <String, Object?>{
-                'action': 'inspect_window',
-                'windowTitle': '1Password Vault - Master Key',
-              },
-              nowUtc: now,
-            )
-            .errorCode,
-        equals('ui_window_forbidden_target'),
+        cuStartSchema['required'],
+        equals(const <String>['sessionId']),
       );
     });
 
     test(
-        'every tool in the full 62-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
+        'every tool in the full 61-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
         () {
       final fullCatalog71 = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
@@ -2577,7 +2615,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(62));
+      expect(fullCatalog71, hasLength(61));
       for (final tool in fullCatalog71) {
         final resolvedFamily = resolveToolFamilyForName(tool.name);
         expect(
@@ -3282,8 +3320,11 @@ void main() {
     });
   });
 
-  group('Milestone M3 — Policy, Presets & Input Risk (Features F7, F8, F9)', () {
-    test('F7: hard-denial blocks modern terminals, system settings, and delimiter variants', () {
+  group('Milestone M3 — Policy, Presets & Input Risk (Features F7, F8, F9)',
+      () {
+    test(
+        'F7: hard-denial blocks modern terminals, system settings, and delimiter variants',
+        () {
       final deniedModernTerminals = <String>[
         'warp',
         'Warp',
@@ -3342,7 +3383,9 @@ void main() {
       }
     });
 
-    test('F8: TrustPreset enum parsing, serialization, and backward compatibility', () {
+    test(
+        'F8: TrustPreset enum parsing, serialization, and backward compatibility',
+        () {
       expect(TrustPreset.fromValue('strict'), equals(TrustPreset.strict));
       expect(TrustPreset.fromValue('standard'), equals(TrustPreset.standard));
       expect(TrustPreset.fromValue('autopilot'), equals(TrustPreset.autopilot));
@@ -3398,14 +3441,18 @@ void main() {
       expect(serializedDefault['trustPreset'], equals('standard'));
     });
 
-    test('F8: HostPolicyEvaluator propagates trustPreset to zero-config discovery', () {
+    test(
+        'F8: HostPolicyEvaluator propagates trustPreset to zero-config discovery',
+        () {
       final now = DateTime.utc(2026, 11, 14, 12, 0);
 
       // Standard preset enables zero-config app discovery by default
       final standardPolicy = HostPolicy(
         schemaVersion: 1,
         trustPreset: TrustPreset.standard,
-        families: const <ToolFamily, FamilyPolicyDecision>{ToolFamily.cu: FamilyPolicyDecision.allow},
+        families: const <ToolFamily, FamilyPolicyDecision>{
+          ToolFamily.cu: FamilyPolicyDecision.allow
+        },
         apps: const <AllowedAppConfig>[],
         urlDomains: const <String>[],
         workflows: const <WorkflowConfig>[],
@@ -3431,7 +3478,9 @@ void main() {
       final strictPolicy = HostPolicy(
         schemaVersion: 1,
         trustPreset: TrustPreset.strict,
-        families: const <ToolFamily, FamilyPolicyDecision>{ToolFamily.cu: FamilyPolicyDecision.allow},
+        families: const <ToolFamily, FamilyPolicyDecision>{
+          ToolFamily.cu: FamilyPolicyDecision.allow
+        },
         apps: const <AllowedAppConfig>[],
         urlDomains: const <String>[],
         workflows: const <WorkflowConfig>[],
@@ -3453,14 +3502,17 @@ void main() {
       expect(strictEval.errorCode, equals('policy_blocked'));
     });
 
-    test('F9: classifyInputStepRisk for multiline text, editing shortcuts, and draft line breaks', () {
+    test(
+        'F9: classifyInputStepRisk for multiline text, editing shortcuts, and draft line breaks',
+        () {
       final draftTarget = <String, Object?>{
         'role': 'textarea',
         'editable': true,
         'readOnly': false,
         'name': 'Ghi chú',
       };
-      const multilineText = 'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM\nĐộc lập - Tự do - Hạnh phúc\n\nĐƠN XIN NGHỈ PHÉP';
+      const multilineText =
+          'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM\nĐộc lập - Tự do - Hạnh phúc\n\nĐƠN XIN NGHỈ PHÉP';
 
       // Multiline text in draft target within budget is R2 draft_text
       final r2Draft = classifyInputStepRisk(
@@ -3536,14 +3588,21 @@ void main() {
 
       // Draft line breaks: Enter, Return, Shift+Enter, Shift+Return in draft text roles
       for (final role in const <String>['textarea', 'textfield', 'searchbox']) {
-        for (final combo in const <String>['Enter', 'Return', 'Shift+Enter', 'shift+return', 'Shift+Return']) {
+        for (final combo in const <String>[
+          'Enter',
+          'Return',
+          'Shift+Enter',
+          'shift+return',
+          'Shift+Return'
+        ]) {
           final r = classifyInputStepRisk(
             toolName: 'input.key',
             arguments: <String, Object?>{'combo': combo},
             focusedRole: role,
           );
           expect(r.risk, equals(RiskTier.r2), reason: '$combo in $role');
-          expect(r.reasonCode, equals('draft_line_break'), reason: '$combo in $role');
+          expect(r.reasonCode, equals('draft_line_break'),
+              reason: '$combo in $role');
         }
       }
 
@@ -3565,7 +3624,8 @@ void main() {
           arguments: <String, Object?>{'combo': combo},
           focusedRole: null,
         );
-        expect(rNull.risk, equals(RiskTier.r3), reason: '$combo with null focus');
+        expect(rNull.risk, equals(RiskTier.r3),
+            reason: '$combo with null focus');
         expect(rNull.reasonCode, equals('activation_key'));
 
         final rButton = classifyInputStepRisk(
@@ -3573,7 +3633,8 @@ void main() {
           arguments: <String, Object?>{'combo': combo},
           focusedRole: 'button',
         );
-        expect(rButton.risk, equals(RiskTier.r3), reason: '$combo with button focus');
+        expect(rButton.risk, equals(RiskTier.r3),
+            reason: '$combo with button focus');
         expect(rButton.reasonCode, equals('activation_key'));
       }
 
@@ -3618,6 +3679,130 @@ void main() {
       );
       expect(rPassword.risk, equals(RiskTier.r3));
       expect(rPassword.reasonCode, equals('unclassified_target'));
+    });
+
+    test(
+        'M5 Tier-5 hardening: overhanging normalized List bounds, UTF-16 clamping, and exact runtime enum',
+        () {
+      // 1. hitTestNodeAtCoordinates must treat overhanging normalized List bounds
+      //    [0.8, 0.8, 1.15, 1.0] as normalized (not divided by windowWidth=1280),
+      //    and skip non-finite / inverted bounds.
+      final nodes = <Map<String, Object?>>[
+        <String, Object?>{
+          'id': 'bad_nan',
+          'role': 'button',
+          'name': 'Bad',
+          'bounds': <double>[0.0, 0.0, double.nan, 1.0],
+        },
+        <String, Object?>{
+          'id': 'bad_inv',
+          'role': 'button',
+          'name': 'Inv',
+          'bounds': <double>[0.9, 0.9, 0.5, 0.5],
+        },
+        <String, Object?>{
+          'id': 'pw_overhang',
+          'role': 'password',
+          'isPassword': true,
+          'name': 'Password',
+          'bounds': <double>[0.8, 0.8, 1.15, 1.0],
+        },
+      ];
+      final hit = hitTestNodeAtCoordinates(
+        nodes: nodes,
+        xNorm: 0.95,
+        yNorm: 0.95,
+        windowWidth: 1280,
+        windowHeight: 720,
+      );
+      expect(hit, isNotNull);
+      expect(hit!['id'], equals('pw_overhang'));
+
+      // 2. UTF-16 surrogate-safe clamping on node name (60) and overlay title (80).
+      const emoji = '🎵'; // 2 UTF-16 code units
+      final oddName =
+          '${'a' * 59}${emoji}tail'; // split at 60 would leave high surrogate
+      final redacted = redactUiTreeNodes(<Map<String, Object?>>[
+        <String, Object?>{
+          'id': 'ui_1',
+          'role': 'button',
+          'name': oddName,
+        },
+      ]);
+      final clampedName = redacted.first['name']! as String;
+      expect(clampedName.length, equals(59));
+      expect(clampedName, equals('a' * 59));
+
+      final oddSurfaceTitle = '${'b' * 79}${emoji}tail';
+      final surfaces = extractOverlaySurfaces(<Map<String, Object?>>[
+        <String, Object?>{
+          'id': 'ui_2',
+          'role': 'dialog',
+          'name': oddSurfaceTitle,
+        },
+      ]);
+      final clampedTitle = surfaces.first['title']! as String;
+      expect(clampedTitle.length, equals(79));
+      expect(clampedTitle, equals('b' * 79));
+
+      // 3. Exact lowercase runtime enum in forge.synthesize_skill.
+      final forgeEvaluator = HostPolicyEvaluator.healthy(
+        HostPolicy(
+          schemaVersion: 1,
+          families: <ToolFamily, FamilyPolicyDecision>{
+            for (final family in ToolFamily.values)
+              family: FamilyPolicyDecision.allow,
+          },
+          apps: const <AllowedAppConfig>[],
+          urlDomains: const <String>[],
+          workflows: const <WorkflowConfig>[],
+          players: const <String>[],
+        ),
+      );
+      final forgePolicy = forgeEvaluator.policy!;
+      final nowUtc = DateTime.utc(2026, 11, 20);
+      final badRuntime = validateToolArguments(
+        toolName: 'forge.synthesize_skill',
+        arguments: const <String, Object?>{
+          'goal': 'Test skill synthesis',
+          'category': 'custom_script',
+          'targetFolder': 'workspace',
+          'toolName': 'demo_tool',
+          'runtime': ' Python ',
+          'scriptCode': 'print(1)',
+        },
+        activePolicy: forgePolicy,
+        now: nowUtc,
+        isStopped: false,
+        hostId: 'host-test',
+        pinnedPhonePublicKeys: const <Uint8List>[],
+        isInApprovedCuSession: false,
+        allowZeroConfigAppDiscovery: true,
+        evaluateStep: forgeEvaluator.evaluateInvocation,
+      );
+      expect(badRuntime.allowed, isFalse);
+      expect(badRuntime.errorCode, equals('schema_mismatch'));
+
+      final okRuntime = validateToolArguments(
+        toolName: 'forge.synthesize_skill',
+        arguments: const <String, Object?>{
+          'goal': 'Test skill synthesis',
+          'category': 'custom_script',
+          'targetFolder': 'workspace',
+          'toolName': 'demo_tool',
+          'runtime': 'python',
+          'scriptCode': 'print(1)',
+        },
+        activePolicy: forgePolicy,
+        now: nowUtc,
+        isStopped: false,
+        hostId: 'host-test',
+        pinnedPhonePublicKeys: const <Uint8List>[],
+        isInApprovedCuSession: false,
+        allowZeroConfigAppDiscovery: true,
+        evaluateStep: forgeEvaluator.evaluateInvocation,
+      );
+      expect(okRuntime.allowed, isTrue);
     });
   });
 }

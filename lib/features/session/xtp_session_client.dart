@@ -91,7 +91,10 @@ class XtpSessionClient {
     }
   }
 
+  bool _handlingRemoteStop = false;
+
   void _onLocalEmergencyStop(StopReason reason) {
+    if (_handlingRemoteStop) return;
     if (reason != StopReason.ownerHost) return;
     if (_phase != HostSessionPhase.ready) return;
     _sendNotification(
@@ -328,7 +331,12 @@ class XtpSessionClient {
           }
           return;
         }
-        stopController.triggerStop(typed.reason);
+        _handlingRemoteStop = true;
+        try {
+          stopController.triggerStop(typed.reason);
+        } finally {
+          _handlingRemoteStop = false;
+        }
       case LanPeerParams():
         if (typed.phonePublicKeys.isNotEmpty) {
           final keysB64 = typed.phonePublicKeys
@@ -444,48 +452,72 @@ class XtpSessionClient {
   }
 
   Future<void> _handleRequest(XtpRequest request) async {
-    final typed = request.typedParams;
-    switch (typed) {
-      case PingParams():
-        _sendFrame(
-          XtpResponse(id: request.id, result: const <String, Object?>{}),
-        );
-      case ToolsListParams():
-        final tools = await dispatcher.buildManifest();
-        _sendFrame(
-          XtpResponse(
-            id: request.id,
-            result: <String, Object?>{
-              'tools': tools.map((t) => t.toJson()).toList(),
-            },
-          ),
-        );
-      case ToolsCallParams():
-        final response = await dispatcher.dispatch(
-          requestId: request.id,
-          params: typed,
-        );
-        _sendFrame(response);
-      case PreflightParams():
-        _sendFrame(
-          await dispatcher.preflight(requestId: request.id, params: typed),
-        );
-      case GetPolicyParams():
-        _sendFrame(await dispatcher.getPolicy(requestId: request.id));
-      case SetPolicyParams():
-        _sendFrame(
-          await dispatcher.setPolicy(requestId: request.id, params: typed),
-        );
-      case HelloEnrollParams():
-      case HelloReconnectParams():
-      case ProofParams():
-        _sendFrame(
-          XtpErrorResponse(
-            id: request.id,
-            code: JsonRpcErrorCode.methodNotFound,
-            message: 'Method not found',
-          ),
-        );
+    try {
+      final typed = request.typedParams;
+      switch (typed) {
+        case PingParams():
+          _sendFrame(
+            XtpResponse(id: request.id, result: const <String, Object?>{}),
+          );
+        case ToolsListParams():
+          final tools = await dispatcher.buildManifest();
+          _sendFrame(
+            XtpResponse(
+              id: request.id,
+              result: <String, Object?>{
+                'tools': tools.map((t) => t.toJson()).toList(),
+              },
+            ),
+          );
+        case ToolsCallParams():
+          final response = await dispatcher.dispatch(
+            requestId: request.id,
+            params: typed,
+          );
+          _sendFrame(response);
+        case PreflightParams():
+          _sendFrame(
+            await dispatcher.preflight(requestId: request.id, params: typed),
+          );
+        case GetPolicyParams():
+          _sendFrame(await dispatcher.getPolicy(requestId: request.id));
+        case SetPolicyParams():
+          _sendFrame(
+            await dispatcher.setPolicy(requestId: request.id, params: typed),
+          );
+        case HelloEnrollParams():
+        case HelloReconnectParams():
+        case ProofParams():
+          _sendFrame(
+            XtpErrorResponse(
+              id: request.id,
+              code: JsonRpcErrorCode.methodNotFound,
+              message: 'Method not found',
+            ),
+          );
+      }
+    } on XtpProtocolException catch (error) {
+      logger.warning('session.request_protocol_error', <String, Object?>{
+        'errorCode': error.message,
+      });
+      _sendFrame(
+        XtpErrorResponse(
+          id: request.id,
+          code: error.jsonRpcCode,
+          message: error.message,
+        ),
+      );
+    } catch (error) {
+      logger.warning('session.request_internal_error', <String, Object?>{
+        'errorType': error.runtimeType.toString(),
+      });
+      _sendFrame(
+        XtpErrorResponse(
+          id: request.id,
+          code: JsonRpcErrorCode.invalidParams,
+          message: 'Internal request handling error',
+        ),
+      );
     }
   }
 
@@ -538,6 +570,23 @@ class XtpSessionClient {
     if (socket == null) return;
     try {
       socket.sink.add(frame.encode());
+    } on XtpProtocolException catch (error) {
+      logger.warning('session.outbound_frame_rejected', <String, Object?>{
+        'errorCode': error.message,
+      });
+      if (frame is XtpResponse) {
+        try {
+          socket.sink.add(
+            XtpErrorResponse(
+              id: frame.id,
+              code: error.jsonRpcCode,
+              message: error.message,
+            ).encode(),
+          );
+        } catch (_) {
+          // Socket closed while sending fallback error.
+        }
+      }
     } catch (_) {
       // Socket closed while sending.
     }

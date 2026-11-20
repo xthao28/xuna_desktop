@@ -41,6 +41,7 @@ InputStepRisk classifyInputStepRisk({
   required String toolName,
   required Map<String, Object?> arguments,
   Map<String, Object?>? liveTarget,
+  Map<String, Object?>? liveEndTarget,
   String? focusedRole,
   int? draftCharsRemaining,
   bool hasUncommittedDraft = false,
@@ -99,7 +100,9 @@ InputStepRisk classifyInputStepRisk({
           rawLower == 'shift+return';
 
       if (isLineBreak && focusedRole == 'searchfield') {
-        if (canonical == 'enter' || rawLower == 'enter' || rawLower == 'return') {
+        if (canonical == 'enter' ||
+            rawLower == 'enter' ||
+            rawLower == 'return') {
           return const InputStepRisk(RiskTier.r2, 'search_submit');
         }
         return const InputStepRisk(RiskTier.r3, 'activation_key');
@@ -124,10 +127,37 @@ InputStepRisk classifyInputStepRisk({
     case 'input.scroll':
       return const InputStepRisk(RiskTier.r2, 'scroll');
     case 'input.click':
+      final rawMenuPath = arguments['menuPath'];
+      if (rawMenuPath is String && rawMenuPath.trim().isNotEmpty) {
+        if (hasUncommittedDraft) {
+          return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+        }
+        final lowerMenu = rawMenuPath.trim().toLowerCase();
+        const destructiveMenuTokens = <String>[
+          'quit',
+          'exit',
+          'empty trash',
+          'sign out',
+          'log out',
+          'logout',
+          'uninstall',
+          'format',
+          'thoát',
+          'đăng xuất',
+          'dọn sạch thùng rác',
+        ];
+        if (isConsequentialElementName(rawMenuPath) ||
+            destructiveMenuTokens.any(lowerMenu.contains)) {
+          return const InputStepRisk(RiskTier.r3, 'consequential_target');
+        }
+        return const InputStepRisk(RiskTier.r2, 'navigation_target');
+      }
+
       var target = liveTarget;
       final xNorm = (arguments['xNorm'] as num?)?.toDouble();
       final yNorm = (arguments['yNorm'] as num?)?.toDouble();
       final isCoordClick = xNorm != null && yNorm != null;
+      final isHoverOnly = arguments['hover'] == true;
 
       if (target == null && isCoordClick && activeWindowNodes != null) {
         target = hitTestNodeAtCoordinates(
@@ -137,6 +167,16 @@ InputStepRisk classifyInputStepRisk({
           windowWidth: windowWidth,
           windowHeight: windowHeight,
         );
+      }
+
+      if (isHoverOnly) {
+        if (target == null && !isCoordClick) {
+          return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+        }
+        if (target != null && isPasswordUiNode(target)) {
+          return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+        }
+        return const InputStepRisk(RiskTier.r2, 'navigation_target');
       }
 
       if (target == null) {
@@ -172,7 +212,7 @@ InputStepRisk classifyInputStepRisk({
       return const InputStepRisk(RiskTier.r2, 'navigation_target');
     case 'input.drag':
       var startTarget = liveTarget;
-      Map<String, Object?>? endTarget;
+      var endTarget = liveEndTarget;
 
       final fromXRaw = arguments['fromXNorm'] ?? arguments['startXNorm'];
       final fromYRaw = arguments['fromYNorm'] ?? arguments['startYNorm'];
@@ -194,7 +234,7 @@ InputStepRisk classifyInputStepRisk({
             windowHeight: windowHeight,
           );
         }
-        if (toXNorm != null && toYNorm != null) {
+        if (endTarget == null && toXNorm != null && toYNorm != null) {
           endTarget = hitTestNodeAtCoordinates(
             nodes: activeWindowNodes,
             xNorm: toXNorm,
@@ -245,6 +285,18 @@ Map<String, Object?>? hitTestNodeAtCoordinates({
   Map<String, Object?>? bestMatch;
   double smallestArea = double.infinity;
 
+  bool isNormalizedListBounds(double b0, double b1, double b2, double b3) {
+    final hasFraction = b0 != b0.roundToDouble() ||
+        b1 != b1.roundToDouble() ||
+        b2 != b2.roundToDouble() ||
+        b3 != b3.roundToDouble();
+    return b0 >= -1.0 &&
+        b1 >= -1.0 &&
+        b2 <= 2.0 &&
+        b3 <= 2.0 &&
+        ((b2 <= 1.0 && b3 <= 1.0) || hasFraction);
+  }
+
   double? inferredWidth = windowWidth;
   double? inferredHeight = windowHeight;
   if (inferredWidth == null || inferredHeight == null) {
@@ -253,15 +305,42 @@ Map<String, Object?>? hitTestNodeAtCoordinates({
     for (final node in nodes) {
       final rawBounds = node['bounds'] ?? node['boxNorm'] ?? node['box'];
       if (rawBounds is List && rawBounds.length >= 4) {
-        final x2 = (rawBounds[2] as num?)?.toDouble() ?? 0;
-        final y2 = (rawBounds[3] as num?)?.toDouble() ?? 0;
-        if (x2 > maxX) maxX = x2;
-        if (y2 > maxY) maxY = y2;
+        final b0 = (rawBounds[0] as num?)?.toDouble();
+        final b1 = (rawBounds[1] as num?)?.toDouble();
+        final b2 = (rawBounds[2] as num?)?.toDouble();
+        final b3 = (rawBounds[3] as num?)?.toDouble();
+        if (b0 == null ||
+            b1 == null ||
+            b2 == null ||
+            b3 == null ||
+            !b0.isFinite ||
+            !b1.isFinite ||
+            !b2.isFinite ||
+            !b3.isFinite ||
+            b2 <= b0 ||
+            b3 <= b1) {
+          continue;
+        }
+        if (isNormalizedListBounds(b0, b1, b2, b3)) continue;
+        if (b2 > maxX) maxX = b2;
+        if (b3 > maxY) maxY = b3;
       } else if (rawBounds is Map) {
-        final x = (rawBounds['x'] as num?)?.toDouble() ?? 0;
-        final y = (rawBounds['y'] as num?)?.toDouble() ?? 0;
-        final w = (rawBounds['width'] as num?)?.toDouble() ?? 0;
-        final h = (rawBounds['height'] as num?)?.toDouble() ?? 0;
+        final x = (rawBounds['x'] as num?)?.toDouble();
+        final y = (rawBounds['y'] as num?)?.toDouble();
+        final w = (rawBounds['width'] as num?)?.toDouble();
+        final h = (rawBounds['height'] as num?)?.toDouble();
+        if (x == null ||
+            y == null ||
+            w == null ||
+            h == null ||
+            !x.isFinite ||
+            !y.isFinite ||
+            !w.isFinite ||
+            !h.isFinite ||
+            w <= 0 ||
+            h <= 0) {
+          continue;
+        }
         if (x + w > maxX) maxX = x + w;
         if (y + h > maxY) maxY = y + h;
       }
@@ -280,26 +359,57 @@ Map<String, Object?>? hitTestNodeAtCoordinates({
     double? yMin;
     double? xMax;
     double? yMax;
+    var listNormalized = false;
 
     if (rawBounds is List && rawBounds.length >= 4) {
       xMin = (rawBounds[0] as num?)?.toDouble();
       yMin = (rawBounds[1] as num?)?.toDouble();
       xMax = (rawBounds[2] as num?)?.toDouble();
       yMax = (rawBounds[3] as num?)?.toDouble();
+      if (xMin == null ||
+          yMin == null ||
+          xMax == null ||
+          yMax == null ||
+          !xMin.isFinite ||
+          !yMin.isFinite ||
+          !xMax.isFinite ||
+          !yMax.isFinite ||
+          xMax <= xMin ||
+          yMax <= yMin) {
+        continue;
+      }
+      listNormalized = isNormalizedListBounds(xMin, yMin, xMax, yMax);
     } else if (rawBounds is Map) {
       xMin = (rawBounds['x'] as num?)?.toDouble();
       yMin = (rawBounds['y'] as num?)?.toDouble();
       final w = (rawBounds['width'] as num?)?.toDouble();
       final h = (rawBounds['height'] as num?)?.toDouble();
-      if (xMin != null && yMin != null && w != null && h != null) {
+      if (xMin != null &&
+          yMin != null &&
+          w != null &&
+          h != null &&
+          xMin.isFinite &&
+          yMin.isFinite &&
+          w.isFinite &&
+          h.isFinite &&
+          w > 0 &&
+          h > 0) {
         xMax = xMin + w;
         yMax = yMin + h;
       }
     }
 
     if (xMin == null || yMin == null || xMax == null || yMax == null) continue;
+    if (!xMin.isFinite || !yMin.isFinite || !xMax.isFinite || !yMax.isFinite) {
+      continue;
+    }
 
-    if (xNorm <= 1.0 && yNorm <= 1.0) {
+    if (listNormalized) {
+      xMin = xMin.clamp(0.0, 1.0);
+      yMin = yMin.clamp(0.0, 1.0);
+      xMax = xMax.clamp(0.0, 1.0);
+      yMax = yMax.clamp(0.0, 1.0);
+    } else if (xNorm <= 1.0 && yNorm <= 1.0) {
       if (xMax > 1.0 && inferredWidth != null && inferredWidth > 0) {
         xMin /= inferredWidth;
         xMax /= inferredWidth;
@@ -308,6 +418,10 @@ Map<String, Object?>? hitTestNodeAtCoordinates({
         yMin /= inferredHeight;
         yMax /= inferredHeight;
       }
+    }
+
+    if (xMax <= xMin || yMax <= yMin) {
+      continue;
     }
 
     if (xNorm >= xMin && xNorm <= xMax && yNorm >= yMin && yNorm <= yMax) {

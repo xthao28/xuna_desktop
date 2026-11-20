@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// A local developer project/workspace discovered on the host (`UDC-11` S11.2).
@@ -38,12 +39,12 @@ class GitSummarySnapshot {
   final int untrackedCount;
 
   Map<String, Object?> toStructuredContent() => <String, Object?>{
-        'workspace': workspace,
-        'branch': branch,
-        'clean': clean,
-        'modifiedCount': modifiedCount,
-        'untrackedCount': untrackedCount,
-      };
+    'workspace': workspace,
+    'branch': branch,
+    'clean': clean,
+    'modifiedCount': modifiedCount,
+    'untrackedCount': untrackedCount,
+  };
 }
 
 /// Content-free task status snapshot for `workspace.watch_task` (`UDC-12` S12.2).
@@ -59,10 +60,10 @@ class WorkspaceTaskSnapshot {
   final String summary;
 
   Map<String, Object?> toStructuredContent() => <String, Object?>{
-        'workspace': workspace,
-        'status': status,
-        'summary': summary,
-      };
+    'workspace': workspace,
+    'status': status,
+    'summary': summary,
+  };
 }
 
 /// Command plan executed by `workspace.coding_agent` (`UDC-11` S11.3).
@@ -88,14 +89,11 @@ class CodingAgentLaunchPlan {
   final String promptText;
 }
 
-typedef GitProcessRunner = Future<ProcessResult> Function(
-  String executable,
-  List<String> arguments,
-);
+typedef GitProcessRunner =
+    Future<ProcessResult> Function(String executable, List<String> arguments);
 
-typedef AgentProcessLauncher = Future<void> Function(
-  CodingAgentLaunchPlan plan,
-);
+typedef AgentProcessLauncher =
+    Future<void> Function(CodingAgentLaunchPlan plan);
 
 /// Zero-config project/workspace indexer (`UDC-11` S11.2 & S11.3):
 /// - Reads Claude Code project history (`~/.claude.json`),
@@ -112,13 +110,13 @@ class AutoWorkspaceIndexer {
     bool scanDefaultLocations = true,
     GitProcessRunner? gitRunner,
     AgentProcessLauncher? agentLauncher,
-  })  : _seedWorkspaces = seedWorkspaces ?? const <DiscoveredWorkspace>[],
-        _customScanRoots = customScanRoots ?? const <String>[],
-        _customClaudeConfigPaths = customClaudeConfigPaths ?? const <String>[],
-        _customIdeStoragePaths = customIdeStoragePaths ?? const <String>[],
-        _scanDefaultLocations = scanDefaultLocations,
-        _gitRunner = gitRunner ?? _defaultGitRunner,
-        _agentLauncher = agentLauncher ?? _defaultAgentLauncher;
+  }) : _seedWorkspaces = seedWorkspaces ?? const <DiscoveredWorkspace>[],
+       _customScanRoots = customScanRoots ?? const <String>[],
+       _customClaudeConfigPaths = customClaudeConfigPaths ?? const <String>[],
+       _customIdeStoragePaths = customIdeStoragePaths ?? const <String>[],
+       _scanDefaultLocations = scanDefaultLocations,
+       _gitRunner = gitRunner ?? _defaultGitRunner,
+       _agentLauncher = agentLauncher ?? _defaultAgentLauncher;
 
   final List<DiscoveredWorkspace> _seedWorkspaces;
   final List<String> _customScanRoots;
@@ -202,7 +200,8 @@ class AutoWorkspaceIndexer {
             ? 'cd $quotedDir && ($quotedExe $quotedArgs || $quotedExe $nonContinueArgs || $fallbackCmd $nonContinueArgs)'
             : 'cd $quotedDir && ($quotedExe $quotedArgs || $fallbackCmd $quotedArgs)';
         final escapedShellLine = _appleScriptEscape(shellLine);
-        final appleScript = '''
+        final appleScript =
+            '''
 tell application "Terminal"
   activate
   do script "$escapedShellLine"
@@ -215,8 +214,7 @@ end tell
           await _copyTextToSystemClipboard(promptToDeliver);
         }
         final fallbackCmd = plan.agent == 'claude_code' ? 'claude' : 'codex';
-        String quoteCmdArg(String val) =>
-            '"${val.replaceAll('"', r'\"')}"';
+        String quoteCmdArg(String val) => '"${val.replaceAll('"', r'\"')}"';
         final quotedExe = quoteCmdArg(plan.executable);
         final quotedArgs = plan.arguments.map(quoteCmdArg).join(' ');
         final nonContinueArgs = plan.arguments
@@ -258,11 +256,11 @@ end tell
     if (Platform.isMacOS) {
       var opened = false;
       if (plan.executable.endsWith('.app')) {
-        final res = await Process.run(
-          '/usr/bin/open',
-          <String>['-a', plan.executable, plan.workingDirectory],
-          environment: cleanEnv,
-        );
+        final res = await Process.run('/usr/bin/open', <String>[
+          '-a',
+          plan.executable,
+          plan.workingDirectory,
+        ], environment: cleanEnv);
         opened = res.exitCode == 0;
       } else {
         try {
@@ -278,16 +276,17 @@ end tell
         }
       }
       if (!opened) {
-        await Process.run(
-          '/usr/bin/open',
-          <String>['-a', ideLabel, plan.workingDirectory],
-          environment: cleanEnv,
-        );
+        await Process.run('/usr/bin/open', <String>[
+          '-a',
+          ideLabel,
+          plan.workingDirectory,
+        ], environment: cleanEnv);
       }
 
       if (plan.promptSent && promptToDeliver.isNotEmpty) {
         await _copyTextToSystemClipboard(promptToDeliver);
-        final focusAndSubmitScript = '''
+        final focusAndSubmitScript =
+            '''
 delay 1.2
 tell application "${_appleScriptEscape(ideLabel)}" to activate
 delay 0.4
@@ -300,11 +299,10 @@ tell application "System Events"
 end tell
 ''';
         try {
-          await Process.start(
-            '/usr/bin/osascript',
-            <String>['-e', focusAndSubmitScript],
-            mode: ProcessStartMode.detached,
-          );
+          await Process.start('/usr/bin/osascript', <String>[
+            '-e',
+            focusAndSubmitScript,
+          ], mode: ProcessStartMode.detached);
         } catch (_) {}
       }
       return;
@@ -329,10 +327,11 @@ end tell
 
     if (Platform.isWindows && plan.promptSent && promptToDeliver.isNotEmpty) {
       await _copyTextToSystemClipboard(promptToDeliver);
-      final wsFolder = plan.workingDirectory
-          .split(RegExp(r'[/\\]'))
-          .where((s) => s.isNotEmpty)
-          .lastOrNull ??
+      final wsFolder =
+          plan.workingDirectory
+              .split(RegExp(r'[/\\]'))
+              .where((s) => s.isNotEmpty)
+              .lastOrNull ??
           plan.workspace;
       final safeWsFolder = wsFolder.replaceAll("'", "''");
       final safeIdeLabel = ideLabel.replaceAll("'", "''");
@@ -352,18 +351,14 @@ end tell
           "Start-Sleep -Milliseconds 250; "
           "\$ws.SendKeys('{ENTER}');";
       try {
-        await Process.start(
-          'powershell.exe',
-          <String>[
-            '-NoProfile',
-            '-NonInteractive',
-            '-WindowStyle',
-            'Hidden',
-            '-Command',
-            psScript,
-          ],
-          mode: ProcessStartMode.detached,
-        );
+        await Process.start('powershell.exe', <String>[
+          '-NoProfile',
+          '-NonInteractive',
+          '-WindowStyle',
+          'Hidden',
+          '-Command',
+          psScript,
+        ], mode: ProcessStartMode.detached);
       } catch (_) {}
     }
   }
@@ -422,6 +417,17 @@ end tell
       if (_scanDefaultLocations) ..._defaultIdeStoragePaths(),
     ]) {
       _parseIdeStorageJson(storagePath, registerPath);
+    }
+
+    if (_scanDefaultLocations) {
+      final home =
+          Platform.environment['HOME'] ??
+          Platform.environment['USERPROFILE'] ??
+          '';
+      if (home.isNotEmpty) {
+        // Also discover top-level repositories directly under $HOME (depth 1).
+        _shallowScanDirectory(Directory(home), 0, 1, registerPath);
+      }
     }
 
     for (final root in <String>[
@@ -646,14 +652,9 @@ end tell
     final List<String> args;
     final hasPrompt = cleanPrompt.isNotEmpty;
     if (agent == 'claude_code') {
-      args = <String>[
-        if (resumeLast) '--continue',
-        if (hasPrompt) cleanPrompt,
-      ];
+      args = <String>[if (resumeLast) '--continue', if (hasPrompt) cleanPrompt];
     } else if (agent == 'codex') {
-      args = <String>[
-        if (hasPrompt) cleanPrompt,
-      ];
+      args = <String>[if (hasPrompt) cleanPrompt];
     } else {
       // IDE launchers (`antigravity`, `cursor`, `vscode`) open the project folder directly
       args = <String>[workspace.path];
@@ -758,9 +759,11 @@ end tell
     if (depth > maxDepth || !dir.existsSync()) return;
     try {
       final sep = Platform.pathSeparator;
-      final hasGit = Directory('${dir.path}$sep.git').existsSync() ||
+      final hasGit =
+          Directory('${dir.path}$sep.git').existsSync() ||
           File('${dir.path}$sep.git').existsSync();
-      final hasAgentDoc = File('${dir.path}${sep}AGENTS.md').existsSync() ||
+      final hasAgentDoc =
+          File('${dir.path}${sep}AGENTS.md').existsSync() ||
           File('${dir.path}${sep}CLAUDE.md').existsSync();
       if (depth > 0 && (hasGit || hasAgentDoc)) {
         registerPath(dir.path, source: 'git_scan');
@@ -805,6 +808,12 @@ end tell
               name == 'node_modules' ||
               name == 'build' ||
               name == 'Library' ||
+              name == 'Applications' ||
+              name == 'Pictures' ||
+              name == 'Music' ||
+              name == 'Movies' ||
+              name == 'Public' ||
+              name == 'Trash' ||
               name == 'AppData') {
             continue;
           }
@@ -815,7 +824,8 @@ end tell
   }
 
   static List<String> _defaultClaudeConfigPaths() {
-    final home = Platform.environment['HOME'] ??
+    final home =
+        Platform.environment['HOME'] ??
         Platform.environment['USERPROFILE'] ??
         '';
     if (home.isEmpty) return const <String>[];
@@ -827,7 +837,8 @@ end tell
   }
 
   static List<String> _defaultIdeStoragePaths() {
-    final home = Platform.environment['HOME'] ??
+    final home =
+        Platform.environment['HOME'] ??
         Platform.environment['USERPROFILE'] ??
         '';
     final appData = Platform.environment['APPDATA'] ?? '';
@@ -851,7 +862,8 @@ end tell
   }
 
   static List<String> _defaultScanRoots() {
-    final home = Platform.environment['HOME'] ??
+    final home =
+        Platform.environment['HOME'] ??
         Platform.environment['USERPROFILE'] ??
         '';
     if (home.isEmpty) return const <String>[];
@@ -871,5 +883,288 @@ end tell
         r'D:\work',
       ],
     ];
+  }
+
+  static const Set<String> _forbiddenHomeSegments = <String>{
+    '.ssh',
+    '.gnupg',
+    '.aws',
+    '.kube',
+    '.docker',
+    '.claude',
+    '.gemini',
+    '.npmrc',
+    '.netrc',
+    '.pypirc',
+    'library',
+    'appdata',
+    'keychains',
+  };
+
+  static bool _isSafeCanonicalPathInHome(String canonicalHome, String rawPath) {
+    try {
+      final sep = Platform.pathSeparator;
+      final entityType = FileSystemEntity.typeSync(rawPath, followLinks: true);
+      if (entityType == FileSystemEntityType.notFound) return false;
+      final canonicalTarget = entityType == FileSystemEntityType.directory
+          ? Directory(rawPath).resolveSymbolicLinksSync()
+          : File(rawPath).resolveSymbolicLinksSync();
+      final normHome = canonicalHome.endsWith(sep)
+          ? canonicalHome.substring(0, canonicalHome.length - 1)
+          : canonicalHome;
+      if (canonicalTarget == normHome ||
+          !canonicalTarget.startsWith('$normHome$sep')) {
+        return false;
+      }
+      final rel = canonicalTarget.substring(normHome.length + 1);
+      final segments = rel
+          .split(RegExp(r'[\\/]'))
+          .where((s) => s.isNotEmpty)
+          .toList();
+      if (segments.isEmpty) return false;
+      for (final seg in segments) {
+        final lower = seg.toLowerCase();
+        if (lower.startsWith('.') || _forbiddenHomeSegments.contains(lower)) {
+          return false;
+        }
+        if (lower.endsWith('.pem') ||
+            lower.endsWith('.key') ||
+            lower.endsWith('.p12') ||
+            lower.endsWith('.kdbx')) {
+          return false;
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Resolves a user-requested folder, project, or file [rawQuery] strictly
+  /// inside the owner's home directory (`UDC-19` Pillar 3).
+  ///
+  /// App-agnostic: works identically for any application on the OS.
+  /// Fail-closed:
+  /// - Rejects control chars, traversal outside `$HOME`, hidden/dot paths, and
+  ///   credential directories (`target_forbidden`).
+  /// - Throws `target_not_found` (`H1`) when nothing matches.
+  /// - Throws `ambiguous_target` (`H3`) with relative candidate names when
+  ///   multiple distinct targets match equally well, never picking the first.
+  Future<({String path, String displayAlias})> resolveHomeOpenTarget(
+    String rawQuery, {
+    String? customHomeDir,
+  }) async {
+    final trimmed = rawQuery.trim();
+    if (trimmed.isEmpty ||
+        trimmed.length > 256 ||
+        RegExp(r'[\x00-\x1F\x7F]').hasMatch(trimmed)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'invalid_target',
+        message: 'Target path or name is empty or contains invalid characters.',
+      );
+    }
+
+    final homeRaw =
+        customHomeDir ??
+        (_customScanRoots.length == 1 && !_scanDefaultLocations
+            ? _customScanRoots.first
+            : (Platform.environment['HOME'] ??
+                  Platform.environment['USERPROFILE'] ??
+                  ''));
+    if (homeRaw.isEmpty || !Directory(homeRaw).existsSync()) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'home_unavailable',
+        message: 'User home directory is unavailable.',
+      );
+    }
+    final canonicalHome = Directory(homeRaw).resolveSymbolicLinksSync();
+    final sep = Platform.pathSeparator;
+
+    String toDisplayAlias(String canonicalTarget) {
+      final normHome = canonicalHome.endsWith(sep)
+          ? canonicalHome.substring(0, canonicalHome.length - 1)
+          : canonicalHome;
+      if (canonicalTarget.startsWith('$normHome$sep')) {
+        final rel = canonicalTarget
+            .substring(normHome.length + 1)
+            .replaceAll(r'\', '/');
+        return rel.length <= 120 ? rel : rel.substring(rel.length - 120);
+      }
+      return sanitizeAlias(canonicalTarget.split(RegExp(r'[\\/]')).last);
+    }
+
+    String canonicalizeEntity(String p) {
+      final t = FileSystemEntity.typeSync(p, followLinks: true);
+      return t == FileSystemEntityType.directory
+          ? Directory(p).resolveSymbolicLinksSync()
+          : File(p).resolveSymbolicLinksSync();
+    }
+
+    // 1. Direct relative or ~/ path inside $HOME (or explicit $HOME/... path)
+    String? directCandidate;
+    if (trimmed.startsWith('~/') || trimmed.startsWith(r'~\')) {
+      directCandidate = '$canonicalHome$sep${trimmed.substring(2)}';
+    } else if (trimmed.startsWith(canonicalHome)) {
+      directCandidate = trimmed;
+    } else if (trimmed.startsWith(homeRaw)) {
+      directCandidate = '$canonicalHome${trimmed.substring(homeRaw.length)}';
+    } else if (!trimmed.startsWith('/') &&
+        !RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(trimmed)) {
+      directCandidate = '$canonicalHome$sep$trimmed';
+    } else {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'target_outside_home',
+        message: 'Only paths inside the owner home directory may be opened.',
+      );
+    }
+
+    if (FileSystemEntity.typeSync(directCandidate, followLinks: true) !=
+        FileSystemEntityType.notFound) {
+      if (!_isSafeCanonicalPathInHome(canonicalHome, directCandidate)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'target_forbidden',
+          message: 'Target path is outside home or inside a protected folder.',
+        );
+      }
+      final resolved = canonicalizeEntity(directCandidate);
+      return (path: resolved, displayAlias: toDisplayAlias(resolved));
+    }
+
+    // If the caller explicitly wrote a multi-segment path that does not exist, fail closed
+    if (trimmed.contains('/') || trimmed.contains(r'\')) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'target_not_found',
+        message: 'Specified relative path does not exist in home directory.',
+      );
+    }
+
+    // Check hidden/forbidden basename up front
+    final lowerQuery = trimmed.toLowerCase();
+    if (lowerQuery.startsWith('.') ||
+        _forbiddenHomeSegments.contains(lowerQuery)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'target_forbidden',
+        message: 'Hidden or credential files cannot be opened.',
+      );
+    }
+
+    // 2. Collect exact basename matches across discovered workspaces, shallow user folders, and Spotlight
+    final exactMatches = <String>{};
+    final normQuery = lowerQuery.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+    final normalizedMatches = <String>{};
+
+    void considerPath(String rawCandidate) {
+      if (!_isSafeCanonicalPathInHome(canonicalHome, rawCandidate)) return;
+      final resolved = canonicalizeEntity(rawCandidate);
+      final base = resolved.split(RegExp(r'[\\/]')).last.toLowerCase();
+      final normBase = base.replaceAll(RegExp(r'[^a-z0-9]+'), '');
+      if (base == lowerQuery) {
+        exactMatches.add(resolved);
+      } else if (normQuery.isNotEmpty && normBase == normQuery) {
+        normalizedMatches.add(resolved);
+      }
+    }
+
+    for (final ws in discoverWorkspaces()) {
+      considerPath(ws.path);
+    }
+
+    final searchRoots = <String>[
+      canonicalHome,
+      if (_scanDefaultLocations) ...<String>[
+        '$canonicalHome${sep}Documents',
+        '$canonicalHome${sep}Desktop',
+        '$canonicalHome${sep}Downloads',
+        '$canonicalHome${sep}Projects',
+        '$canonicalHome${sep}Developer',
+        '$canonicalHome${sep}Repos',
+        '$canonicalHome${sep}work',
+      ],
+      ..._customScanRoots,
+    ];
+
+    void scanShallowForName(Directory dir, int depth, int maxDepth) {
+      if (depth > maxDepth || !dir.existsSync()) return;
+      try {
+        for (final entity in dir.listSync(followLinks: false)) {
+          final name = entity.uri.pathSegments
+              .where((s) => s.isNotEmpty)
+              .lastOrNull;
+          if (name == null ||
+              name.startsWith('.') ||
+              _forbiddenHomeSegments.contains(name.toLowerCase()) ||
+              name == 'node_modules' ||
+              name == 'build' ||
+              name == 'Applications' ||
+              name == 'Pictures' ||
+              name == 'Music' ||
+              name == 'Movies' ||
+              name == 'Public') {
+            continue;
+          }
+          considerPath(entity.path);
+          if (depth < maxDepth && entity is Directory) {
+            scanShallowForName(entity, depth + 1, maxDepth);
+          }
+        }
+      } catch (_) {}
+    }
+
+    for (final r in searchRoots) {
+      final maxD = r == canonicalHome ? 1 : 2;
+      scanShallowForName(Directory(r), 1, maxD);
+    }
+
+    if (exactMatches.isEmpty &&
+        normalizedMatches.isEmpty &&
+        Platform.isMacOS &&
+        _scanDefaultLocations &&
+        !Platform.environment.containsKey('FLUTTER_TEST')) {
+      final safeMdfindName = trimmed
+          .replaceAll(r'\', r'\\')
+          .replaceAll('"', r'\"')
+          .replaceAll("'", r"\'");
+      try {
+        final proc = await Process.run('/usr/bin/mdfind', <String>[
+          '-onlyin',
+          canonicalHome,
+          'kMDItemFSName == "$safeMdfindName"c',
+        ]).timeout(const Duration(milliseconds: 1200));
+        if (proc.exitCode == 0) {
+          for (final line
+              in proc.stdout.toString().split(RegExp(r'\r?\n')).take(25)) {
+            final p = line.trim();
+            if (p.isNotEmpty) considerPath(p);
+          }
+        }
+      } catch (_) {}
+    }
+
+    final winners = exactMatches.isNotEmpty ? exactMatches : normalizedMatches;
+    if (winners.isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'target_not_found',
+        message: 'No matching folder or file found in owner home directory.',
+      );
+    }
+    if (winners.length > 1) {
+      final candidates = winners.map(toDisplayAlias).toList()..sort();
+      final preview = candidates.take(5).join(', ');
+      throw XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'ambiguous_target',
+        message:
+            'Multiple matches found ($preview); pass a relative path in openTarget.',
+      );
+    }
+    final chosen = winners.single;
+    return (path: chosen, displayAlias: toDisplayAlias(chosen));
   }
 }

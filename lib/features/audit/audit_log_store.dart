@@ -72,6 +72,9 @@ class AuditLogStore {
 
   final Directory auditDir;
   final int retentionDays;
+  bool _dirEnsured = false;
+  String? _lastPrunedDateTag;
+  Future<void> _writeTail = Future<void>.value();
 
   static final RegExp _filePattern = RegExp(
     r'^audit-(\d{4}-\d{2}-\d{2})\.jsonl$',
@@ -79,15 +82,32 @@ class AuditLogStore {
 
   /// Appends [record] to the UTC date's JSONL file and prunes files older than
   /// [retentionDays] relative to `record.ts`.
-  Future<void> append(AuditLogRecord record) async {
-    await auditDir.create(recursive: true);
+  ///
+  /// Concurrent calls are serialized through [_writeTail] so parallel tool
+  /// executions never drop records or race on directory creation/pruning.
+  Future<void> append(AuditLogRecord record) {
+    final op = _writeTail
+        .catchError((Object _) {})
+        .then((_) => _appendSerialized(record));
+    _writeTail = op.catchError((Object _) {});
+    return op;
+  }
+
+  Future<void> _appendSerialized(AuditLogRecord record) async {
+    if (!_dirEnsured) {
+      await auditDir.create(recursive: true);
+      _dirEnsured = true;
+    }
     final dateTag = _formatUtcDate(record.ts);
     final file = File(
       '${auditDir.path}${Platform.pathSeparator}audit-$dateTag.jsonl',
     );
     final line = '${jsonEncode(record.toJson())}\n';
-    await file.writeAsString(line, mode: FileMode.append, flush: true);
-    await pruneOldFiles(nowUtc: record.ts);
+    await file.writeAsString(line, mode: FileMode.append, flush: false);
+    if (_lastPrunedDateTag != dateTag) {
+      _lastPrunedDateTag = dateTag;
+      await pruneOldFiles(nowUtc: record.ts);
+    }
   }
 
   /// Deletes `audit-YYYY-MM-DD.jsonl` files older than [retentionDays].

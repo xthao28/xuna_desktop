@@ -12,7 +12,8 @@ const int maxUiFindQueryLength = 80;
 final RegExp _uiFindRoleRe = RegExp(r'^[A-Za-z_]{1,32}$');
 
 /// Whether [role] is an acceptable `ui.find` role filter (letters and `_`).
-bool isValidUiFindRole(String role) => _uiFindRoleRe.hasMatch(role.trim());
+bool isValidUiFindRole(String role) =>
+    role.length <= 32 && _uiFindRoleRe.hasMatch(role.trim());
 
 /// Lower-case role without the macOS `ax` prefix, so `AXButton` and `button`
 /// compare equal. A password field is always `password`.
@@ -113,8 +114,6 @@ String uiNodeSignature(Map<String, Object?> node) {
       ? 'password'
       : ((node['role'] as String?) ?? 'unknown').trim().toLowerCase();
   final rawName = (node['name'] as String?) ?? '';
-  final name = isPwd
-      ? '•••'
-      : (rawName.length > 60 ? rawName.substring(0, 60) : rawName);
+  final name = isPwd ? '•••' : clampUtf16Safe(rawName, 60);
   return '$role\u0000$name';
 }

@@ -204,7 +204,8 @@ ToolDescriptor buildRemindersCreateTool({
 }) =>
     ToolDescriptor(
       name: 'reminders.create',
-      description: 'Create a reminder item with optional due date, list, and priority.',
+      description:
+          'Create a reminder item with optional due date, list, and priority.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -277,16 +278,20 @@ ToolDescriptor buildCalendarListEventsTool({
 }) =>
     ToolDescriptor(
       name: 'calendar.list_events',
-      description: 'List calendar events within a specified ISO-8601 time range.',
+      description:
+          'List calendar events within a specified ISO-8601 time range.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
           'timeMin': <String, Object?>{
             'type': 'string',
-            'description': 'Start of time range (inclusive) in ISO-8601 format.',
+            'maxLength': 50,
+            'description':
+                'Start of time range (inclusive) in ISO-8601 format.',
           },
           'timeMax': <String, Object?>{
             'type': 'string',
+            'maxLength': 50,
             'description': 'End of time range (inclusive) in ISO-8601 format.',
           },
           'calendarName': <String, Object?>{
@@ -361,10 +366,12 @@ ToolDescriptor buildCalendarCreateEventTool({
           },
           'startTime': <String, Object?>{
             'type': 'string',
+            'maxLength': 50,
             'description': 'Start time in ISO-8601 format.',
           },
           'endTime': <String, Object?>{
             'type': 'string',
+            'maxLength': 50,
             'description': 'End time in ISO-8601 format.',
           },
           'location': <String, Object?>{
@@ -436,7 +443,8 @@ ToolDescriptor buildFinderRevealTool({
             'type': 'string',
             'minLength': 1,
             'maxLength': 1024,
-            'description': 'Absolute or relative file/directory path to reveal.',
+            'description':
+                'Absolute or relative file/directory path to reveal.',
           },
         },
         'required': <String>['path'],
@@ -529,18 +537,18 @@ ToolDescriptor buildMailCreateDraftTool({
         'properties': <String, Object?>{
           'to': <String, Object?>{
             'type': 'array',
-            'items': <String, Object?>{'type': 'string'},
+            'items': <String, Object?>{'type': 'string', 'maxLength': 320},
             'minItems': 1,
             'description': 'Recipient email addresses.',
           },
           'cc': <String, Object?>{
             'type': 'array',
-            'items': <String, Object?>{'type': 'string'},
+            'items': <String, Object?>{'type': 'string', 'maxLength': 320},
             'description': 'Carbon copy recipient email addresses.',
           },
           'bcc': <String, Object?>{
             'type': 'array',
-            'items': <String, Object?>{'type': 'string'},
+            'items': <String, Object?>{'type': 'string', 'maxLength': 320},
             'description': 'Blind carbon copy recipient email addresses.',
           },
           'subject': <String, Object?>{
@@ -769,7 +777,8 @@ ToolDescriptor buildWebClickTool({
             'type': 'string',
             'minLength': 1,
             'maxLength': 200,
-            'description': 'Snapshot-qualified element reference (e.g. @s1:e5).',
+            'description':
+                'Snapshot-qualified element reference (e.g. @s1:e5).',
           },
           'selector': <String, Object?>{
             'type': 'string',
@@ -779,7 +788,8 @@ ToolDescriptor buildWebClickTool({
           'targetText': <String, Object?>{
             'type': 'string',
             'maxLength': 200,
-            'description': 'Optional element text for consequential risk analysis.',
+            'description':
+                'Optional element text for consequential risk analysis.',
           },
         },
         'required': <String>['ref'],
@@ -859,7 +869,8 @@ ToolDescriptor buildWebFillTool({
           'targetText': <String, Object?>{
             'type': 'string',
             'maxLength': 200,
-            'description': 'Optional label/placeholder for consequential risk analysis.',
+            'description':
+                'Optional label/placeholder for consequential risk analysis.',
           },
         },
         'required': <String>['ref', 'value'],
@@ -903,8 +914,7 @@ ToolDescriptor buildWebSelectTool({
 }) =>
     ToolDescriptor(
       name: 'web.select',
-      description:
-          'Select an option in a dropdown element by ref or selector.',
+      description: 'Select an option in a dropdown element by ref or selector.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -1087,7 +1097,8 @@ ToolDescriptor buildWebWaitForTool({
           },
           'satisfied': <String, Object?>{
             'type': 'boolean',
-            'description': 'Whether the condition was satisfied within timeout.',
+            'description':
+                'Whether the condition was satisfied within timeout.',
           },
           'elapsedMs': <String, Object?>{
             'type': 'integer',

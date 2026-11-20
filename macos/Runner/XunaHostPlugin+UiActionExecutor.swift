@@ -93,6 +93,7 @@ extension XunaHostPlugin {
           return nil
         }
         guard let item = findInLevel(currentContainer, depth: 0) else { break }
+        AXUIElementSetMessagingTimeout(item, 0.25)
         _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
         if idx == segments.count - 1 {
           return "MENU_PATH_INVOKED:\(matchedTitles.joined(separator: " > "))"
@@ -108,6 +109,7 @@ extension XunaHostPlugin {
       let role = extractAxString(element, kAXRoleAttribute as String) ?? ""
       let title = (extractAxString(element, kAXTitleAttribute as String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       if role.contains("MenuItem") && !title.isEmpty && title.lowercased().contains(needle) {
+        AXUIElementSetMessagingTimeout(element, 0.25)
         if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
           return "MENU_INVOKED:\(title)"
         }
@@ -393,7 +395,7 @@ extension XunaHostPlugin {
       if let encoded = searchVal.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
          let url = URL(string: "music://music.apple.com/vn/search?term=\(encoded)")
       {
-        NSWorkspace.shared.open(url)
+        _ = onMainThread { NSWorkspace.shared.open(url) }
         Thread.sleep(forTimeInterval: 0.45)
         return "APPLE_MUSIC_SEARCH_URI_OPENED:\(searchVal)"
       }
@@ -415,17 +417,8 @@ extension XunaHostPlugin {
           return "SPOTIFY_PREVIOUS_TRACK"
         }
       }
-      // Only a typed search term opens the search page. A click (`invoke_ref`) on a result row
-      // must reach the generic AX press path instead of being turned into a new search.
-      let q = valueText
-      if action != "invoke_ref", !q.isEmpty,
-         let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-         let url = URL(string: "spotify:search:\(encoded)")
-      {
-        NSWorkspace.shared.open(url)
-        Thread.sleep(forTimeInterval: 0.5)
-        return "SPOTIFY_URI_SEARCH_OPENED:\(q)"
-      }
+      // Do not hijack typed text (`set_value_ref`) into a `spotify:search:` URI launch:
+      // generic AX / keyboard input must reach the actual focused control honestly (Rule H5).
     }
 
     // 3. Web Browsers (Google Chrome, Safari, Brave, Edge, Arc)
@@ -483,44 +476,8 @@ extension XunaHostPlugin {
         }
       }
 
-      if !valueText.isEmpty && (lowerLabel.contains("url") || lowerLabel.contains("tìm kiếm") || action == "set_value_ref") {
-        let trimmed = valueText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let targetUrl: String
-        if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
-          targetUrl = trimmed
-        } else if !trimmed.contains(" ") && trimmed.contains(".") {
-          targetUrl = "https://\(trimmed)"
-        } else {
-          let enc = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-          targetUrl = "https://www.google.com/search?q=\(enc)"
-        }
-        let safeUrl = targetUrl.replacingOccurrences(of: "\"", with: "%22")
-        let script = isSafari
-          ? """
-            tell application "Safari"
-              activate
-              if (count of windows) = 0 then
-                make new document with properties {URL:"\(safeUrl)"}
-              else
-                set URL of current tab of front window to "\(safeUrl)"
-              end if
-              return "BROWSER_NAVIGATED:\(safeUrl)"
-            end tell
-            """
-          : """
-            tell application "\(browserApp)"
-              activate
-              if (count of windows) = 0 then
-                make new window
-              end if
-              set URL of active tab of front window to "\(safeUrl)"
-              return "BROWSER_NAVIGATED:\(safeUrl)"
-            end tell
-            """
-        if let out = runAppleScript(script, timeoutSeconds: 3.0), !out.isEmpty {
-          return out
-        }
-      }
+      // Do not hijack typed text (`set_value_ref`) on web pages into a URL/Google Search navigation:
+      // generic AX / keyboard input must reach the actual focused web control honestly (Rule H5).
     }
 
     // 4. Apple Notes
@@ -594,7 +551,9 @@ extension XunaHostPlugin {
         let expanded = (rawPath as NSString).expandingTildeInPath
         var isDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue {
-          NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: expanded)
+          _ = onMainThread {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: expanded)
+          }
           return "FINDER_OPENED_PATH:\(expanded)"
         }
       }
@@ -616,23 +575,17 @@ extension XunaHostPlugin {
           return out
         }
       }
-      if !valueText.isEmpty {
-        let expanded = (valueText as NSString).expandingTildeInPath
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) {
-          NSWorkspace.shared.selectFile(isDir.boolValue ? nil : expanded, inFileViewerRootedAtPath: expanded)
-          return "FINDER_OPENED_PATH:\(expanded)"
-        }
-      }
     }
 
     return nil
   }
 
   func pasteTextAndOptionallySubmit(_ text: String, selectAllFirst: Bool = false, submit: Bool) {
-    let pb = NSPasteboard.general
-    pb.clearContents()
-    pb.setString(text, forType: .string)
+    onMainThread {
+      let pb = NSPasteboard.general
+      pb.clearContents()
+      _ = pb.setString(text, forType: .string)
+    }
     Thread.sleep(forTimeInterval: 0.06)
     if selectAllFirst {
       postKeyboardShortcut(keyCode: 0, flags: .maskCommand)
@@ -720,14 +673,13 @@ extension XunaHostPlugin {
         ? String(refId.split(separator: ":", maxSplits: 1).last ?? "")
         : (valueText.isEmpty ? refId : valueText)
       let sent = sendShortcutByName(shortcutSpec)
-      Thread.sleep(forTimeInterval: 0.35)
-      let postSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+      Thread.sleep(forTimeInterval: 0.12)
       replySuccess(result, [
         "ok": sent,
         "invokedRefId": refId,
         "detail": sent ? "SHORTCUT_SENT:\(shortcutSpec)" : "UNSUPPORTED_SHORTCUT:\(shortcutSpec)",
-        "windowTitle": postSnap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-        "nodes": postSnap?.nodes ?? [],
+        "windowTitle": targetApp?.localizedName ?? "macOS Window",
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
@@ -736,15 +688,16 @@ extension XunaHostPlugin {
     // 1b. Window & App Lifecycle actions
     if action == "bring_to_front" || action == "focus_window" {
       if let app = targetApp {
-        app.activate(options: [.activateIgnoringOtherApps])
-        Thread.sleep(forTimeInterval: 0.25)
-        let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
+        onMainThread {
+          _ = app.activate(options: [.activateIgnoringOtherApps])
+        }
+        Thread.sleep(forTimeInterval: 0.15)
         replySuccess(result, [
           "ok": true,
           "invokedRefId": refId,
           "detail": "BROUGHT_TO_FRONT:\(app.localizedName ?? "App")",
-          "windowTitle": postSnap.windowTitle,
-          "nodes": postSnap.nodes,
+          "windowTitle": app.localizedName ?? "macOS Window",
+          "nodes": [],
           "screenshotBytesUsed": 0,
         ])
         return
@@ -756,9 +709,11 @@ extension XunaHostPlugin {
         if action == "close_window" {
           _ = sendShortcutByName("cmd+w")
         } else {
-          _ = app.terminate()
+          onMainThread {
+            _ = app.terminate()
+          }
         }
-        Thread.sleep(forTimeInterval: 0.25)
+        Thread.sleep(forTimeInterval: 0.15)
         replySuccess(result, [
           "ok": true,
           "invokedRefId": refId,
@@ -775,40 +730,51 @@ extension XunaHostPlugin {
       if let app = targetApp,
          let menuHit = invokeAppMenuBarItem(app: app, query: valueText.isEmpty ? refId : valueText)
       {
-        Thread.sleep(forTimeInterval: 0.35)
-        let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
+        Thread.sleep(forTimeInterval: 0.15)
         replySuccess(result, [
           "ok": true,
           "invokedRefId": refId,
           "detail": menuHit,
-          "windowTitle": postSnap.windowTitle,
-          "nodes": postSnap.nodes,
+          "windowTitle": app.localizedName ?? "macOS Window",
+          "nodes": [],
           "screenshotBytesUsed": 0,
         ])
         return
       }
+      replySuccess(result, [
+        "ok": false,
+        "invokedRefId": refId,
+        "detail": "MENU_ITEM_NOT_FOUND",
+        "windowTitle": targetApp?.localizedName ?? "macOS Window",
+        "nodes": [],
+        "screenshotBytesUsed": 0,
+      ])
+      return
     }
 
     if action.hasPrefix("scroll") {
       let dir = valueText.isEmpty ? action.replacingOccurrences(of: "scroll_", with: "") : valueText
+      uiCacheLock.lock()
       let pt = cachedUiCenters[refId]
+      uiCacheLock.unlock()
       postScrollWheel(direction: dir.isEmpty ? "down" : dir, amount: 6, at: pt)
-      Thread.sleep(forTimeInterval: 0.35)
-      let postSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+      Thread.sleep(forTimeInterval: 0.15)
       replySuccess(result, [
         "ok": true,
         "invokedRefId": refId,
         "detail": "SCROLLED:\(dir.isEmpty ? "down" : dir)",
-        "windowTitle": postSnap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-        "nodes": postSnap?.nodes ?? [],
+        "windowTitle": targetApp?.localizedName ?? "macOS Window",
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
     }
 
     if action == "drag" || action == "left_click_drag" {
+      uiCacheLock.lock()
       var startPt = cachedUiCenters[refId] ?? CGPoint(x: 400, y: 400)
       var endPt = cachedUiCenters[valueText] ?? CGPoint(x: startPt.x + 160, y: startPt.y)
+      uiCacheLock.unlock()
       if valueText.contains("->") {
         let parts = valueText.split(separator: ">").map {
           $0.replacingOccurrences(of: "-", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -823,14 +789,13 @@ extension XunaHostPlugin {
         }
       }
       postMouseDrag(from: startPt, to: endPt)
-      Thread.sleep(forTimeInterval: 0.35)
-      let postSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+      Thread.sleep(forTimeInterval: 0.15)
       replySuccess(result, [
         "ok": true,
         "invokedRefId": refId,
         "detail": "DRAGGED:(\(Int(startPt.x)),\(Int(startPt.y)))->(\(Int(endPt.x)),\(Int(endPt.y)))",
-        "windowTitle": postSnap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-        "nodes": postSnap?.nodes ?? [],
+        "windowTitle": targetApp?.localizedName ?? "macOS Window",
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
@@ -846,100 +811,187 @@ extension XunaHostPlugin {
            submit: submit
          )
       {
-        Thread.sleep(forTimeInterval: 0.4)
-        let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
+        Thread.sleep(forTimeInterval: 0.2)
         replySuccess(result, [
           "ok": true,
           "invokedRefId": refId,
           "detail": domRes,
-          "windowTitle": postSnap.windowTitle,
-          "nodes": postSnap.nodes,
+          "windowTitle": app.localizedName ?? "macOS Window",
+          "nodes": [],
           "screenshotBytesUsed": 0,
         ])
         return
       }
     }
 
-    // 2. Ensure live AX tree is populated for the target application
-    var currentNodes: [[String: Any]] = []
-    if let app = targetApp {
-      if cachedUiElements.isEmpty || cachedUiPid != app.processIdentifier {
-        let snap = scanApplicationUiTree(app: app, maxNodes: 55)
-        currentNodes = snap.nodes
+    // 2a. Coordinate click, hover & drag actions (`click_point` & `drag_points`) — fast path with 0 AX rescan!
+    if action == "click_point" {
+      let parts = valueText.split(separator: ",").map {
+        $0.trimmingCharacters(in: .whitespaces)
       }
-    }
+      guard parts.count >= 2,
+            let px = Double(parts[0]),
+            let py = Double(parts[1])
+      else {
+        replySuccess(result, [
+          "ok": false,
+          "invokedRefId": refId,
+          "detail": "INVALID_COORDINATES",
+          "windowTitle": targetApp?.localizedName ?? "macOS Window",
+          "nodes": [],
+          "screenshotBytesUsed": 0,
+        ])
+        return
+      }
+      let clicks = parts.count >= 3 ? (Int(parts[2]) ?? 1) : 1
+      let btnStr = parts.count >= 4 ? parts[3].lowercased() : "left"
+      let isHover = (parts.count >= 5 && parts[4].lowercased() == "hover") || clicks == 0
+      let cgBtn: CGMouseButton
+      switch btnStr {
+      case "right": cgBtn = .right
+      case "middle": cgBtn = .center
+      default: cgBtn = .left
+      }
 
-    var matchedKey: String? = cachedUiElements[refId] != nil ? refId : nil
-    if let app = targetApp, currentNodes.isEmpty {
-      let snap = scanApplicationUiTree(app: app, maxNodes: 55)
-      currentNodes = snap.nodes
-    }
-    if let targetNode = currentNodes.first(where: { ($0["refId"] as? String) == refId }),
-       (targetNode["isPassword"] as? Bool) == true
-    {
+      if let app = targetApp {
+        onMainThread {
+          _ = app.activate(options: [.activateIgnoringOtherApps])
+        }
+      }
+      Thread.sleep(forTimeInterval: 0.06)
+      let pt = CGPoint(x: px, y: py)
+      if isHover {
+        if let src = CGEventSource(stateID: .hidSystemState),
+           let move = CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left)
+        {
+          move.post(tap: .cghidEventTap)
+        }
+      } else {
+        postMouseClickPoint(pt, button: cgBtn, clickCount: max(1, min(clicks, 3)))
+      }
+      Thread.sleep(forTimeInterval: 0.12)
       replySuccess(result, [
-        "ok": false,
+        "ok": true,
         "invokedRefId": refId,
-        "detail": "REFUSED_PASSWORD_CONTROL",
+        "detail": isHover ? "HOVER_POINT:(\(Int(pt.x)),\(Int(pt.y)))" : "CLICK_POINT:(\(Int(pt.x)),\(Int(pt.y)),x\(clicks))",
         "windowTitle": targetApp?.localizedName ?? "macOS Window",
-        "nodes": currentNodes,
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
     }
-    if action == "set_value_ref", let existingKey = matchedKey {
-      let existingNode = currentNodes.first { ($0["refId"] as? String) == existingKey }
-      let existingRole = (existingNode?["role"] as? String ?? "").lowercased()
-      if !existingRole.contains("text")
-        && !existingRole.contains("search")
-        && !existingRole.contains("combo")
-        && !existingRole.contains("edit")
-        && !existingRole.contains("document")
-      {
-        matchedKey = nil
+
+    if action == "drag_points" {
+      let coords = valueText.split(separator: ",").compactMap {
+        Double($0.trimmingCharacters(in: .whitespaces))
       }
-    }
-    if matchedKey == nil {
-      let searchKey = refId.lowercased()
-      for node in currentNodes {
-        let label = (node["label"] as? String ?? "").lowercased()
-        let role = (node["role"] as? String ?? "").lowercased()
-        guard let nRef = node["refId"] as? String else { continue }
-        if action == "set_value_ref" {
-          if role.contains("search") || role.contains("text") || role.contains("combo") || role.contains("edit") {
-            matchedKey = nRef
-            break
-          }
-        } else if label.contains(searchKey)
-          || ((searchKey.contains("search") || searchKey.contains("input"))
-              && (role.contains("search") || role.contains("text") || role.contains("combo")))
-        {
-          matchedKey = nRef
-          break
+      guard coords.count == 4 else {
+        replySuccess(result, [
+          "ok": false,
+          "invokedRefId": refId,
+          "detail": "INVALID_COORDINATES",
+          "windowTitle": targetApp?.localizedName ?? "macOS Window",
+          "nodes": [],
+          "screenshotBytesUsed": 0,
+        ])
+        return
+      }
+      if let app = targetApp {
+        onMainThread {
+          _ = app.activate(options: [.activateIgnoringOtherApps])
         }
       }
+      Thread.sleep(forTimeInterval: 0.06)
+      let startPt = CGPoint(x: coords[0], y: coords[1])
+      let endPt = CGPoint(x: coords[2], y: coords[3])
+      postMouseDrag(from: startPt, to: endPt, steps: 24)
+      Thread.sleep(forTimeInterval: 0.15)
+      replySuccess(result, [
+        "ok": true,
+        "invokedRefId": refId,
+        "detail": "DRAGGED_POINTS:(\(Int(startPt.x)),\(Int(startPt.y)))->(\(Int(endPt.x)),\(Int(endPt.y)))",
+        "windowTitle": targetApp?.localizedName ?? "macOS Window",
+        "nodes": [],
+        "screenshotBytesUsed": 0,
+      ])
+      return
     }
 
-    let matchedElement = matchedKey != nil ? cachedUiElements[matchedKey!] : nil
-    let matchedCenter = matchedKey != nil ? cachedUiCenters[matchedKey!] : nil
-    let matchedNode = currentNodes.first(where: { ($0["refId"] as? String) == (matchedKey ?? refId) })
-      ?? currentNodes.first(where: { ($0["refId"] as? String) == refId })
-      ?? currentNodes.first(where: {
-        let lbl = ($0["label"] as? String ?? "").lowercased()
-        return !refId.isEmpty && lbl.contains(refId.lowercased())
-      })
-    let matchedNodeLabel = (matchedNode?["label"] as? String) ?? ""
+    // 2. Resolve target element using snapshot cache first (never clobbering ordinals if already cached for PID!)
+    // Read short cache snapshots under `uiCacheLock`, unlocking before calling `scanApplicationUiTree`
+    // because `NSLock` is non-reentrant and `scanApplicationUiTree` acquires `uiCacheLock` to publish.
+    uiCacheLock.lock()
+    let priorDescriptor = cachedUiDescriptors[refId]
+    let cacheEmpty = cachedUiElements.isEmpty
+    let cachePid = cachedUiPid
+    uiCacheLock.unlock()
 
-    // 2b. Rich pointer click actions
+    var currentNodes: [[String: Any]] = []
+    if let app = targetApp, cacheEmpty || cachePid != app.processIdentifier {
+      let snap = scanApplicationUiTree(app: app, maxNodes: 120)
+      currentNodes = snap.nodes
+    }
+
+    uiCacheLock.lock()
+    var matchedKey: String? = cachedUiElements[refId] != nil ? refId : nil
+    uiCacheLock.unlock()
+
+    if matchedKey == nil, let app = targetApp {
+      let snap = scanApplicationUiTree(app: app, maxNodes: 120)
+      currentNodes = snap.nodes
+      uiCacheLock.lock()
+      if let prior = priorDescriptor, !prior.label.isEmpty {
+        for (k, desc) in cachedUiDescriptors {
+          if desc.role == prior.role && desc.label == prior.label {
+            matchedKey = k
+            break
+          }
+        }
+      }
+      if matchedKey == nil && cachedUiElements[refId] != nil {
+        matchedKey = refId
+      }
+      uiCacheLock.unlock()
+    }
+
+    uiCacheLock.lock()
+    var matchedElement = matchedKey != nil ? cachedUiElements[matchedKey!] : nil
+    var matchedCenter = matchedKey != nil ? cachedUiCenters[matchedKey!] : nil
+    let matchedNodeLabel = (matchedKey != nil ? cachedUiDescriptors[matchedKey!]?.label : nil) ?? ""
+    uiCacheLock.unlock()
+
+    if let el = matchedElement {
+      let liveRole = (extractAxString(el, kAXRoleAttribute as String) ?? "").lowercased()
+      let liveSubrole = (extractAxString(el, kAXSubroleAttribute as String) ?? "").lowercased()
+      if liveRole.contains("secure") || liveSubrole.contains("secure") {
+        replySuccess(result, [
+          "ok": false,
+          "invokedRefId": refId,
+          "detail": "REFUSED_PASSWORD_CONTROL",
+          "windowTitle": targetApp?.localizedName ?? "macOS Window",
+          "nodes": [],
+          "screenshotBytesUsed": 0,
+        ])
+        return
+      }
+    }
+
+    // 2b. Rich pointer click & hover actions (`double_click`, `triple_click`, `right_click`, `middle_click`, `hover_ref`)
     if action == "double_click" || action == "triple_click" || action == "right_click" || action == "middle_click" || action == "mouse_move" || action == "hover_ref" {
       var targetPoint = matchedCenter ?? (matchedElement != nil ? extractAxCenterPoint(matchedElement!) : nil)
       if targetPoint == nil && valueText.contains(",") {
         let coords = valueText.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-        if coords.count == 2 {
+        if coords.count >= 2 {
           targetPoint = CGPoint(x: coords[0], y: coords[1])
         }
       }
       if let pt = targetPoint {
+        if let app = targetApp {
+          onMainThread {
+            _ = app.activate(options: [.activateIgnoringOtherApps])
+          }
+        }
+        Thread.sleep(forTimeInterval: 0.05)
         if action == "mouse_move" || action == "hover_ref" {
           if let src = CGEventSource(stateID: .hidSystemState),
              let move = CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: pt, mouseButton: .left)
@@ -955,14 +1007,13 @@ extension XunaHostPlugin {
         } else {
           postMouseClickPoint(pt, button: .left, clickCount: 2)
         }
-        Thread.sleep(forTimeInterval: 0.35)
-        let postSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+        Thread.sleep(forTimeInterval: 0.15)
         replySuccess(result, [
           "ok": true,
           "invokedRefId": matchedKey ?? refId,
           "detail": "\(action.uppercased()):(\(Int(pt.x)),\(Int(pt.y)))",
-          "windowTitle": postSnap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-          "nodes": postSnap?.nodes ?? [],
+          "windowTitle": targetApp?.localizedName ?? "macOS Window",
+          "nodes": [],
           "screenshotBytesUsed": 0,
         ])
         return
@@ -971,98 +1022,99 @@ extension XunaHostPlugin {
 
     // 3. Universal `set_value_ref`
     if action == "set_value_ref" || (!valueText.isEmpty && action != "invoke_ref") {
-      var detail = "CLIPBOARD_PASTED"
-      if let app = targetApp,
-         let scripted = tryNativeAppleEventsInAppAction(
-           app: app,
-           action: "set_value_ref",
-           refId: matchedKey ?? refId,
-           nodeLabel: matchedNodeLabel,
-           valueText: valueText,
-           submit: submit
-         )
-      {
-        detail = scripted
-        Thread.sleep(forTimeInterval: 0.35)
-        let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
-        replySuccess(result, [
-          "ok": true,
-          "invokedRefId": matchedKey ?? refId,
-          "detail": detail,
-          "windowTitle": postSnap.windowTitle,
-          "nodes": postSnap.nodes,
-          "screenshotBytesUsed": 0,
-        ])
-        return
-      }
-      if let app = targetApp,
-         let domTyped = tryBrowserDomJavaScriptAction(
-           app: app,
-           action: "browser_type",
-           targetSelectorOrText: refId,
-           valueText: valueText,
-           submit: submit
-         )
-      {
-        Thread.sleep(forTimeInterval: 0.4)
-        let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
-        replySuccess(result, [
-          "ok": true,
-          "invokedRefId": matchedKey ?? refId,
-          "detail": domTyped,
-          "windowTitle": postSnap.windowTitle,
-          "nodes": postSnap.nodes,
-          "screenshotBytesUsed": 0,
-        ])
-        return
-      }
       if let el = matchedElement {
-        _ = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        let err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, valueText as CFTypeRef)
-        let afterVal = extractAxString(el, kAXValueAttribute as String)
-        if err == .success && afterVal == valueText {
-          detail = "VERIFIED_AX_VALUE_SET"
-          if submit {
-            _ = AXUIElementPerformAction(el, kAXConfirmAction as CFString)
-            postKeyboardShortcut(keyCode: 36)
+        let exact = classifyExactAxControlRole(el)
+        if exact == "password" {
+          replySuccess(result, [
+            "ok": false,
+            "invokedRefId": refId,
+            "detail": "REFUSED_PASSWORD_CONTROL",
+            "windowTitle": targetApp?.localizedName ?? "macOS Window",
+            "nodes": [],
+            "screenshotBytesUsed": 0,
+          ])
+          return
+        }
+        if exact != "textfield" && exact != "textarea" && exact != "searchfield" && exact != "searchbox" {
+          matchedElement = nil
+        }
+      }
+      if matchedElement == nil, let app = targetApp {
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.25)
+        var focusRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusRef) == .success,
+           let focusElem = focusRef
+        {
+          let axFocus = focusElem as! AXUIElement
+          let exact = classifyExactAxControlRole(axFocus)
+          if exact == "password" {
+            replySuccess(result, [
+              "ok": false,
+              "invokedRefId": refId,
+              "detail": "REFUSED_PASSWORD_CONTROL",
+              "windowTitle": app.localizedName ?? "macOS Window",
+              "nodes": [],
+              "screenshotBytesUsed": 0,
+            ])
+            return
           }
-        } else {
-          targetApp?.activate(options: [.activateIgnoringOtherApps])
-          _ = AXUIElementPerformAction(el, kAXPressAction as CFString)
-          if let center = matchedCenter ?? extractAxCenterPoint(el) {
-            clickScreenPoint(center)
-            Thread.sleep(forTimeInterval: 0.1)
-          }
-          if action == "type_unicode" {
-            postUnicodeTextGraphemes(valueText, submit: submit)
-            detail = "ESCALATED_FOCUSED_AND_TYPED_UNICODE"
-          } else {
-            pasteTextAndOptionallySubmit(valueText, selectAllFirst: true, submit: submit)
-            detail = "ESCALATED_FOCUSED_AND_PASTED"
+          if exact == "textfield" || exact == "textarea" || exact == "searchfield" || exact == "searchbox" {
+            matchedElement = axFocus
+            matchedCenter = extractAxCenterPoint(axFocus)
           }
         }
-      } else {
-        // No resolvable target: do not guess a shortcut and paste blindly, and do not claim success.
-        let snap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+      }
+
+      guard let el = matchedElement else {
         replySuccess(result, [
           "ok": false,
           "invokedRefId": refId,
           "detail": "NO_EDITABLE_TARGET",
-          "windowTitle": snap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-          "nodes": snap?.nodes ?? [],
+          "windowTitle": targetApp?.localizedName ?? "macOS Window",
+          "nodes": currentNodes,
           "screenshotBytesUsed": 0,
         ])
         return
       }
 
-      Thread.sleep(forTimeInterval: 0.45)
-      let postSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+      var detail = "VERIFIED_AX_VALUE_SET"
+      AXUIElementSetMessagingTimeout(el, 0.25)
+      _ = AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+      let err = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, valueText as CFTypeRef)
+      let afterVal = extractAxString(el, kAXValueAttribute as String)
+      if err == .success && afterVal == valueText {
+        if submit {
+          _ = AXUIElementPerformAction(el, kAXConfirmAction as CFString)
+          postKeyboardShortcut(keyCode: 36)
+        }
+      } else {
+        if let app = targetApp {
+          onMainThread {
+            _ = app.activate(options: [.activateIgnoringOtherApps])
+          }
+        }
+        _ = AXUIElementPerformAction(el, kAXPressAction as CFString)
+        if let center = matchedCenter ?? extractAxCenterPoint(el) {
+          clickScreenPoint(center)
+          Thread.sleep(forTimeInterval: 0.08)
+        }
+        if action == "type_unicode" {
+          postUnicodeTextGraphemes(valueText, submit: submit)
+          detail = "ESCALATED_FOCUSED_AND_TYPED_UNICODE"
+        } else {
+          pasteTextAndOptionallySubmit(valueText, selectAllFirst: true, submit: submit)
+          detail = "ESCALATED_FOCUSED_AND_PASTED"
+        }
+      }
+
+      Thread.sleep(forTimeInterval: 0.15)
       replySuccess(result, [
         "ok": true,
         "invokedRefId": matchedKey ?? refId,
         "detail": detail,
-        "windowTitle": postSnap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-        "nodes": postSnap?.nodes ?? [],
+        "windowTitle": targetApp?.localizedName ?? "macOS Window",
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
@@ -1079,43 +1131,20 @@ extension XunaHostPlugin {
          submit: submit
        )
     {
-      Thread.sleep(forTimeInterval: 0.35)
-      let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
+      Thread.sleep(forTimeInterval: 0.15)
       replySuccess(result, [
         "ok": true,
         "invokedRefId": matchedKey ?? refId,
         "detail": scripted,
-        "windowTitle": postSnap.windowTitle,
-        "nodes": postSnap.nodes,
-        "screenshotBytesUsed": 0,
-      ])
-      return
-    }
-
-    if let app = targetApp,
-       let domClicked = tryBrowserDomJavaScriptAction(
-         app: app,
-         action: "browser_click",
-         targetSelectorOrText: valueText.isEmpty ? refId : valueText,
-         valueText: "",
-         submit: false
-       )
-    {
-      Thread.sleep(forTimeInterval: 0.4)
-      let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
-      replySuccess(result, [
-        "ok": true,
-        "invokedRefId": matchedKey ?? refId,
-        "detail": domClicked,
-        "windowTitle": postSnap.windowTitle,
-        "nodes": postSnap.nodes,
+        "windowTitle": app.localizedName ?? "macOS Window",
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
     }
 
     if let el = matchedElement {
-      let preNodeCount = currentNodes.count
+      AXUIElementSetMessagingTimeout(el, 0.25)
       let preVal = extractAxString(el, kAXValueAttribute as String) ?? ""
       var detail = "VERIFIED_AX_PRESSED"
       var err = AXUIElementPerformAction(el, kAXPressAction as CFString)
@@ -1126,19 +1155,26 @@ extension XunaHostPlugin {
         err = AXUIElementPerformAction(el, kAXPickAction as CFString)
       }
       if err == .success {
-        Thread.sleep(forTimeInterval: 0.2)
+        Thread.sleep(forTimeInterval: 0.1)
         let postVal = extractAxString(el, kAXValueAttribute as String) ?? ""
-        let midSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
-        let postNodeCount = midSnap?.nodes.count ?? preNodeCount
-        if postVal == preVal && postNodeCount == preNodeCount,
+        let roleLower = (extractAxString(el, kAXRoleAttribute as String) ?? "").lowercased()
+        if postVal == preVal && (roleLower.contains("row") || roleLower.contains("cell") || roleLower.contains("group")),
            let center = matchedCenter ?? extractAxCenterPoint(el)
         {
-          targetApp?.activate(options: [.activateIgnoringOtherApps])
+          if let app = targetApp {
+            onMainThread {
+              _ = app.activate(options: [.activateIgnoringOtherApps])
+            }
+          }
           clickScreenPoint(center)
           detail = "ESCALATED_COORDINATE_CLICKED"
         }
       } else {
-        targetApp?.activate(options: [.activateIgnoringOtherApps])
+        if let app = targetApp {
+          onMainThread {
+            _ = app.activate(options: [.activateIgnoringOtherApps])
+          }
+        }
         if let center = matchedCenter ?? extractAxCenterPoint(el) {
           clickScreenPoint(center)
           detail = "COORDINATE_CLICKED"
@@ -1148,40 +1184,37 @@ extension XunaHostPlugin {
           detail = "FOCUSED_AND_ENTER"
         }
       }
-      Thread.sleep(forTimeInterval: 0.35)
-      let postSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
+      Thread.sleep(forTimeInterval: 0.15)
       replySuccess(result, [
         "ok": true,
         "invokedRefId": matchedKey ?? refId,
         "detail": detail,
-        "windowTitle": postSnap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-        "nodes": postSnap?.nodes ?? [],
+        "windowTitle": targetApp?.localizedName ?? "macOS Window",
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
     }
 
     if let app = targetApp, let menuHit = invokeAppMenuBarItem(app: app, query: valueText.isEmpty ? refId : valueText) {
-      Thread.sleep(forTimeInterval: 0.35)
-      let postSnap = scanApplicationUiTree(app: app, maxNodes: 45)
+      Thread.sleep(forTimeInterval: 0.15)
       replySuccess(result, [
         "ok": true,
         "invokedRefId": refId,
         "detail": menuHit,
-        "windowTitle": postSnap.windowTitle,
-        "nodes": postSnap.nodes,
+        "windowTitle": app.localizedName ?? "macOS Window",
+        "nodes": [],
         "screenshotBytesUsed": 0,
       ])
       return
     }
 
-    let postSnap = targetApp != nil ? scanApplicationUiTree(app: targetApp!, maxNodes: 45) : nil
     replySuccess(result, [
       "ok": false,
       "invokedRefId": refId,
       "detail": "ELEMENT_NOT_FOUND",
-      "windowTitle": postSnap?.windowTitle ?? targetApp?.localizedName ?? "macOS Window",
-      "nodes": postSnap?.nodes ?? [],
+      "windowTitle": targetApp?.localizedName ?? "macOS Window",
+      "nodes": currentNodes,
       "screenshotBytesUsed": 0,
     ])
   }

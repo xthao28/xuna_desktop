@@ -4,11 +4,30 @@ import 'dart:typed_data';
 import 'crypto.dart';
 import 'schemas.dart';
 
-/// Maximum WebSocket text frame size in UTF-8 bytes (`128 KiB`).
-const int maxXtpFrameBytes = 131072;
+/// Maximum WebSocket text frame size in UTF-8 bytes (`512 KiB`).
+const int maxXtpFrameBytes = 524288;
 
-/// Maximum `structuredContent` size in UTF-8 bytes (`16 KiB`).
+/// Maximum `structuredContent` size in UTF-8 bytes for ordinary tools (`16 KiB`).
 const int maxStructuredContentBytes = 16384;
+
+/// Maximum `structuredContent` size in UTF-8 bytes for media/screenshot tools (`448 KiB`),
+/// leaving framing headroom inside [maxXtpFrameBytes].
+const int maxMediaStructuredContentBytes = 458752;
+
+bool _hasMediaStructuredContent(Map<Object?, Object?> sc) {
+  final screenshot = sc['screenshot'];
+  if (screenshot is Map && screenshot['dataBase64'] is String) {
+    return true;
+  }
+  if (sc['dataBase64'] is String) {
+    return true;
+  }
+  final image = sc['image'];
+  if (image is Map && image['dataBase64'] is String) {
+    return true;
+  }
+  return false;
+}
 
 /// JSON-RPC 2.0 protocol error codes (`XUNA_XTP_V1_CONTRACT.md` §5.2).
 class JsonRpcErrorCode {
@@ -91,7 +110,7 @@ sealed class XtpFrame {
     if (byteLen > maxXtpFrameBytes) {
       throw const XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidRequest,
-        message: 'Frame exceeds 64 KiB limit',
+        message: 'Frame exceeds 512 KiB limit',
         closeCode: XtpCloseCode.frameTooLarge,
         closeReason: 'frame_too_large',
       );
@@ -115,7 +134,7 @@ sealed class XtpFrame {
     if (utf8Bytes.length > maxXtpFrameBytes) {
       throw const XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidRequest,
-        message: 'Frame exceeds 64 KiB limit',
+        message: 'Frame exceeds 512 KiB limit',
         closeCode: XtpCloseCode.frameTooLarge,
         closeReason: 'frame_too_large',
       );
@@ -345,12 +364,17 @@ class XtpResponse extends XtpFrame {
     required XtpStatus status,
     required int durationMs,
     String? errorCode,
+    bool allowMediaPayload = false,
   }) {
+    final isMedia =
+        allowMediaPayload || _hasMediaStructuredContent(structuredContent);
+    final limit =
+        isMedia ? maxMediaStructuredContentBytes : maxStructuredContentBytes;
     final scBytes = utf8.encode(jsonEncode(structuredContent)).length;
-    if (scBytes > maxStructuredContentBytes) {
+    if (scBytes > limit) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,
-        message: 'structuredContent exceeds 16 KiB limit',
+        message: 'structuredContent exceeds ${limit ~/ 1024} KiB limit',
         requestId: id,
       );
     }
@@ -1003,7 +1027,8 @@ XtpNotificationParams _parseNotificationParams(
           final keys = <Uint8List>[];
           for (final item in rawList) {
             if (item is! String) {
-              throw const FormatException('phonePublicKeys items must be base64 strings');
+              throw const FormatException(
+                  'phonePublicKeys items must be base64 strings');
             }
             var clean = item.trim();
             final rem = clean.length % 4;
@@ -1148,11 +1173,14 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
         requestId: requestId,
       );
     }
+    final limit = _hasMediaStructuredContent(sc)
+        ? maxMediaStructuredContentBytes
+        : maxStructuredContentBytes;
     final scBytes = utf8.encode(jsonEncode(sc)).length;
-    if (scBytes > maxStructuredContentBytes) {
+    if (scBytes > limit) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,
-        message: 'structuredContent exceeds 16 KiB limit',
+        message: 'structuredContent exceeds ${limit ~/ 1024} KiB limit',
         requestId: requestId,
       );
     }

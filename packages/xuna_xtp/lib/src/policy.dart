@@ -73,6 +73,7 @@ class HostPolicyEvaluator {
     String? hostId,
     List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
     bool isInApprovedCuSession = false,
+    Set<String>? cuSessionApprovedApps,
     bool allowZeroConfigAppDiscovery = true,
     bool allowPublicHttpsDomains = false,
   }) {
@@ -154,14 +155,25 @@ class HostPolicyEvaluator {
     // do not require per-call approval; R3 tools ALWAYS require a phone-signed
     // single-use approval regardless of preset or active session.
     final isAutopilot = activePolicy.trustPreset == TrustPreset.autopilot;
+    bool isAppInCuSessionScope = false;
+    if (family == ToolFamily.app) {
+      if (cuSessionApprovedApps != null && toolName == 'app.launch') {
+        final rawId = (arguments['id'] as String?)?.trim().toLowerCase();
+        isAppInCuSessionScope = rawId != null &&
+            rawId.isNotEmpty &&
+            cuSessionApprovedApps.contains(rawId);
+      } else {
+        isAppInCuSessionScope = matchedApp != null;
+      }
+    }
     final requiresApproval = (isAutopilot ||
             (isInApprovedCuSession &&
                 (const <ToolFamily>{
-                  ToolFamily.screen,
-                  ToolFamily.ui,
-                  ToolFamily.input,
-                }.contains(family) ||
-                    (family == ToolFamily.app && matchedApp != null))))
+                      ToolFamily.screen,
+                      ToolFamily.ui,
+                      ToolFamily.input,
+                    }.contains(family) ||
+                    isAppInCuSessionScope)))
         ? effectiveRisk >= RiskTier.r3
         : effectiveRisk >= RiskTier.r2;
 
@@ -272,4 +284,3 @@ extension HostPolicyZeroConfigExtension on HostPolicy? {
   bool get allowsZeroConfigAppDiscovery =>
       (this?.trustPreset ?? TrustPreset.standard) != TrustPreset.strict;
 }
-

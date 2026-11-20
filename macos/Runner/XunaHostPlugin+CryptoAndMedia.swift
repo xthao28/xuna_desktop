@@ -22,6 +22,9 @@ extension XunaHostPlugin {
   }
 
   func ensurePrivateKey() -> (SecKey, String)? {
+    keyCacheLock.lock()
+    defer { keyCacheLock.unlock() }
+
     if let cached = cachedKey, isValidP256PrivateKey(cached.0) {
       return cached
     }
@@ -217,9 +220,9 @@ extension XunaHostPlugin {
   }
 
   func triggerAppMediaCommand(cmd: String) -> Bool {
-    let runningBundles = Set(
-      NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
-    )
+    let runningBundles = onMainThread {
+      Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    }
     let appleCmd: String
     switch cmd {
     case "play_pause":
@@ -249,19 +252,19 @@ extension XunaHostPlugin {
     func postKey(down: Bool) -> Bool {
       let flags = NSEvent.ModifierFlags(rawValue: down ? 0xA00 : 0xB00)
       let data1 = Int((keyType << 16) | ((down ? 0xA : 0xB) << 8))
-      guard let nsEvent = NSEvent.otherEvent(
-        with: .systemDefined,
-        location: .zero,
-        modifierFlags: flags,
-        timestamp: 0,
-        windowNumber: 0,
-        context: nil,
-        subtype: 8,
-        data1: data1,
-        data2: -1
-      ),
-            let cgEvent = nsEvent.cgEvent
-      else {
+      guard let cgEvent = onMainThread({
+        NSEvent.otherEvent(
+          with: .systemDefined,
+          location: .zero,
+          modifierFlags: flags,
+          timestamp: 0,
+          windowNumber: 0,
+          context: nil,
+          subtype: 8,
+          data1: data1,
+          data2: -1
+        )?.cgEvent
+      }) else {
         return false
       }
       cgEvent.post(tap: .cghidEventTap)
@@ -360,9 +363,9 @@ extension XunaHostPlugin {
       ("music", "com.apple.Music", "Music"),
     ]
 
-    let runningBundles = Set(
-      NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
-    )
+    let runningBundles = onMainThread {
+      Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    }
 
     for candidate in candidateBundles {
       let allowed = allowlisted.contains {

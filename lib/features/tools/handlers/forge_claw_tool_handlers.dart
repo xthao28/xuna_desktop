@@ -231,12 +231,15 @@ class ForgeRunSkillTool extends HostToolHandler {
             errorCode: 'policy_blocked',
           );
         }
-        final rawArgs = (step['arguments'] as Map?)
-                ?.map((k, v) => MapEntry(k.toString(), v)) ??
+        final rawArgs =
+            (step['arguments'] as Map?)?.map(
+              (k, v) => MapEntry(k.toString(), v),
+            ) ??
             <String, Object?>{};
         final interpolatedArgs = _interpolateStepArgs(rawArgs, stringParams);
 
-        final checkApp = interpolatedArgs['appId']?.toString() ??
+        final checkApp =
+            interpolatedArgs['appId']?.toString() ??
             interpolatedArgs['app']?.toString() ??
             interpolatedArgs['process']?.toString();
         if (checkApp != null && isHardDeniedAppOrProcess(checkApp)) {
@@ -307,7 +310,8 @@ class ForgeRunSkillTool extends HostToolHandler {
         originalTool: 'forge.run_skill',
         inverseTool: 'forge.list_and_manage',
         inverseArgs: const <String, Object?>{'action': 'list'},
-        description: 'hoàn tác phiên chạy công cụ $skillId (${res.undoSnapshotId})',
+        description:
+            'hoàn tác phiên chạy công cụ $skillId (${res.undoSnapshotId})',
         recordedAt: context.nowUtc,
       ),
     );
@@ -342,15 +346,9 @@ class ForgeListAndManageTool extends HostToolHandler {
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final action = (context.arguments['action'] as String?) ?? 'list';
     final skillId = context.arguments['skillId'] as String?;
-    final skillRecipe =
-        context.arguments['skillRecipe'] as Map<String, Object?>?;
-    final workshopFolder =
-        context.arguments['workshopFolder'] as String?;
     final res = context.symbioticService.listAndManageForgedSkills(
       action: action,
       skillId: skillId,
-      skillRecipe: skillRecipe,
-      workshopFolder: workshopFolder,
     );
     return ToolHandlerOutput(
       text: 'Kho công cụ XUNA hiện có ${res.skills.length} kỹ năng.',
@@ -763,7 +761,8 @@ class BrowserSemanticSnapshotTool implements HostToolHandler {
       throw const XunaHostChannelException(
         status: XtpStatus.invalidArgs,
         errorCode: 'raw_html_required',
-        message: 'browser.semantic_snapshot only parses supplied rawHtml; use '
+        message:
+            'browser.semantic_snapshot only parses supplied rawHtml; use '
             'browser.read_page to read the active browser tab.',
       );
     }
@@ -791,84 +790,6 @@ class BrowserSemanticSnapshotTool implements HostToolHandler {
   }
 }
 
-/// Read-only native OS UI inspection (`ui.accessibility_tree`, `UIA-2`).
-///
-/// Only `inspect_window` exists: the policy layer rejects every other action,
-/// so this handler never clicks, types or closes anything. Acting on a window
-/// goes through `input.*` in an approved computer-use session.
-class UiAccessibilityTreeTool implements HostToolHandler {
-  const UiAccessibilityTreeTool();
-
-  @override
-  String get name => 'ui.accessibility_tree';
-
-  @override
-  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final windowTitle = context.arguments['windowTitle'] as String?;
-    final maxNodes = (context.arguments['maxNodes'] as int?) ?? 30;
-
-    var hasNativeSnapshot = false;
-    var effectiveWindowTitle = windowTitle;
-
-    try {
-      final nativeSnap = await context.channel.inspectWindowUiTree(
-        windowTitle: effectiveWindowTitle,
-        maxNodes: maxNodes,
-      );
-      if (nativeSnap.nodes.isNotEmpty) {
-        context.symbioticService.uiAccessibility.applyNativeWindowUiTree(
-          windowTitle: nativeSnap.windowTitle,
-          nodes: nativeSnap.nodes,
-        );
-        effectiveWindowTitle = nativeSnap.windowTitle;
-        hasNativeSnapshot = true;
-      }
-    } on XunaHostChannelException {
-      rethrow;
-    } catch (_) {
-      // Never substitute an invented tree: the model would act on controls that do not
-      // exist and report success.
-      throw const XunaHostChannelException(
-        status: XtpStatus.failed,
-        errorCode: 'ui_tree_unavailable',
-        message:
-            'The native accessibility channel failed; check Accessibility permission '
-            'and that the window is open, then inspect_window again.',
-      );
-    }
-    if (!hasNativeSnapshot) {
-      throw XunaHostChannelException(
-        status: XtpStatus.failed,
-        errorCode: 'ui_tree_unavailable',
-        message: 'No live UI controls found for window '
-            '"${effectiveWindowTitle ?? 'active window'}"; open or focus it, or check '
-            'Accessibility permission, then inspect_window again.',
-      );
-    }
-
-    final res = context.symbioticService.uiAccessibility
-        .executeUiAccessibilityTree(windowTitle: effectiveWindowTitle);
-
-    return ToolHandlerOutput(
-      text: res.summaryVi,
-      structuredContent: <String, Object?>{
-        'action': res.action,
-        'windowTitle': res.windowTitle,
-        'nodeCount': res.nodeCount,
-        'tokenSavingsPercent': res.tokenSavingsPercent,
-        'screenshotBytesUsed': res.screenshotBytesUsed,
-        'compactUiTree': res.compactUiTree,
-        'invokedRefId': res.invokedRefId,
-        'redactedControlsCount': res.redactedControlsCount,
-        'nodes': res.nodes,
-        'summaryVi': res.summaryVi,
-      },
-      toastBody:
-          'OS UIA [${res.windowTitle}]: ${res.nodeCount} controls (0 ảnh)',
-    );
-  }
-}
-
 const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
   ForgeSynthesizeSkillTool(),
   ForgeRunSkillTool(),
@@ -884,5 +805,4 @@ const List<HostToolHandler> defaultForgeClawToolHandlers = <HostToolHandler>[
   SkillChainAndTestTool(),
   MemoryMarkdownVaultTool(),
   BrowserSemanticSnapshotTool(),
-  UiAccessibilityTreeTool(),
 ];

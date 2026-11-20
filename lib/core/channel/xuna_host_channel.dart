@@ -41,6 +41,7 @@ class HostPermissionSnapshot {
   const HostPermissionSnapshot({
     this.accessibility = XtpPermissionState.granted,
     this.notifications = XtpPermissionState.granted,
+    this.screenRecording = XtpPermissionState.granted,
     this.automation = const <String, XtpPermissionState>{},
   });
 
@@ -49,10 +50,12 @@ class HostPermissionSnapshot {
   const HostPermissionSnapshot.unknown()
     : accessibility = XtpPermissionState.notDetermined,
       notifications = XtpPermissionState.notDetermined,
+      screenRecording = XtpPermissionState.notDetermined,
       automation = const <String, XtpPermissionState>{};
 
   final XtpPermissionState accessibility;
   final XtpPermissionState notifications;
+  final XtpPermissionState screenRecording;
   final Map<String, XtpPermissionState> automation;
 
   Map<String, String> toWireMap() => <String, String>{
@@ -93,6 +96,26 @@ class BrowserTabSnapshot {
   final String browser;
 }
 
+/// Regular GUI application entry returned inside [ActiveWindowContextSnapshot.runningApps].
+class RunningAppInfo {
+  const RunningAppInfo({required this.name, required this.bundleId});
+
+  final String name;
+  final String bundleId;
+
+  Map<String, String> toMap() => <String, String>{
+    'name': name,
+    'bundleId': bundleId,
+  };
+}
+
+/// Result of launching or focusing an application via `appLaunch`.
+class AppLaunchResult {
+  const AppLaunchResult({this.alreadyRunning = false});
+
+  final bool alreadyRunning;
+}
+
 /// Snapshot of the frontmost desktop window returned by `readActiveWindowContext` (`UDC-13` S13.1).
 class ActiveWindowContextSnapshot {
   const ActiveWindowContextSnapshot({
@@ -101,7 +124,9 @@ class ActiveWindowContextSnapshot {
     required this.windowTitle,
     required this.focusedRole,
     required this.visibleText,
+    this.exactFocusedRole,
     this.isElevated = false,
+    this.runningApps = const <RunningAppInfo>[],
   });
 
   final String appName;
@@ -109,7 +134,14 @@ class ActiveWindowContextSnapshot {
   final String windowTitle;
   final String focusedRole;
   final String visibleText;
+
+  /// Exact normalized role of the focused control (`password`, `searchfield`,
+  /// `searchbox`, `textfield`, `textarea`, `combobox`, `button`, etc.) reported
+  /// only when the native OS reader verified both role and subrole/editability
+  /// (`ADR-0015` D2).
+  final String? exactFocusedRole;
   final bool isElevated;
+  final List<RunningAppInfo> runningApps;
 }
 
 /// Semantic snapshot of the active browser tab returned by `readBrowserPageSummary` (`UDC-13` S13.2).
@@ -138,12 +170,37 @@ class WindowUiTreeSnapshot {
     this.appName = '',
     this.nodes = const <Map<String, Object?>>[],
     this.redactedControlsCount = 0,
+    this.windowX = 0,
+    this.windowY = 0,
+    this.windowWidth = 1280,
+    this.windowHeight = 720,
+    this.devicePixelRatio = 1.0,
   });
 
   final String windowTitle;
   final String appName;
   final List<Map<String, Object?>> nodes;
   final int redactedControlsCount;
+  final int windowX;
+  final int windowY;
+  final int windowWidth;
+  final int windowHeight;
+  final double devicePixelRatio;
+}
+
+/// In-memory JPEG screenshot returned by `captureScreen` (`UDC-18` Wave C).
+class HostScreenCaptureResult {
+  const HostScreenCaptureResult({
+    this.mimeType = 'image/jpeg',
+    required this.width,
+    required this.height,
+    required this.dataBase64,
+  });
+
+  final String mimeType;
+  final int width;
+  final int height;
+  final String dataBase64;
 }
 
 /// Result of invoking or setting a value on a window UI control via `invokeWindowUiControl`.
@@ -186,8 +243,13 @@ abstract interface class XunaHostChannel {
   /// Queries metadata for the active media session from allowlisted [players].
   Future<NowPlayingSnapshot> nowPlaying(List<String> players);
 
-  /// Launches an allowlisted application (`exe`, `aumid`, or `bundle`).
-  Future<void> appLaunch({required AppLaunchKind kind, required String target});
+  /// Launches an allowlisted application (`exe`, `aumid`, or `bundle`), optionally
+  /// opening a pre-validated path inside the owner's home directory.
+  Future<AppLaunchResult> appLaunch({
+    required AppLaunchKind kind,
+    required String target,
+    String? openPath,
+  });
 
   /// Opens a pre-validated `https://` URL in the user's default browser.
   Future<void> urlOpen(String url);
@@ -254,6 +316,13 @@ abstract interface class XunaHostChannel {
     String? windowTitle,
     String? valueText,
     bool submit = true,
+  });
+
+  /// Captures an in-memory JPEG screenshot of the active window or full screen (`UDC-18` Wave C).
+  Future<HostScreenCaptureResult> captureScreen({
+    String scope = 'active_window',
+    int maxEdge = 1280,
+    List<Map<String, Object?>>? somMarks,
   });
 }
 
@@ -333,14 +402,17 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
   }
 
   @override
-  Future<void> appLaunch({
+  Future<AppLaunchResult> appLaunch({
     required AppLaunchKind kind,
     required String target,
+    String? openPath,
   }) async {
-    await _invokeMap('appLaunch', <String, Object?>{
+    final map = await _invokeMap('appLaunch', <String, Object?>{
       'kind': kind.wire,
       'target': target,
+      if (openPath != null && openPath.isNotEmpty) 'openPath': openPath,
     });
+    return AppLaunchResult(alreadyRunning: map['alreadyRunning'] == true);
   }
 
   @override
@@ -392,6 +464,7 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     final map = await _invokeMap('permissions');
     final accRaw = map['accessibility'];
     final notifRaw = map['notifications'];
+    final screenRecRaw = map['screenRecording'];
     final autoRaw = map['automation'];
     final autoMap = <String, XtpPermissionState>{};
     if (autoRaw is Map) {
@@ -410,6 +483,9 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       notifications: notifRaw is String
           ? XtpPermissionState.fromWire(notifRaw)
           : XtpPermissionState.notDetermined,
+      screenRecording: screenRecRaw is String
+          ? XtpPermissionState.fromWire(screenRecRaw)
+          : XtpPermissionState.granted,
       automation: autoMap,
     );
   }
@@ -499,8 +575,35 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     final processName = map['processName'];
     final windowTitle = map['windowTitle'];
     final focusedRole = map['focusedRole'];
+    final exactFocusedRole = map['exactFocusedRole'];
     final visibleText = map['visibleText'];
     final isElevated = map['isElevated'];
+    final rawRunningApps = map['runningApps'];
+    final runningApps = <RunningAppInfo>[];
+    if (rawRunningApps is List) {
+      for (final item in rawRunningApps) {
+        if (item is! Map) {
+          continue;
+        }
+        final nameRaw = item['name'];
+        final bundleRaw = item['bundleId'];
+        if (nameRaw is! String || bundleRaw is! String) {
+          continue;
+        }
+        final nameTrimmed = nameRaw.trim();
+        final bundleTrimmed = bundleRaw.trim();
+        if (nameTrimmed.isEmpty || bundleTrimmed.isEmpty) {
+          continue;
+        }
+        if (isHardDeniedAppOrProcess(nameTrimmed) ||
+            isHardDeniedAppOrProcess(bundleTrimmed)) {
+          continue;
+        }
+        runningApps.add(
+          RunningAppInfo(name: nameTrimmed, bundleId: bundleTrimmed),
+        );
+      }
+    }
     return ActiveWindowContextSnapshot(
       appName: appName is String && appName.isNotEmpty ? appName : 'unknown',
       processName: processName is String && processName.isNotEmpty
@@ -510,8 +613,13 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       focusedRole: focusedRole is String && focusedRole.isNotEmpty
           ? focusedRole
           : 'window',
+      exactFocusedRole:
+          exactFocusedRole is String && exactFocusedRole.isNotEmpty
+          ? exactFocusedRole
+          : null,
       visibleText: visibleText is String ? visibleText : '',
       isElevated: isElevated is bool ? isElevated : false,
+      runningApps: List<RunningAppInfo>.unmodifiable(runningApps),
     );
   }
 
@@ -594,6 +702,11 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       appName: appName is String ? appName : '',
       nodes: nodes,
       redactedControlsCount: redacted is int ? redacted : 0,
+      windowX: (map['windowX'] as num?)?.round() ?? 0,
+      windowY: (map['windowY'] as num?)?.round() ?? 0,
+      windowWidth: (map['windowWidth'] as num?)?.round() ?? 1280,
+      windowHeight: (map['windowHeight'] as num?)?.round() ?? 720,
+      devicePixelRatio: (map['devicePixelRatio'] as num?)?.toDouble() ?? 1.0,
     );
   }
 
@@ -635,6 +748,38 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     );
   }
 
+  @override
+  Future<HostScreenCaptureResult> captureScreen({
+    String scope = 'active_window',
+    int maxEdge = 1280,
+    List<Map<String, Object?>>? somMarks,
+  }) async {
+    final map = await _invokeMap('captureScreen', <String, Object?>{
+      'scope': scope,
+      'maxEdge': maxEdge,
+      if (somMarks != null && somMarks.isNotEmpty) 'somMarks': somMarks,
+    });
+    final b64 = map['dataBase64'];
+    final width = (map['width'] as num?)?.round() ?? 0;
+    final height = (map['height'] as num?)?.round() ?? 0;
+    final mime = map['mimeType'] is String
+        ? map['mimeType'] as String
+        : 'image/jpeg';
+    if (b64 is! String || b64.trim().isEmpty || width <= 0 || height <= 0) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'capture_failed',
+        message: 'Native screen capture returned empty image data.',
+      );
+    }
+    return HostScreenCaptureResult(
+      mimeType: mime,
+      width: width,
+      height: height,
+      dataBase64: b64,
+    );
+  }
+
   Future<Map<String, Object?>> _invokeMap(
     String method, [
     Map<String, Object?>? args,
@@ -654,7 +799,10 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       );
     } on MissingPluginException {
       if (Platform.isLinux) {
-        return _invokeLinuxHostFallback(method, args ?? const <String, Object?>{});
+        return _invokeLinuxHostFallback(
+          method,
+          args ?? const <String, Object?>{},
+        );
       }
       rethrow;
     } on TimeoutException {
@@ -664,14 +812,17 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       );
     } on PlatformException catch (error) {
       final status = switch (error.code) {
-        'needs_permission' => XtpStatus.needsPermission,
+        'needs_permission' || 'screen_recording' => XtpStatus.needsPermission,
         'unsupported' => XtpStatus.unsupported,
-        'denied' => XtpStatus.denied,
+        'denied' || 'hard_denied_window' => XtpStatus.denied,
         'invalid_args' => XtpStatus.invalidArgs,
         'timeout' => XtpStatus.timeout,
         _ => XtpStatus.failed,
       };
       final errorCode = switch (error.code) {
+        'screen_recording' => 'screen_recording',
+        'capture_failed' => 'capture_failed',
+        'hard_denied_window' => 'hard_denied_window',
         'needs_permission' => 'permission_missing',
         'unsupported' => 'platform_unsupported',
         'timeout' => 'deadline_exceeded',
@@ -731,8 +882,14 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         ]);
         return <String, Object?>{'level': level};
       case 'nowPlaying':
-        final title = await Process.run('playerctl', <String>['metadata', 'title']);
-        final artist = await Process.run('playerctl', <String>['metadata', 'artist']);
+        final title = await Process.run('playerctl', <String>[
+          'metadata',
+          'title',
+        ]);
+        final artist = await Process.run('playerctl', <String>[
+          'metadata',
+          'artist',
+        ]);
         final status = await Process.run('playerctl', <String>['status']);
         return <String, Object?>{
           'state': status.stdout.toString().trim().toLowerCase(),
@@ -744,11 +901,10 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       case 'workflowRun':
         final target = (args['target'] as String? ?? '').trim();
         if (target.isNotEmpty) {
-          await Process.start(
-            'sh',
-            <String>['-c', 'gtk-launch "$target" || "$target" &'],
-            mode: ProcessStartMode.detached,
-          );
+          await Process.start('sh', <String>[
+            '-c',
+            'gtk-launch "$target" || "$target" &',
+          ], mode: ProcessStartMode.detached);
         }
         return const <String, Object?>{};
       case 'urlOpen':
@@ -765,7 +921,11 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         }
         return <String, Object?>{'shown': true};
       case 'clipboardReadText':
-        final xclip = await Process.run('xclip', <String>['-o', '-selection', 'clipboard']);
+        final xclip = await Process.run('xclip', <String>[
+          '-o',
+          '-selection',
+          'clipboard',
+        ]);
         return <String, Object?>{'text': xclip.stdout.toString()};
       case 'readActiveWindowContext':
         final winName = await Process.run('xdotool', <String>[
@@ -790,7 +950,8 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           message: 'UI tree inspection is not implemented on Linux.',
         );
       case 'invokeWindowUiControl':
-        final action = (args['action'] as String? ?? 'invoke_ref').toLowerCase();
+        final action = (args['action'] as String? ?? 'invoke_ref')
+            .toLowerCase();
         final refId = (args['refId'] as String? ?? 'ui_1');
         final valueText = (args['valueText'] as String? ?? '');
         final reqTitle = (args['windowTitle'] as String? ?? '').trim();
@@ -801,13 +962,19 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         if (action == 'bring_to_front' || action == 'focus_window') {
           detail = 'LINUX_WMCTRL_ACTIVATED';
         } else if (action == 'close_window' || action == 'kill_app') {
-          await Process.run('xdotool', <String>['getactivewindow', 'windowclose']);
+          await Process.run('xdotool', <String>[
+            'getactivewindow',
+            'windowclose',
+          ]);
           detail = 'LINUX_WINDOW_CLOSED';
         } else if (action == 'shortcut' || refId.startsWith('shortcut:')) {
           final spec = refId.startsWith('shortcut:')
               ? refId.substring(9)
               : (valueText.isEmpty ? refId : valueText);
-          await Process.run('xdotool', <String>['key', spec.replaceAll('cmd', 'ctrl')]);
+          await Process.run('xdotool', <String>[
+            'key',
+            spec.replaceAll('cmd', 'ctrl'),
+          ]);
           detail = 'LINUX_SHORTCUT:$spec';
         } else if (action.startsWith('scroll')) {
           final btn = action.contains('up')
@@ -825,7 +992,8 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           throw XunaHostChannelException(
             status: XtpStatus.unsupported,
             errorCode: 'platform_unsupported',
-            message: 'Element-targeted action "$action" is not implemented on Linux.',
+            message:
+                'Element-targeted action "$action" is not implemented on Linux.',
           );
         }
         return <String, Object?>{

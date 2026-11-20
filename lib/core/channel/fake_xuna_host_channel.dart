@@ -53,30 +53,30 @@ class FakeXunaHostChannel implements XunaHostChannel {
     browser: 'edge',
   );
   String clipboardTextResult = '';
-  ActiveWindowContextSnapshot activeWindowContextResult =
-      const ActiveWindowContextSnapshot(
-        appName: 'VS Code',
-        processName: 'Code.exe',
-        windowTitle: 'host_tool_dispatcher.dart - xuna_pet - Visual Studio Code',
-        focusedRole: 'editor',
-        visibleText:
-            'UnhandledException: SocketException: Connection refused on port 47821',
-        isElevated: false,
-      );
-  BrowserPageSemanticSnapshot browserPageSummaryResult =
-      const BrowserPageSemanticSnapshot(
-        url: 'https://github.com/xthao28/xuna_pet/pull/42',
-        browser: 'edge',
-        title: 'feat(udc): Ambient Co-Pilot & Beam #42',
-        headings: <String>[
-          'feat(udc): Ambient Co-Pilot & Beam #42',
-          'Files changed (8)',
-          'All checks have passed',
-        ],
-        actions: <String>['Merge pull request', 'Add a review'],
-        excerpt:
-            'Implements S13.1 window.active_context, S13.2 browser.read_page, and S13.3 beam.transfer with zero firmware overhead.',
-      );
+  ActiveWindowContextSnapshot
+  activeWindowContextResult = const ActiveWindowContextSnapshot(
+    appName: 'VS Code',
+    processName: 'Code.exe',
+    windowTitle: 'host_tool_dispatcher.dart - xuna_pet - Visual Studio Code',
+    focusedRole: 'editor',
+    visibleText:
+        'UnhandledException: SocketException: Connection refused on port 47821',
+    isElevated: false,
+  );
+  BrowserPageSemanticSnapshot
+  browserPageSummaryResult = const BrowserPageSemanticSnapshot(
+    url: 'https://github.com/xthao28/xuna_pet/pull/42',
+    browser: 'edge',
+    title: 'feat(udc): Ambient Co-Pilot & Beam #42',
+    headings: <String>[
+      'feat(udc): Ambient Co-Pilot & Beam #42',
+      'Files changed (8)',
+      'All checks have passed',
+    ],
+    actions: <String>['Merge pull request', 'Add a review'],
+    excerpt:
+        'Implements S13.1 window.active_context, S13.2 browser.read_page, and S13.3 beam.transfer with zero firmware overhead.',
+  );
 
   /// Optional artificial delay before tool calls return (to test deadlines and
   /// cancellation).
@@ -137,13 +137,19 @@ class FakeXunaHostChannel implements XunaHostChannel {
     return nowPlayingResult;
   }
 
+  String? lastLaunchedOpenPath;
+  bool appLaunchAlreadyRunningResult = false;
+
   @override
-  Future<void> appLaunch({
+  Future<AppLaunchResult> appLaunch({
     required AppLaunchKind kind,
     required String target,
+    String? openPath,
   }) async {
     invokedMethods.add('appLaunch:${kind.wire}');
+    lastLaunchedOpenPath = openPath;
     await _delayAndThrowIfConfigured();
+    return AppLaunchResult(alreadyRunning: appLaunchAlreadyRunningResult);
   }
 
   /// Addresses [resolveHostAddresses] returns per host. Hosts not listed
@@ -234,7 +240,9 @@ class FakeXunaHostChannel implements XunaHostChannel {
     String? windowTitle,
     int maxNodes = 35,
   }) async {
-    invokedMethods.add('inspectWindowUiTree:${windowTitle ?? 'active'}:$maxNodes');
+    invokedMethods.add(
+      'inspectWindowUiTree:${windowTitle ?? 'active'}:$maxNodes',
+    );
     await _delayAndThrowIfConfigured();
     return WindowUiTreeSnapshot(
       windowTitle: windowTitle ?? activeWindowContextResult.windowTitle,
@@ -293,6 +301,31 @@ class FakeXunaHostChannel implements XunaHostChannel {
       detail: action == 'set_value_ref' ? 'AX_VALUE_SET' : 'AX_PRESSED',
       windowTitle: windowTitle ?? activeWindowContextResult.windowTitle,
     );
+  }
+
+  List<Map<String, Object?>>? lastCaptureSomMarks;
+
+  HostScreenCaptureResult screenCaptureResult = const HostScreenCaptureResult(
+    width: 1280,
+    height: 720,
+    dataBase64:
+        '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB//Z',
+  );
+
+  @override
+  Future<HostScreenCaptureResult> captureScreen({
+    String scope = 'active_window',
+    int maxEdge = 1280,
+    List<Map<String, Object?>>? somMarks,
+  }) async {
+    invokedMethods.add('captureScreen:$scope:$maxEdge');
+    lastCaptureSomMarks = somMarks == null
+        ? null
+        : List<Map<String, Object?>>.unmodifiable(
+            somMarks.map(Map<String, Object?>.unmodifiable),
+          );
+    await _delayAndThrowIfConfigured();
+    return screenCaptureResult;
   }
 
   @override

@@ -1095,7 +1095,7 @@ inline void ExecuteInvokeWindowUiControl(
     std::vector<InteractiveUiaNode> items;
     int redacted_dummy = 0;
     if (!applied) {
-      CollectInteractiveUiaNodes(uia, hwnd, 60, true, &items, &redacted_dummy);
+      CollectInteractiveUiaNodes(uia, hwnd, 120, true, &items, &redacted_dummy);
     }
 
     if (!applied && lower_act.rfind("scroll", 0) == 0) {

@@ -92,6 +92,26 @@ void main() {
                 };
               case 'requestPermission':
                 return <String, Object?>{'state': 'granted'};
+              case 'readActiveWindowContext':
+                return <String, Object?>{
+                  'appName': 'VS Code',
+                  'processName': 'Code.exe',
+                  'windowTitle': 'main.dart',
+                  'focusedRole': 'editor',
+                  'visibleText': 'hello',
+                  'isElevated': false,
+                  'runningApps': <Object?>[
+                    <String, Object?>{
+                      'name': 'Visual Studio Code',
+                      'bundleId': 'com.microsoft.VSCode',
+                    },
+                    <String, Object?>{
+                      'name': '1Password',
+                      'bundleId': 'com.1password.1password',
+                    },
+                    'malformed',
+                  ],
+                };
               case 'hostInfo':
                 return <String, Object?>{
                   'platform': 'windows',
@@ -116,10 +136,11 @@ void main() {
       expect(np.title, 'Song A');
       expect(np.app, 'spotify');
 
-      await hostChannel.appLaunch(
+      final launchRes = await hostChannel.appLaunch(
         kind: AppLaunchKind.exe,
         target: r'C:\Program Files\App\app.exe',
       );
+      expect(launchRes.alreadyRunning, isFalse);
       await hostChannel.urlOpen('https://github.com');
       final tabSnap = await hostChannel.browserCurrentUrl(browser: 'edge');
       expect(tabSnap.url, 'https://github.com/xthao28/xuna_pet');
@@ -149,7 +170,10 @@ void main() {
 
       await hostChannel.showToast(title: 'XUNA', body: 'XUNA: đã mở VS Code');
       expect(await hostChannel.displayWake(), isTrue);
-      expect(await hostChannel.clipboardReadText(), 'Exception: stack overflow');
+      expect(
+        await hostChannel.clipboardReadText(),
+        'Exception: stack overflow',
+      );
       expect(await hostChannel.lockScreen(), isTrue);
 
       expect(recordedCalls.map((c) => c.method).toList(), <String>[
@@ -170,6 +194,11 @@ void main() {
         'clipboardReadText',
         'lockScreen',
       ]);
+
+      final ctxSnap = await hostChannel.readActiveWindowContext();
+      expect(ctxSnap.runningApps, hasLength(1));
+      expect(ctxSnap.runningApps.first.name, 'Visual Studio Code');
+      expect(ctxSnap.runningApps.first.bundleId, 'com.microsoft.VSCode');
     },
   );
 
@@ -233,6 +262,26 @@ void main() {
           .setMockMethodCallHandler(channel, (call) async {
             recordedCalls.add(call);
             switch (call.method) {
+              case 'readActiveWindowContext':
+                return <String, Object?>{
+                  'appName': 'VS Code',
+                  'processName': 'Code.exe',
+                  'windowTitle': 'main.dart',
+                  'focusedRole': 'editor',
+                  'visibleText': 'hello',
+                  'isElevated': false,
+                  'runningApps': <Object?>[
+                    <String, Object?>{
+                      'name': 'Visual Studio Code',
+                      'bundleId': 'com.microsoft.VSCode',
+                    },
+                    <String, Object?>{
+                      'name': '1Password',
+                      'bundleId': 'com.1password.1password',
+                    },
+                    'malformed',
+                  ],
+                };
               case 'hostInfo':
                 return <String, Object?>{
                   'platform': 'macos',
@@ -243,7 +292,7 @@ void main() {
                 final map = call.arguments as Map<Object?, Object?>;
                 expect(map['kind'], 'bundle');
                 expect(map['target'], 'com.apple.Music');
-                return <String, Object?>{};
+                return <String, Object?>{'alreadyRunning': true};
               case 'workflowRun':
                 final map = call.arguments as Map<Object?, Object?>;
                 expect(map['kind'], 'shortcut');
@@ -268,10 +317,11 @@ void main() {
       expect(info.platform, HostPlatform.macos);
       expect(info.osVersion, '14.5.0');
 
-      await hostChannel.appLaunch(
+      final macLaunch = await hostChannel.appLaunch(
         kind: AppLaunchKind.bundle,
         target: 'com.apple.Music',
       );
+      expect(macLaunch.alreadyRunning, isTrue);
       await hostChannel.workflowRun(
         kind: WorkflowKind.shortcut,
         target: 'Focus Mode',
@@ -392,8 +442,10 @@ void main() {
       });
 
       final manifest = await dispatcher.buildManifest();
-      final ui = manifest.firstWhere((t) => t.name == 'ui.accessibility_tree');
-      expect(ui.policy.permission, XtpPermissionState.notDetermined);
+      final activeCtx = manifest.firstWhere(
+        (t) => t.name == 'window.active_context',
+      );
+      expect(activeCtx.policy.permission, XtpPermissionState.notDetermined);
       expect(
         manifest.any((t) => t.policy.permission == XtpPermissionState.granted),
         isFalse,
@@ -404,6 +456,95 @@ void main() {
           'accessibility': 'not_determined',
           'notifications': 'not_determined',
         },
+      );
+    },
+  );
+
+  test(
+    'captureScreen forwards non-empty somMarks, omits somMarks when null or empty, and maps errors fail-closed',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            recordedCalls.add(call);
+            if (call.method == 'captureScreen') {
+              final args = (call.arguments as Map<Object?, Object?>)
+                  .cast<String, Object?>();
+              if (args['maxEdge'] == 400) {
+                return <String, Object?>{
+                  'mimeType': 'image/jpeg',
+                  'width': 400,
+                  'height': 300,
+                  'dataBase64': '',
+                };
+              }
+              if (args['scope'] == 'denied_case') {
+                throw PlatformException(
+                  code: 'screen_recording',
+                  message: 'Missing TCC permission',
+                );
+              }
+              return <String, Object?>{
+                'mimeType': 'image/jpeg',
+                'width': 1280,
+                'height': 720,
+                'dataBase64': '/9j/4AAQSkZJRgABAQAAAQABAAD/',
+              };
+            }
+            return <String, Object?>{};
+          });
+
+      // Plain capture omits somMarks
+      await hostChannel.captureScreen(scope: 'active_window', maxEdge: 1280);
+      final plainArgs = (recordedCalls.last.arguments as Map<Object?, Object?>)
+          .cast<String, Object?>();
+      expect(plainArgs.containsKey('somMarks'), isFalse);
+
+      // Empty list omits somMarks
+      await hostChannel.captureScreen(
+        scope: 'active_window',
+        maxEdge: 1280,
+        somMarks: const <Map<String, Object?>>[],
+      );
+      final emptyArgs = (recordedCalls.last.arguments as Map<Object?, Object?>)
+          .cast<String, Object?>();
+      expect(emptyArgs.containsKey('somMarks'), isFalse);
+
+      // Non-empty somMarks are forwarded
+      final marks = <Map<String, Object?>>[
+        <String, Object?>{
+          'index': 1,
+          'bounds': <double>[0.1, 0.2, 0.3, 0.4],
+          'role': 'button',
+        },
+      ];
+      final res = await hostChannel.captureScreen(
+        scope: 'active_window',
+        maxEdge: 1024,
+        somMarks: marks,
+      );
+      expect(res.width, 1280);
+      final somArgs = (recordedCalls.last.arguments as Map<Object?, Object?>)
+          .cast<String, Object?>();
+      expect(somArgs['somMarks'], equals(marks));
+
+      // Empty dataBase64 fails closed with capture_failed
+      await expectLater(
+        () => hostChannel.captureScreen(scope: 'active_window', maxEdge: 400),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.failed)
+              .having((e) => e.errorCode, 'errorCode', 'capture_failed'),
+        ),
+      );
+
+      // Missing screen recording permission propagates screen_recording
+      await expectLater(
+        () => hostChannel.captureScreen(scope: 'denied_case', maxEdge: 640),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.needsPermission)
+              .having((e) => e.errorCode, 'errorCode', 'screen_recording'),
+        ),
       );
     },
   );

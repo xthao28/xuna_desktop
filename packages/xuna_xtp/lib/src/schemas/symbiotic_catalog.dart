@@ -3,7 +3,7 @@ library;
 
 import 'core_types.dart';
 
-/// Builds the 5 `UDC-15` Live Symbiotic Co-Pilot tool descriptors (`S15.1`–`S15.4`):
+/// Builds the 3 `UDC-15` Live Symbiotic Co-Pilot tool descriptors (`S15.1`–`S15.4`):
 /// - `clipboard.write` (`R2`, `reversible: false`, family `app`)
 /// - `dev.ports` (`R1`, `observes: true`, family `app`)
 /// - `system.vitals` (`R1`, `observes: true`, family `host`)
@@ -58,6 +58,7 @@ List<ToolDescriptor> buildSymbioticCopilotTools({
         'properties': <String, Object?>{
           'ports': <String, Object?>{
             'type': 'array',
+            'maxItems': 16,
             'items': <String, Object?>{
               'type': 'integer',
               'minimum': 1024,
@@ -157,7 +158,7 @@ List<ToolDescriptor> buildSymbioticEvolutionTools({
           'project': <String, Object?>{
             'type': 'string',
             'minLength': 1,
-            'maxLength': 80,
+            'maxLength': 64,
           },
           'nextStepHint': <String, Object?>{
             'type': 'string',
@@ -209,7 +210,7 @@ List<ToolDescriptor> buildSymbioticEvolutionTools({
           'project': <String, Object?>{
             'type': 'string',
             'minLength': 1,
-            'maxLength': 80,
+            'maxLength': 64,
           },
           'ide': <String, Object?>{
             'type': 'string',
@@ -508,7 +509,7 @@ List<ToolDescriptor> buildSymbioticEvolutionTools({
   ];
 }
 
-/// Builds the 6 `SYM-2` Autonomous Watchdogs, Executive Coach, Desk Whisper & Habit Miner tools (`S2.1`):
+/// Builds the 5 `SYM-2` Autonomous Watchdogs, Executive Coach, Desk Whisper & Habit Miner tools (`S2.1`):
 /// - `watchdog.watch_process_or_port` (`R1`, `observes: true`, family `app`)
 /// - `watchdog.watch_resource_threshold` (`R1`, `observes: true`, family `app`)
 /// - `watchdog.list_and_clear` (`R1`, `reversible: true`, family `app`)
@@ -669,7 +670,7 @@ List<ToolDescriptor> buildSymbioticSentinelTools({
           },
           'project': <String, Object?>{
             'type': 'string',
-            'maxLength': 80,
+            'maxLength': 64,
           },
         },
         'required': <String>['goal'],

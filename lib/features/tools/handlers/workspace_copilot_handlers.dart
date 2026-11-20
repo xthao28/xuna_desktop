@@ -276,7 +276,8 @@ class WindowActiveContextTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final maxChars = (context.arguments['maxChars'] as int?) ?? 600;
+    final rawMaxChars = (context.arguments['maxChars'] as int?) ?? 600;
+    final maxChars = rawMaxChars.clamp(80, 1200);
     final snap = await context.channel.readActiveWindowContext(
       maxChars: maxChars,
     );
@@ -295,26 +296,54 @@ class WindowActiveContextTool extends HostToolHandler {
     }
     final titleRedacted = redactSensitiveSelectionText(
       snap.windowTitle,
-      maxChars: 160,
+      maxChars: 120,
     );
+    final cleanAppName = snap.appName.length > 64
+        ? snap.appName.substring(0, 64)
+        : snap.appName;
+    final cleanFocusedRole = snap.focusedRole.length > 40
+        ? snap.focusedRole.substring(0, 40)
+        : snap.focusedRole;
     final textRedacted = redactSensitiveSelectionText(
       snap.visibleText,
       maxChars: maxChars,
     );
     final totalRedacted =
         titleRedacted.redactedCount + textRedacted.redactedCount;
+    final runningAppsPayload = <Map<String, String>>[];
+    for (final app in snap.runningApps) {
+      final cleanName = app.name.trim();
+      final cleanBundle = app.bundleId.trim();
+      if (cleanName.isEmpty || cleanBundle.isEmpty) {
+        continue;
+      }
+      if (isHardDeniedAppOrProcess(cleanName) ||
+          isHardDeniedAppOrProcess(cleanBundle)) {
+        continue;
+      }
+      runningAppsPayload.add(<String, String>{
+        'name': cleanName.length > 64 ? cleanName.substring(0, 64) : cleanName,
+        'bundleId': cleanBundle.length > 128
+            ? cleanBundle.substring(0, 128)
+            : cleanBundle,
+      });
+      if (runningAppsPayload.length >= 64) {
+        break;
+      }
+    }
     return ToolHandlerOutput(
       text:
-          'Đã đọc ngữ cảnh cửa sổ ${snap.appName} (${textRedacted.text.length} ký tự, ẩn $totalRedacted mã nhạy cảm).',
+          'Đã đọc ngữ cảnh cửa sổ $cleanAppName (${textRedacted.text.length} ký tự, ẩn $totalRedacted mã nhạy cảm).',
       structuredContent: <String, Object?>{
-        'appName': snap.appName,
+        'appName': cleanAppName,
         'windowTitle': titleRedacted.text,
-        'focusedRole': snap.focusedRole,
+        'focusedRole': cleanFocusedRole,
         'visibleSummary': textRedacted.text,
         'truncated': textRedacted.truncated,
         'redactedCount': totalRedacted,
+        'runningApps': runningAppsPayload,
       },
-      toastBody: 'đã đọc cửa sổ ${snap.appName}',
+      toastBody: 'đã đọc cửa sổ $cleanAppName',
     );
   }
 }

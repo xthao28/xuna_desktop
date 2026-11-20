@@ -276,30 +276,6 @@ const Set<String> allowedMemoryVaultTargetFiles = <String>{
   'MEMORY_JOURNAL.md',
 };
 
-/// Allowed actions for `ui.accessibility_tree` (`UIA-1` Zero-Screenshot Native OS UI Automation).
-///
-/// Observation only. `ui.accessibility_tree` is declared R1 and is not part of
-/// the approved computer-use session, so it must never change another
-/// application's state. Clicking, typing, scrolling, key presses, menus and
-/// closing windows go through `input.*` inside an approved `cu.session_start`
-/// session, where target resolution and approvals apply.
-const Set<String> allowedUiAccessibilityActions = <String>{
-  'inspect_window',
-};
-
-/// Security-sensitive window title substrings permanently blocked for `ui.accessibility_tree` (`UIA-1`).
-const List<String> forbiddenUiWindowPatterns = <String>[
-  '1password',
-  'bitwarden',
-  'keepass',
-  'lastpass',
-  'keychain',
-  'credential manager',
-  'windows security',
-  'regedit',
-  'registry editor',
-];
-
 /// Normative allowlist of key combinations for `input.key` (`UDC-8` §4.2).
 const Set<String> allowedInputKeyCombos = <String>{
   'Enter',
@@ -823,8 +799,7 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   if (prefix == 'browser' || prefix == 'web' || toolName == 'tv.cast_media') {
     return ToolFamily.url;
   }
-  if (toolName == 'tv.list_devices' ||
-      toolName == 'tv.control') {
+  if (toolName == 'tv.list_devices' || toolName == 'tv.control') {
     return ToolFamily.media;
   }
   if (prefix == 'system') {
@@ -860,8 +835,7 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
       prefix == 'reminders' ||
       prefix == 'calendar' ||
       prefix == 'mail' ||
-      toolName == 'tv.launch_app' ||
-      toolName == 'ui.accessibility_tree') {
+      toolName == 'tv.launch_app') {
     return ToolFamily.app;
   }
   for (final family in ToolFamily.values) {

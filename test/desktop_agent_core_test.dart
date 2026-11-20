@@ -704,7 +704,7 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(78));
+        expect(toolsList, hasLength(77));
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -1198,6 +1198,25 @@ void main() {
                 n.method == 'xuna/stop' && n.params['reason'] == 'owner_host',
           ),
           isTrue,
+        );
+        stopController.resumeFromTray();
+
+        // Inbound xuna/stop {reason: "owner_host"} from backend must NOT echo xuna/stop back upstream
+        sentFrames.clear();
+        fakeWs.inbound.add(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'method': 'xuna/stop',
+            'params': <String, Object?>{'reason': 'owner_host'},
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(stopController.isStopped, isTrue);
+        expect(
+          sentFrames.whereType<XtpNotification>().any(
+            (n) => n.method == 'xuna/stop',
+          ),
+          isFalse,
         );
         stopController.resumeFromTray();
 
@@ -2077,7 +2096,7 @@ void main() {
 
           final now = DateTime.utc(2026, 10, 31, 14, 0);
 
-          // 1. S13.1: window.active_context reads active window and redacts secrets
+          // 1. S13.1 + M0: window.active_context reads active window, redacts secrets, and filters runningApps
           channel.activeWindowContextResult = const ActiveWindowContextSnapshot(
             appName: 'VS Code',
             processName: 'Code.exe',
@@ -2086,6 +2105,16 @@ void main() {
             visibleText:
                 'Database connection error withBearer: Bearer eyJhbGciOiJIUzI1NiJ9',
             isElevated: false,
+            runningApps: <RunningAppInfo>[
+              RunningAppInfo(
+                name: 'Visual Studio Code',
+                bundleId: 'com.microsoft.VSCode',
+              ),
+              RunningAppInfo(
+                name: '1Password',
+                bundleId: 'com.1password.1password',
+              ),
+            ],
           );
           final winResp = await udc13Dispatcher.dispatch(
             requestId: 901,
@@ -2101,6 +2130,16 @@ void main() {
               winResp.result['structuredContent'] as Map<String, Object?>;
           expect(winSc['appName'], equals('VS Code'));
           expect(winSc['redactedCount'], greaterThanOrEqualTo(2));
+          expect(winSc['truncated'], isFalse);
+          expect(
+            winSc['runningApps'],
+            equals(const <Map<String, String>>[
+              <String, String>{
+                'name': 'Visual Studio Code',
+                'bundleId': 'com.microsoft.VSCode',
+              },
+            ]),
+          );
           expect(
             winSc['windowTitle'] as String,
             isNot(contains('sk-secret987654')),
@@ -2109,6 +2148,31 @@ void main() {
             winSc['visibleSummary'] as String,
             isNot(contains('eyJhbGci')),
           );
+
+          // M0 #2: WindowActiveContextTool clamps appName<=64, windowTitle<=120, focusedRole<=40
+          channel.activeWindowContextResult = ActiveWindowContextSnapshot(
+            appName: 'A' * 80,
+            processName: 'longapp.exe',
+            windowTitle: 'T' * 160,
+            focusedRole: 'R' * 60,
+            visibleText: 'Hello workspace context',
+            isElevated: false,
+          );
+          final clampResp = await udc13Dispatcher.dispatch(
+            requestId: 9011,
+            params: const ToolsCallParams(
+              name: 'window.active_context',
+              arguments: <String, Object?>{'maxChars': 200},
+              invocationId: '90110000-0000-4000-8000-000000000001',
+              deadlineMs: 5000,
+            ),
+            nowUtc: now,
+          );
+          final clampSc =
+              clampResp.result['structuredContent'] as Map<String, Object?>;
+          expect((clampSc['appName'] as String).length, equals(64));
+          expect((clampSc['windowTitle'] as String).length, equals(120));
+          expect((clampSc['focusedRole'] as String).length, equals(40));
 
           // Hard-denied app (1Password) is refused with denylisted_target_forbidden
           channel.activeWindowContextResult = const ActiveWindowContextSnapshot(
@@ -2385,15 +2449,16 @@ void main() {
 
           final smartHomeCalls = <String>[];
           final smartHomeBridge = AutoSmartHomeBridge(
-            serviceInvoker: ({
-              required entityId,
-              required domain,
-              required action,
-              value,
-            }) async {
-              smartHomeCalls.add('$entityId:$action:${value ?? ''}');
-              return const <String, Object?>{'ok': true};
-            },
+            serviceInvoker:
+                ({
+                  required entityId,
+                  required domain,
+                  required action,
+                  value,
+                }) async {
+                  smartHomeCalls.add('$entityId:$action:${value ?? ''}');
+                  return const <String, Object?>{'ok': true};
+                },
             seedEntities: const <SmartHomeEntity>[
               SmartHomeEntity(
                 entityId: 'light.living_room',
@@ -2573,7 +2638,10 @@ void main() {
             equals('smarthome_domain_forbidden'),
           );
           // The dim really went through the bridge; the denied lock never reached it.
-          expect(smartHomeCalls, equals(<String>['light.living_room:set_brightness:15']));
+          expect(
+            smartHomeCalls,
+            equals(<String>['light.living_room:set_brightness:15']),
+          );
         },
       );
 
@@ -2595,10 +2663,10 @@ void main() {
             ],
           );
           Matcher unsupported(String code) => throwsA(
-                isA<XunaHostChannelException>()
-                    .having((e) => e.status, 'status', XtpStatus.unsupported)
-                    .having((e) => e.errorCode, 'errorCode', code),
-              );
+            isA<XunaHostChannelException>()
+                .having((e) => e.status, 'status', XtpStatus.unsupported)
+                .having((e) => e.errorCode, 'errorCode', code),
+          );
           expect(
             () => tv.executeControl(action: 'volume_up'),
             unsupported('tv_bridge_not_configured'),
@@ -3036,7 +3104,10 @@ void main() {
           // never a canned count or a made-up sample file.
           expect(synthSc['detectedItemsCount'], equals(0));
           expect(synthSc['dryRunSample'] as String, contains('Chưa tìm thấy'));
-          expect(synthSc['dryRunSample'] as String, isNot(contains('HD_001248')));
+          expect(
+            synthSc['dryRunSample'] as String,
+            isNot(contains('HD_001248')),
+          );
 
           final runSkillArgs = <String, Object?>{
             'skillId': forgedId,
@@ -3551,100 +3622,52 @@ void main() {
               contains('[ref=e2] button "Tải hóa đơn PDF"'),
             );
 
-            // UIA-2: Zero-Screenshot Native OS UI Automation (inspect_window, invoke_ref, set_value_ref)
-            final uiaInspectResp = await sym1Dispatcher.dispatch(
+            // M0: ui.accessibility_tree is removed from manifest & fails closed on dispatch.
+            final symManifest = await sym1Dispatcher.buildManifest();
+            expect(
+              symManifest.any((t) => t.name == 'ui.accessibility_tree'),
+              isFalse,
+            );
+            final uiaRemovedResp = await sym1Dispatcher.dispatch(
               requestId: 1239,
               params: const ToolsCallParams(
                 name: 'ui.accessibility_tree',
                 arguments: <String, Object?>{
                   'action': 'inspect_window',
                   'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
-                  'maxNodes': 20,
                 },
                 invocationId: '12390000-0000-4000-8000-000000000039',
                 deadlineMs: 5000,
               ),
               nowUtc: now,
             );
-            final uiaInspectSc =
-                uiaInspectResp.result['structuredContent']
-                    as Map<String, Object?>;
-            expect(uiaInspectSc['screenshotBytesUsed'], equals(0));
-            expect(uiaInspectSc['nodeCount'], greaterThanOrEqualTo(3));
-            expect(
-              uiaInspectSc['compactUiTree'] as String,
-              contains('[ref=ui_1]'),
-            );
+            final uiaRemovedMeta =
+                uiaRemovedResp.result['_meta'] as Map<String, Object?>;
+            expect(uiaRemovedMeta['xuna/status'], equals('denied'));
+            expect(uiaRemovedMeta['xuna/errorCode'], equals('policy_blocked'));
 
-            final uiaInvokeResp = await sym1Dispatcher.dispatch(
+            // M0: app.launch forwards alreadyRunning from AppLaunchResult.
+            channel.appLaunchAlreadyRunningResult = true;
+            const launchArgs = <String, Object?>{'id': 'vscode'};
+            final launchResp = await sym1Dispatcher.dispatch(
               requestId: 1240,
-              params: const ToolsCallParams(
-                name: 'ui.accessibility_tree',
-                arguments: <String, Object?>{
-                  'action': 'invoke_ref',
-                  'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
-                  'refId': 'ui_3',
-                },
+              params: ToolsCallParams(
+                name: 'app.launch',
+                arguments: launchArgs,
                 invocationId: '12400000-0000-4000-8000-000000000040',
                 deadlineMs: 5000,
+                approval: ApprovalToken(
+                  approvalId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c55',
+                  argsSha256: argsSha256(launchArgs),
+                  expiresAt: now.add(const Duration(seconds: 60)),
+                  scope: 'once',
+                ),
               ),
               nowUtc: now,
             );
-            // ui.accessibility_tree is read-only: acting on a control is not a
-            // valid action and must never reach the native channel.
-            final uiaInvokeMeta =
-                uiaInvokeResp.result['_meta'] as Map<String, Object?>;
-            expect(uiaInvokeMeta['xuna/status'], equals('invalid_args'));
-            expect(uiaInvokeMeta['xuna/errorCode'], equals('schema_mismatch'));
-
-            final uiaSetValResp = await sym1Dispatcher.dispatch(
-              requestId: 1241,
-              params: const ToolsCallParams(
-                name: 'ui.accessibility_tree',
-                arguments: <String, Object?>{
-                  'action': 'set_value_ref',
-                  'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
-                  'refId': 'ui_1',
-                  'valueText': 'HoaDon_Thang_11_2026',
-                },
-                invocationId: '12410000-0000-4000-8000-000000000041',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final uiaSetValMeta =
-                uiaSetValResp.result['_meta'] as Map<String, Object?>;
-            expect(uiaSetValMeta['xuna/status'], equals('invalid_args'));
-            expect(uiaSetValMeta['xuna/errorCode'], equals('schema_mismatch'));
-            expect(
-              channel.invokedMethods.where(
-                (m) => m.startsWith('invokeWindowUiControl'),
-              ),
-              isEmpty,
-            );
-
-            // A native accessibility failure is reported, never replaced by an invented tree.
-            channel.nextException = const XunaHostChannelException(
-              status: XtpStatus.failed,
-              errorCode: 'os_error',
-            );
-            final uiaFailResp = await sym1Dispatcher.dispatch(
-              requestId: 1242,
-              params: const ToolsCallParams(
-                name: 'ui.accessibility_tree',
-                arguments: <String, Object?>{
-                  'action': 'inspect_window',
-                  'windowTitle': 'Excel - Bảng Kê Hóa Đơn',
-                },
-                invocationId: '12420000-0000-4000-8000-000000000042',
-                deadlineMs: 5000,
-              ),
-              nowUtc: now,
-            );
-            final uiaFailMeta =
-                uiaFailResp.result['_meta'] as Map<String, Object?>;
-            expect(uiaFailMeta['xuna/status'], equals('failed'));
-            expect(uiaFailMeta['xuna/errorCode'], equals('os_error'));
+            final launchSc =
+                launchResp.result['structuredContent'] as Map<String, Object?>;
+            expect(launchSc['alreadyRunning'], isTrue);
 
             // Without rawHtml the snapshot tool refuses instead of parsing a sample page.
             final snapNoHtmlResp = await sym1Dispatcher.dispatch(
@@ -3763,25 +3786,27 @@ void main() {
       expect(snap.describeVi(), isNot(contains('Pin')));
     });
 
-    test('a battery watchdog fails closed when the battery is not measurable',
-        () async {
-      final svc = AutoSymbioticService(
-        vitalsReader: () async => const SystemVitalsSnapshot(
-          memoryUsedPercent: 40,
-          healthStatus: 'healthy',
-        ),
-      );
-      await expectLater(
-        svc.registerResourceWatchdog(metric: 'battery_below', threshold: 90),
-        throwsA(
-          isA<XunaHostChannelException>().having(
-            (e) => e.errorCode,
-            'errorCode',
-            'metric_unavailable',
+    test(
+      'a battery watchdog fails closed when the battery is not measurable',
+      () async {
+        final svc = AutoSymbioticService(
+          vitalsReader: () async => const SystemVitalsSnapshot(
+            memoryUsedPercent: 40,
+            healthStatus: 'healthy',
           ),
-        ),
-      );
-    });
+        );
+        await expectLater(
+          svc.registerResourceWatchdog(metric: 'battery_below', threshold: 90),
+          throwsA(
+            isA<XunaHostChannelException>().having(
+              (e) => e.errorCode,
+              'errorCode',
+              'metric_unavailable',
+            ),
+          ),
+        );
+      },
+    );
 
     test('a snapshot with no measurement says so', () async {
       final svc = AutoSymbioticService(
@@ -3791,5 +3816,70 @@ void main() {
       final snap = await svc.readSystemVitals();
       expect(snap.hasAnyMeasurement, isFalse);
     });
+  });
+
+  group('M5 AuditLogStore concurrency serialization', () {
+    test(
+      '25-way concurrent AuditLogStore.append preserves all 25 records even after a write error',
+      () async {
+        final now = DateTime.utc(2026, 11, 19, 12, 0, 0);
+        final ids = List<String>.generate(
+          25,
+          (i) => '00000000-0000-4000-8000-${i.toString().padLeft(12, '0')}',
+        );
+        await Future.wait(
+          ids.map(
+            (id) => auditStore.append(
+              AuditLogRecord(
+                ts: now,
+                invocationId: id,
+                tool: 'host.status',
+                status: XtpStatus.ok,
+                durationMs: 1,
+              ),
+            ),
+          ),
+        );
+        final records = await auditStore.readRecent(limit: 50);
+        expect(records, hasLength(25));
+        expect(records.map((r) => r.invocationId).toSet(), equals(ids.toSet()));
+      },
+    );
+
+    test(
+      '10-way concurrent HostToolDispatcher.dispatch on host.status preserves all 10 audit records',
+      () async {
+        await policyStore.savePolicy(_sampleHealthyPolicy());
+        final ids = List<String>.generate(
+          10,
+          (i) => '11111111-1111-4000-8000-${i.toString().padLeft(12, '0')}',
+        );
+        final results = await Future.wait(
+          List<Future<XtpResponse>>.generate(
+            10,
+            (i) => dispatcher.dispatch(
+              requestId: i + 1,
+              params: ToolsCallParams(
+                name: 'host.status',
+                arguments: const <String, Object?>{},
+                invocationId: ids[i],
+                deadlineMs: 5000,
+              ),
+            ),
+          ),
+        );
+        expect(
+          results.every(
+            (r) =>
+                (r.result['_meta'] as Map<String, Object?>)['xuna/status'] ==
+                'ok',
+          ),
+          isTrue,
+        );
+        final records = await auditStore.readRecent(limit: 50);
+        expect(records, hasLength(10));
+        expect(records.map((r) => r.invocationId).toSet(), equals(ids.toSet()));
+      },
+    );
   });
 }

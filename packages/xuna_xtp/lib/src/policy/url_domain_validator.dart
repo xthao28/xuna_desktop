@@ -21,6 +21,9 @@ String _normalizeFullWidthToAscii(String input) {
 
 /// Validates and normalizes an entry in `host-policy.json` `urlDomains`.
 String normalizeDomainAllowlistEntry(String domain) {
+  if (domain.length > 253) {
+    throw const FormatException('Domain exceeds 253 characters');
+  }
   final normalized = _normalizeFullWidthToAscii(domain);
   final trimmed = normalized.trim().toLowerCase();
   if (trimmed.isEmpty ||

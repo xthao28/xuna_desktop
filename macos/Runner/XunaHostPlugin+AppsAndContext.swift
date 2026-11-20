@@ -23,7 +23,9 @@ extension XunaHostPlugin {
         let candidate = URL(fileURLWithPath: target)
         appUrl = FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
       } else {
-        appUrl = NSWorkspace.shared.urlForApplication(withBundleIdentifier: target)
+        appUrl = onMainThread {
+          NSWorkspace.shared.urlForApplication(withBundleIdentifier: target)
+        }
       }
     } else if kind == "exe" {
       appUrl = URL(fileURLWithPath: target)
@@ -37,53 +39,161 @@ extension XunaHostPlugin {
       return
     }
 
-    if #available(macOS 10.15, *) {
-      let config = NSWorkspace.OpenConfiguration()
-      config.arguments = [] // Never pass arguments.
-      config.activates = true
-      config.environment = Self.sanitizedChildEnvironment()
-
-      let semaphore = DispatchSemaphore(value: 0)
-      var launchError: Error?
-      var launchedApp: NSRunningApplication?
-      NSWorkspace.shared.openApplication(at: resolvedUrl, configuration: config) { runningApp, err in
-        launchedApp = runningApp
-        launchError = err
-        semaphore.signal()
+    var validatedOpenFileUrl: URL?
+    if let rawOpenPath = (args["openPath"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !rawOpenPath.isEmpty
+    {
+      let homeDir = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
+      let candidateUrl = URL(fileURLWithPath: rawOpenPath).resolvingSymlinksInPath()
+      let candidatePath = candidateUrl.path
+      guard candidatePath.hasPrefix(homeDir + "/"),
+            FileManager.default.fileExists(atPath: candidatePath)
+      else {
+        replyError(result, code: "denied", message: "Target path must exist inside user home directory")
+        return
       }
-      _ = semaphore.wait(timeout: .now() + .seconds(8))
+      validatedOpenFileUrl = candidateUrl
+    }
 
-      if launchError == nil {
-        DispatchQueue.main.async {
+    if validatedOpenFileUrl == nil {
+      let resolvedStdPath = resolvedUrl.resolvingSymlinksInPath().standardizedFileURL.path
+      let targetBundleId = (kind == "bundle" && !target.hasPrefix("/") && !target.hasSuffix(".app"))
+        ? target.lowercased()
+        : (Bundle(url: resolvedUrl)?.bundleIdentifier?.lowercased() ?? "")
+      let targetName = target.lowercased()
+      let resolvedStem = resolvedUrl.deletingPathExtension().lastPathComponent.lowercased()
+
+      let existingApp: NSRunningApplication? = onMainThread {
+        let match = NSWorkspace.shared.runningApplications.first { running in
+          guard !running.isTerminated else { return false }
+          if !targetBundleId.isEmpty,
+             let bid = running.bundleIdentifier?.lowercased(),
+             bid == targetBundleId
+          {
+            return true
+          }
+          if let bPath = running.bundleURL?.resolvingSymlinksInPath().standardizedFileURL.path,
+             bPath == resolvedStdPath
+          {
+            return true
+          }
+          if let exePath = running.executableURL?.resolvingSymlinksInPath().standardizedFileURL.path,
+             exePath == resolvedStdPath
+          {
+            return true
+          }
+          if running.activationPolicy == .regular,
+             let locName = running.localizedName?.lowercased(),
+             !locName.isEmpty,
+             (locName == targetName || locName == resolvedStem)
+          {
+            return true
+          }
+          return false
+        }
+        if let found = match {
           if #available(macOS 14.0, *) {
-            launchedApp?.activate()
+            _ = found.activate()
           } else {
-            launchedApp?.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            _ = found.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
           }
         }
-        replySuccess(result, [:])
+        return match
+      }
+      if existingApp != nil {
+        replySuccess(result, ["launched": true, "alreadyRunning": true])
+        return
+      }
+    }
+
+    if #available(macOS 10.15, *) {
+      let semaphore = DispatchSemaphore(value: 0)
+      let launchLock = NSLock()
+      var launchError: Error?
+      var launchedApp: NSRunningApplication?
+      var callbackFired = false
+      onMainThread {
+        let config = NSWorkspace.OpenConfiguration()
+        config.arguments = [] // Never pass CLI flags.
+        config.activates = true
+        config.environment = Self.sanitizedChildEnvironment()
+        let completion: (NSRunningApplication?, Error?) -> Void = { runningApp, err in
+          launchLock.lock()
+          launchedApp = runningApp
+          launchError = err
+          callbackFired = true
+          launchLock.unlock()
+          semaphore.signal()
+        }
+        if let targetDocUrl = validatedOpenFileUrl {
+          NSWorkspace.shared.open(
+            [targetDocUrl],
+            withApplicationAt: resolvedUrl,
+            configuration: config,
+            completionHandler: completion
+          )
+        } else {
+          NSWorkspace.shared.openApplication(
+            at: resolvedUrl,
+            configuration: config,
+            completionHandler: completion
+          )
+        }
+      }
+      // Wait strictly off main thread (`uiActionQueue`) so completion callbacks never deadlock.
+      let waitRes = semaphore.wait(timeout: .now() + .seconds(8))
+      launchLock.lock()
+      let finalError = launchError
+      let finalApp = launchedApp
+      let didComplete = callbackFired
+      launchLock.unlock()
+
+      if waitRes == .success && didComplete && finalError == nil {
+        let targetPid = finalApp?.processIdentifier
+        for _ in 0..<20 {
+          let isFront = onMainThread { () -> Bool in
+            if #available(macOS 14.0, *) {
+              finalApp?.activate()
+            } else {
+              finalApp?.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            }
+            if let pid = targetPid {
+              return NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+            }
+            return true
+          }
+          if isFront {
+            break
+          }
+          Thread.sleep(forTimeInterval: 0.04)
+        }
+        replySuccess(result, ["launched": true, "alreadyRunning": false])
         return
       }
 
-      // Fallback via /usr/bin/open -a <appPath> (no shell, no arguments) if LaunchServices XPC failed
+      // Fallback via /usr/bin/open -a <appPath> [-- <openPath>] (no shell) if LaunchServices XPC failed
       let openProcess = Process()
       openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-      openProcess.arguments = ["-a", resolvedUrl.path]
+      if let targetDocUrl = validatedOpenFileUrl {
+        openProcess.arguments = ["-a", resolvedUrl.path, targetDocUrl.path]
+      } else {
+        openProcess.arguments = ["-a", resolvedUrl.path]
+      }
       openProcess.environment = Self.sanitizedChildEnvironment()
       do {
         try openProcess.run()
         openProcess.waitUntilExit()
         if openProcess.terminationStatus == 0 {
-          replySuccess(result, [:])
+          replySuccess(result, ["launched": true, "alreadyRunning": false])
           return
         }
       } catch {}
 
       replyError(result, code: "failed", message: "Failed to launch application")
     } else {
-      let opened = NSWorkspace.shared.open(resolvedUrl)
+      let opened = onMainThread { NSWorkspace.shared.open(resolvedUrl) }
       if opened {
-        replySuccess(result, [:])
+        replySuccess(result, ["launched": true, "alreadyRunning": false])
       } else {
         replyError(result, code: "failed", message: "Failed to launch application")
       }
@@ -100,7 +210,7 @@ extension XunaHostPlugin {
       return
     }
 
-    let opened = NSWorkspace.shared.open(url)
+    let opened = onMainThread { NSWorkspace.shared.open(url) }
     if opened {
       replySuccess(result, [:])
     } else {
@@ -123,9 +233,9 @@ extension XunaHostPlugin {
       ),
     ]
 
-    let runningBundles = Set(
-      NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
-    )
+    let runningBundles = onMainThread {
+      Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    }
 
     for candidate in candidates {
       if requested != "auto" && requested != candidate.id {
@@ -134,18 +244,14 @@ extension XunaHostPlugin {
       if !runningBundles.contains(candidate.bundleId) {
         continue
       }
-      var errDict: NSDictionary?
-      if let scriptObj = NSAppleScript(source: candidate.script) {
-        let output = scriptObj.executeAndReturnError(&errDict)
-        if let rawUrl = output.stringValue,
-           rawUrl.lowercased().hasPrefix("https://")
-        {
-          replySuccess(result, [
-            "url": rawUrl,
-            "browser": candidate.id,
-          ])
-          return
-        }
+      if let rawUrl = runAppleScript(candidate.script, timeoutSeconds: 2.0),
+         rawUrl.lowercased().hasPrefix("https://")
+      {
+        replySuccess(result, [
+          "url": rawUrl,
+          "browser": candidate.id,
+        ])
+        return
       }
     }
 
@@ -204,7 +310,16 @@ extension XunaHostPlugin {
   // MARK: - Permissions, Host Info & Toast
 
   func handlePermissions(result: @escaping FlutterResult) {
-    let axTrusted = AXIsProcessTrusted()
+    let (axTrusted, screenState) = onMainThread { () -> (Bool, String) in
+      let ax = AXIsProcessTrusted()
+      let scr: String
+      if #available(macOS 10.15, *) {
+        scr = CGPreflightScreenCaptureAccess() ? "granted" : "denied"
+      } else {
+        scr = "granted"
+      }
+      return (ax, scr)
+    }
     let axState = axTrusted ? "granted" : "denied"
 
     let bundles = [
@@ -217,23 +332,26 @@ extension XunaHostPlugin {
       automationMap[bundle] = checkAutomationPermission(bundleId: bundle, prompt: false)
     }
 
-    UNUserNotificationCenter.current().getNotificationSettings { settings in
-      let notifState: String
-      switch settings.authorizationStatus {
-      case .authorized, .provisional:
-        notifState = "granted"
-      case .denied:
-        notifState = "denied"
-      case .notDetermined:
-        notifState = "not_determined"
-      @unknown default:
-        notifState = "not_determined"
+    onMainThread {
+      UNUserNotificationCenter.current().getNotificationSettings { settings in
+        let notifState: String
+        switch settings.authorizationStatus {
+        case .authorized, .provisional:
+          notifState = "granted"
+        case .denied:
+          notifState = "denied"
+        case .notDetermined:
+          notifState = "not_determined"
+        @unknown default:
+          notifState = "not_determined"
+        }
+        self.replySuccess(result, [
+          "accessibility": axState,
+          "screenRecording": screenState,
+          "automation": automationMap,
+          "notifications": notifState,
+        ])
       }
-      self.replySuccess(result, [
-        "accessibility": axState,
-        "automation": automationMap,
-        "notifications": notifState,
-      ])
     }
   }
 
@@ -241,11 +359,31 @@ extension XunaHostPlugin {
     let kind = args["kind"] as? String ?? ""
 
     if kind == "accessibility" {
-      let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-      let trusted = AXIsProcessTrustedWithOptions(options)
+      let trusted = onMainThread { () -> Bool in
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+      }
       if !trusted,
          let prefUrl = URL(
            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+         )
+      {
+        openSystemSettingsUrl(prefUrl)
+      }
+      replySuccess(result, ["state": trusted ? "granted" : "denied"])
+      return
+    }
+
+    if kind == "screen_recording" || kind == "screenRecording" {
+      let trusted = onMainThread { () -> Bool in
+        if #available(macOS 10.15, *) {
+          return CGRequestScreenCaptureAccess()
+        }
+        return true
+      }
+      if !trusted,
+         let prefUrl = URL(
+           string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
          )
       {
         openSystemSettingsUrl(prefUrl)
@@ -263,11 +401,13 @@ extension XunaHostPlugin {
     }
 
     if kind == "notifications" {
-      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
-        if error != nil {
-          self.replySuccess(result, ["state": "not_determined"])
-        } else {
-          self.replySuccess(result, ["state": granted ? "granted" : "denied"])
+      onMainThread {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+          if error != nil {
+            self.replySuccess(result, ["state": "not_determined"])
+          } else {
+            self.replySuccess(result, ["state": granted ? "granted" : "denied"])
+          }
         }
       }
       return
@@ -285,46 +425,28 @@ extension XunaHostPlugin {
   }
 
   func checkAutomationPermission(bundleId: String, prompt: Bool) -> String {
-    let targetDesc = NSAppleEventDescriptor(bundleIdentifier: bundleId)
-    guard let aeDesc = targetDesc.aeDesc else {
-      return "not_determined"
-    }
-    let status = AEDeterminePermissionToAutomateTarget(
-      aeDesc,
-      typeWildCard,
-      typeWildCard,
-      prompt
-    )
-    switch status {
-    case noErr:
-      return "granted"
-    case OSStatus(errAEEventNotPermitted):
-      return "denied"
-    case OSStatus(procNotFound), -1744: // errAEEventWouldRequireUserConsent
-      return "not_determined"
-    default:
-      return "not_determined"
-    }
-  }
-
-  func queryNotificationPermissionState() -> String {
-    let semaphore = DispatchSemaphore(value: 0)
-    var state = "not_determined"
-    UNUserNotificationCenter.current().getNotificationSettings { settings in
-      switch settings.authorizationStatus {
-      case .authorized, .provisional:
-        state = "granted"
-      case .denied:
-        state = "denied"
-      case .notDetermined:
-        state = "not_determined"
-      @unknown default:
-        state = "not_determined"
+    return onMainThread {
+      let targetDesc = NSAppleEventDescriptor(bundleIdentifier: bundleId)
+      guard let aeDesc = targetDesc.aeDesc else {
+        return "not_determined"
       }
-      semaphore.signal()
+      let status = AEDeterminePermissionToAutomateTarget(
+        aeDesc,
+        typeWildCard,
+        typeWildCard,
+        prompt
+      )
+      switch status {
+      case noErr:
+        return "granted"
+      case OSStatus(errAEEventNotPermitted):
+        return "denied"
+      case OSStatus(procNotFound), -1744: // errAEEventWouldRequireUserConsent
+        return "not_determined"
+      default:
+        return "not_determined"
+      }
     }
-    _ = semaphore.wait(timeout: .now() + .seconds(3))
-    return state
   }
 
   func handleHostInfo(result: @escaping FlutterResult) {
@@ -355,7 +477,9 @@ extension XunaHostPlugin {
         content: content,
         trigger: nil
       )
-      UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+      onMainThread {
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+      }
     }
     replySuccess(result, ["shown": true])
   }
@@ -380,7 +504,7 @@ extension XunaHostPlugin {
   }
 
   func handleClipboardReadText(result: @escaping FlutterResult) {
-    let raw = NSPasteboard.general.string(forType: .string) ?? ""
+    let raw = onMainThread { NSPasteboard.general.string(forType: .string) ?? "" }
     let capped = raw.count > 2400 ? String(raw.prefix(2400)) : raw
     replySuccess(result, ["text": capped])
   }
@@ -404,10 +528,81 @@ extension XunaHostPlugin {
     }
   }
 
+  /// Classifies a live macOS `AXUIElement` into an exact normalized ADR-0015 D2 role
+  /// using `AXRole`, `AXSubrole`, and editability attributes (app-agnostic).
+  func classifyExactAxControlRole(_ element: AXUIElement) -> String? {
+    let role = (extractAxString(element, kAXRoleAttribute as String) ?? "").lowercased()
+    let subrole = (extractAxString(element, kAXSubroleAttribute as String) ?? "").lowercased()
+    if role.isEmpty { return nil }
+    if role.contains("secure") || subrole.contains("secure") {
+      return "password"
+    }
+    var settable = DarwinBoolean(false)
+    _ = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+    var selRangeRef: CFTypeRef?
+    let hasTextSelection = AXUIElementCopyAttributeValue(
+      element,
+      kAXSelectedTextRangeAttribute as CFString,
+      &selRangeRef
+    ) == .success
+    let placeholder = extractAxString(element, "AXPlaceholderValue")
+    let isTextEditable = settable.boolValue || hasTextSelection || placeholder != nil
+
+    if role == "axsearchfield" || subrole == "axsearchfield" {
+      return "searchfield"
+    }
+    if role == "axcombobox" {
+      return isTextEditable ? "searchbox" : "combobox"
+    }
+    if role == "axtextfield" {
+      return isTextEditable ? "textfield" : "statictext"
+    }
+    if role == "axtextarea" {
+      return isTextEditable ? "textarea" : "document"
+    }
+    if role == "axbutton" || role == "axpopupbutton" || role == "axmenubutton" {
+      return "button"
+    }
+    if role == "axcheckbox" { return "checkbox" }
+    if role == "axradiobutton" { return "radiobutton" }
+    if role == "axlink" { return "link" }
+    if role == "axmenuitem" { return "menuitem" }
+    if role == "axrow" || role == "axcell" { return "list_item" }
+    return nil
+  }
+
   func handleReadActiveWindowContext(args: [String: Any], result: @escaping FlutterResult) {
     let rawMax = args["maxChars"] as? Int ?? 600
     let maxChars = min(max(rawMax, 80), 1200)
-    guard let app = NSWorkspace.shared.frontmostApplication else {
+    let selfPid = ProcessInfo.processInfo.processIdentifier
+    let (frontApp, axTrusted, runningApps) = onMainThread { () -> (NSRunningApplication?, Bool, [[String: String]]) in
+      let front = NSWorkspace.shared.frontmostApplication
+      let trusted = AXIsProcessTrusted()
+      var appsList: [[String: String]] = []
+      for running in NSWorkspace.shared.runningApplications {
+        guard running.activationPolicy == .regular,
+              !running.isTerminated,
+              running.processIdentifier != selfPid
+        else {
+          continue
+        }
+        let bid = (running.bundleIdentifier ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawName = (running.localizedName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem = (running.bundleURL?.deletingPathExtension().lastPathComponent ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = !rawName.isEmpty ? rawName : (!stem.isEmpty ? stem : bid)
+        if name.isEmpty && bid.isEmpty {
+          continue
+        }
+        appsList.append([
+          "name": name,
+          "bundleId": bid,
+        ])
+      }
+      return (front, trusted, appsList)
+    }
+
+    guard let app = frontApp else {
       replySuccess(result, [
         "appName": "unknown",
         "processName": "unknown",
@@ -415,6 +610,7 @@ extension XunaHostPlugin {
         "focusedRole": "window",
         "visibleText": "",
         "isElevated": false,
+        "runningApps": runningApps,
       ])
       return
     }
@@ -422,10 +618,12 @@ extension XunaHostPlugin {
     let bundleId = app.bundleIdentifier ?? appName
     var windowTitle = ""
     var focusedRole = "window"
+    var exactFocusedRole: String?
     var visibleText = ""
 
-    if AXIsProcessTrusted() {
+    if axTrusted {
       let axApp = AXUIElementCreateApplication(app.processIdentifier)
+      AXUIElementSetMessagingTimeout(axApp, 0.25)
       var winRef: CFTypeRef?
       if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
          let winElem = winRef
@@ -443,13 +641,14 @@ extension XunaHostPlugin {
          let focusElem = focusRef
       {
         let axFocus = focusElem as! AXUIElement
+        exactFocusedRole = classifyExactAxControlRole(axFocus)
         var roleRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(axFocus, kAXRoleAttribute as CFString, &roleRef) == .success,
            let roleStr = roleRef as? String
         {
           focusedRole = String(roleStr.prefix(40))
         }
-        if focusedRole.lowercased() != "axsecuretextfield" {
+        if exactFocusedRole != "password" && focusedRole.lowercased() != "axsecuretextfield" {
           var valRef: CFTypeRef?
           if AXUIElementCopyAttributeValue(axFocus, kAXValueAttribute as CFString, &valRef) == .success,
              let valStr = valRef as? String
@@ -460,14 +659,19 @@ extension XunaHostPlugin {
       }
     }
 
-    replySuccess(result, [
+    var out: [String: Any] = [
       "appName": appName,
       "processName": bundleId,
       "windowTitle": windowTitle,
       "focusedRole": focusedRole,
       "visibleText": visibleText,
       "isElevated": false,
-    ])
+      "runningApps": runningApps,
+    ]
+    if let exact = exactFocusedRole {
+      out["exactFocusedRole"] = exact
+    }
+    replySuccess(result, out)
   }
 
   func handleReadBrowserPageSummary(args: [String: Any], result: @escaping FlutterResult) {
@@ -497,9 +701,9 @@ extension XunaHostPlugin {
         "tell application \"Microsoft Edge\" to execute active tab of front window javascript \"document.body ? document.body.innerText.slice(0, 1600) : ''\""
       ),
     ]
-    let runningBundles = Set(
-      NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier }
-    )
+    let runningBundles = onMainThread {
+      Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    }
     for candidate in candidates {
       if requested != "auto" && requested != candidate.id {
         continue
@@ -507,41 +711,37 @@ extension XunaHostPlugin {
       if !runningBundles.contains(candidate.bundleId) {
         continue
       }
-      var errDict: NSDictionary?
-      if let scriptObj = NSAppleScript(source: candidate.urlScript) {
-        let output = scriptObj.executeAndReturnError(&errDict)
-        if let rawUrl = output.stringValue,
-           rawUrl.lowercased().hasPrefix("https://")
-        {
-          var pageTitle = NSWorkspace.shared.frontmostApplication?.localizedName ?? candidate.id
-          if let titleObj = NSAppleScript(source: candidate.titleScript),
-             let tVal = titleObj.executeAndReturnError(nil).stringValue,
-             !tVal.isEmpty
-          {
-            pageTitle = tVal
-          }
-          var bodyText = pageTitle
-          if let textObj = NSAppleScript(source: candidate.textScript),
-             let bVal = textObj.executeAndReturnError(nil).stringValue,
-             !bVal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-          {
-            bodyText = bVal.trimmingCharacters(in: .whitespacesAndNewlines)
-          }
-          let lines = bodyText
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-          let headings = Array(lines.prefix(5).map { String($0.prefix(120)) })
-          replySuccess(result, [
-            "url": rawUrl,
-            "browser": candidate.id,
-            "title": String(pageTitle.prefix(160)),
-            "headings": headings.isEmpty ? [String(pageTitle.prefix(160))] : headings,
-            "actions": ["scroll_down", "focus_address_bar", "copy_url"],
-            "excerpt": String(bodyText.prefix(maxChars)),
-          ])
-          return
+      if let rawUrl = runAppleScript(candidate.urlScript, timeoutSeconds: 2.0),
+         rawUrl.lowercased().hasPrefix("https://")
+      {
+        var pageTitle = onMainThread {
+          NSWorkspace.shared.frontmostApplication?.localizedName ?? candidate.id
         }
+        if let tVal = runAppleScript(candidate.titleScript, timeoutSeconds: 2.0),
+           !tVal.isEmpty
+        {
+          pageTitle = tVal
+        }
+        var bodyText = pageTitle
+        if let bVal = runAppleScript(candidate.textScript, timeoutSeconds: 2.5),
+           !bVal.isEmpty
+        {
+          bodyText = bVal
+        }
+        let lines = bodyText
+          .components(separatedBy: .newlines)
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty }
+        let headings = Array(lines.prefix(5).map { String($0.prefix(120)) })
+        replySuccess(result, [
+          "url": rawUrl,
+          "browser": candidate.id,
+          "title": String(pageTitle.prefix(160)),
+          "headings": headings.isEmpty ? [String(pageTitle.prefix(160))] : headings,
+          "actions": ["scroll_down", "focus_address_bar", "copy_url"],
+          "excerpt": String(bodyText.prefix(maxChars)),
+        ])
+        return
       }
     }
     replyError(

@@ -31,8 +31,21 @@ class _ScriptedProvider extends FallbackUiaAxComputerUseProvider {
     String? elementId,
     int? x,
     int? y,
+    int clickCount = 1,
+    String button = 'left',
+    bool hover = false,
+    String? menuPath,
   }) async {
-    await super.performClick(window: window, elementId: elementId, x: x, y: y);
+    await super.performClick(
+      window: window,
+      elementId: elementId,
+      x: x,
+      y: y,
+      clickCount: clickCount,
+      button: button,
+      hover: hover,
+      menuPath: menuPath,
+    );
     _advance();
   }
 

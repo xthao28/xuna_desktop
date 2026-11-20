@@ -421,6 +421,19 @@ bool isInteractiveUiNode(Map<String, Object?> node) {
   return interactiveUiRoles.contains(role);
 }
 
+/// Truncates [value] to at most [maxCodeUnits] UTF-16 code units without
+/// splitting a surrogate pair.
+String clampUtf16Safe(String value, int maxCodeUnits) {
+  if (value.length <= maxCodeUnits) return value;
+  final out = StringBuffer();
+  for (final rune in value.runes) {
+    final char = String.fromCharCode(rune);
+    if (out.length + char.length > maxCodeUnits) break;
+    out.write(char);
+  }
+  return out.toString();
+}
+
 /// Extracts a list of active overlay surfaces (`dialog`, `alert`, `sheet`,
 /// `popover`, `menu`) from [nodes] so the agent knows if a modal blocks the
 /// main window (`agent-desktop` surface detection).
@@ -438,7 +451,7 @@ List<Map<String, Object?>> extractOverlaySurfaces(
     surfaces.add(<String, Object?>{
       'id': id,
       'kind': role,
-      'title': name.length > 80 ? name.substring(0, 80) : name,
+      'title': clampUtf16Safe(name, 80),
       'modal': node['modal'] != false,
     });
   }
@@ -476,6 +489,30 @@ String qualifySnapshotElementRef({
   return (snapshotId: match.group(1)!, elementNumber: numPart);
 }
 
+List<double>? _sanitizeBoundsList(Object? rawBounds) {
+  if (rawBounds is! List || rawBounds.length != 4) return null;
+  final sanitized = <double>[];
+  for (final item in rawBounds) {
+    if (item is! num || !item.isFinite) return null;
+    sanitized.add(item.toDouble());
+  }
+  return sanitized;
+}
+
+Map<String, double>? _sanitizeBoundsMap(Object? rawBounds) {
+  if (rawBounds is! Map || rawBounds.isEmpty) return null;
+  final sanitized = <String, double>{};
+  for (final entry in rawBounds.entries) {
+    final key = entry.key;
+    final val = entry.value;
+    if (key is! String || val is! num || !val.isFinite) {
+      return null;
+    }
+    sanitized[key] = val.toDouble();
+  }
+  return sanitized;
+}
+
 /// Redacts password fields in a list of UI tree nodes (`UDC-8` §4.2):
 /// replaces `name` with `'•••'` and removes `value`.
 ///
@@ -509,21 +546,24 @@ List<Map<String, Object?>> redactUiTreeNodes(
       final ref = (node['ref'] as String?) ?? '';
       final parentId = (node['parentId'] as String?) ?? '';
       if (id == cleanRoot || ref == cleanRoot) {
-        allowedSubtreeIds.add(id);
+        if (id.isNotEmpty) allowedSubtreeIds.add(id);
       } else if (parentId.isNotEmpty && allowedSubtreeIds.contains(parentId)) {
-        allowedSubtreeIds.add(id);
+        if (id.isNotEmpty) allowedSubtreeIds.add(id);
       }
     }
   }
 
   var elementIndex = 0;
+  final usedIndices = <int>{};
   for (final node in nodes) {
     if (out.length >= maxNodes) break;
     final rawId = (node['id'] as String?) ?? '';
     final rawRef = (node['ref'] as String?) ?? '';
+    final rawParentId = (node['parentId'] as String?) ?? '';
     if (filterByRoot &&
-        !allowedSubtreeIds.contains(rawId) &&
-        rawRef != cleanRoot) {
+        !(rawId.isNotEmpty && allowedSubtreeIds.contains(rawId)) &&
+        rawRef != cleanRoot &&
+        !(rawParentId.isNotEmpty && allowedSubtreeIds.contains(rawParentId))) {
       continue;
     }
     if (collapseWebWrappers && isTransparentWebWrapperNode(node)) {
@@ -540,27 +580,54 @@ List<Map<String, Object?>> redactUiTreeNodes(
     }
 
     elementIndex++;
+    String? assignedRef;
+    if (snapshotId != null && snapshotId.isNotEmpty) {
+      final cleanSnap =
+          snapshotId.startsWith('@') ? snapshotId.substring(1) : snapshotId;
+      final candidate = qualifySnapshotElementRef(
+        snapshotId: snapshotId,
+        rawId: rawId,
+        index1Based: elementIndex,
+      );
+      final parsedCandidate = parseSnapshotElementRef(candidate);
+      var refIndex = parsedCandidate?.elementNumber ?? elementIndex;
+      if (refIndex <= 0 || usedIndices.contains(refIndex)) {
+        refIndex = elementIndex;
+        while (usedIndices.contains(refIndex)) {
+          refIndex++;
+        }
+        assignedRef = '@$cleanSnap:e$refIndex';
+      } else {
+        assignedRef = candidate;
+      }
+      usedIndices.add(refIndex);
+    }
+
     final isPwd = isPasswordUiNode(node);
+    final sanitizedBoundsMap =
+        isPwd ? null : _sanitizeBoundsMap(node['bounds']);
+    final sanitizedBoundsList =
+        isPwd ? null : _sanitizeBoundsList(node['bounds']);
     final rawName = (node['name'] as String?) ?? '';
-    final truncatedName = isPwd
-        ? '•••'
-        : (rawName.length > 60 ? rawName.substring(0, 60) : rawName);
+    final truncatedName = isPwd ? '•••' : clampUtf16Safe(rawName, 60);
     final redacted = <String, Object?>{
       'id': rawId,
-      if (snapshotId != null && snapshotId.isNotEmpty)
-        'ref': qualifySnapshotElementRef(
-          snapshotId: snapshotId,
-          rawId: rawId,
-          index1Based: elementIndex,
-        )
+      if (assignedRef != null)
+        'ref': assignedRef
       else if (node['ref'] is String)
         'ref': node['ref'],
       'role': isPwd ? 'password' : ((node['role'] as String?) ?? 'unknown'),
       'name': truncatedName,
       'enabled': node['enabled'] != false,
-      if (node['bounds'] is Map) 'bounds': node['bounds'],
+      if (!isPwd) ...<String, Object?>{
+        if (sanitizedBoundsMap != null)
+          'bounds': sanitizedBoundsMap
+        else if (sanitizedBoundsList != null)
+          'bounds': sanitizedBoundsList,
+      },
       if (isPwd) 'isPassword': true,
       if (node['visible'] is bool) 'visible': node['visible'],
+      if (node['offscreen'] is bool) 'offscreen': node['offscreen'],
       if (node['editable'] is bool) 'editable': node['editable'],
       if (node['occluded'] is bool) 'occluded': node['occluded'],
       if (node['modal'] is bool) 'modal': node['modal'],
@@ -582,9 +649,9 @@ final RegExp _workspaceQueryRe = RegExp(r'^[a-zA-Z0-9_.\- ]{1,64}$');
 /// parent traversal (`..`), drive colons (`:`), home expansion (`~`), and shell
 /// metacharacters.
 bool isValidWorkspaceQuery(String? query) {
-  if (query == null) return false;
+  if (query == null || query.length > 64) return false;
   final trimmed = query.trim();
-  if (trimmed.isEmpty || trimmed.length > 64) return false;
+  if (trimmed.isEmpty) return false;
   if (trimmed.contains('..')) return false;
   return _workspaceQueryRe.hasMatch(trimmed);
 }
@@ -817,16 +884,15 @@ bool isValidSmartHomeEntityId(String? entityId) {
 /// allowing Vietnamese names like `'TV phòng khách'`, rejecting control chars
 /// and path separators).
 bool isValidTvDeviceQuery(String? query) {
-  if (query == null) return false;
+  if (query == null || query.length > 64) return false;
   final trimmed = query.trim();
   if (trimmed.isEmpty ||
-      trimmed.length > 64 ||
       trimmed.contains('..') ||
       trimmed.contains('/') ||
       trimmed.contains(r'\')) {
     return false;
   }
-  return isSafeAgentPrompt(trimmed);
+  return isSafeAgentPrompt(query);
 }
 
 /// Validates text passed to `clipboard.write` (`UDC-15` S15.1, `UDC-T37`):

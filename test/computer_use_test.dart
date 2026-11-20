@@ -1055,6 +1055,39 @@ void main() {
             ),
           );
 
+          // 5b. Duplicate (role, name) nodes with distinct bounds ARE disambiguated by @s:e ref
+          fallback.currentWindow = const ActiveWindowObservation(
+            appId: 'explorer',
+            processName: 'explorer.exe',
+            windowTitle: 'Reports [1]',
+            windowWidth: 1000,
+            windowHeight: 800,
+            nodes: <Map<String, Object?>>[
+              <String, Object?>{
+                'id': 'row_1',
+                'role': 'list_item',
+                'name': 'Track Repeat Title',
+                'bounds': <double>[0.25, 0.20, 0.75, 0.28],
+                'enabled': true,
+              },
+              <String, Object?>{
+                'id': 'row_2',
+                'role': 'list_item',
+                'name': 'Track Repeat Title',
+                'bounds': <double>[0.25, 0.30, 0.75, 0.38],
+                'enabled': true,
+              },
+            ],
+          );
+          final snapDistinct = await manager.inspectWindow(maxNodes: 50);
+          expect(snapDistinct['snapshotId'], equals('s00000003'));
+          final distinctClick = await manager.executeInputAction(
+            toolName: 'input.click',
+            arguments: const <String, Object?>{'elementId': '@s00000003:e1'},
+            hasR3Approval: false,
+          );
+          expect(distinctClick['effect'], isA<String>());
+
           // 6. Modal surface occlusion: clicking background button while modal dialog is open fails with element_occluded
           fallback.currentWindow = const ActiveWindowObservation(
             appId: 'explorer',
@@ -1113,7 +1146,7 @@ void main() {
       );
 
       test(
-        'NativeHostChannelComputerUseProvider & UiAccessibilityTreeTool bridge @s<id>:e<N> to native ui_<N> channel',
+        'NativeHostChannelComputerUseProvider & UiAccessibilityTreeService bridge @s<id>:e<N> to native ui_<N> channel',
         () async {
           final channel = FakeXunaHostChannel()
             ..activeWindowContextResult = const ActiveWindowContextSnapshot(
@@ -1261,11 +1294,11 @@ void main() {
           );
           expect(
             NativeHostChannelComputerUseProvider.nativeActionableNodeCap,
-            60,
+            120,
           );
 
-          // The session manager asks for up to 300 nodes; native refs 61..80 could be
-          // listed but never invoked, so the request is capped at 60.
+          // The session manager asks for up to 300 nodes; inspect and native invoke
+          // both enforce the unified 120-control actionable cap.
           await provider.inspectActiveWindow(maxNodes: 300);
           await provider.inspectActiveWindow(maxNodes: 80);
           await provider.inspectActiveWindow(maxNodes: 20);
@@ -1273,7 +1306,7 @@ void main() {
               .where((m) => m.startsWith('inspectWindowUiTree:'))
               .map((m) => int.parse(m.split(':').last))
               .toList();
-          expect(inspected, <int>[60, 60, 20]);
+          expect(inspected, <int>[120, 80, 20]);
         },
       );
 
@@ -1669,4 +1702,314 @@ void main() {
       );
     });
   });
+
+  group('M0 cu.session_start Continue-In-Place', () {
+    test(
+      'returns foregroundApp, redacted windowTitle, targetAlreadyFocused=true and @s00000001:eN snapshot directly clickable with 0 stale_ref',
+      () async {
+        final channel = FakeXunaHostChannel()
+          ..activeWindowContextResult = const ActiveWindowContextSnapshot(
+            appName: 'File Explorer',
+            processName: 'explorer.exe',
+            windowTitle: 'Reports - token=sk-secret9876543210abcdef',
+            focusedRole: 'window',
+            visibleText: 'Reports',
+          );
+        final stopController = EmergencyStopController(
+          logger: ContentFreeLogger(),
+        );
+        final manager = ComputerUseSessionManager(
+          provider: NativeHostChannelComputerUseProvider(channel: channel),
+          stopController: stopController,
+        );
+        addTearDown(() async {
+          manager.dispose();
+          await stopController.dispose();
+        });
+
+        final res = await manager.startSessionWithContext(
+          goal: 'Click Continue button in foreground Explorer',
+          apps: const <String>['explorer'],
+          domains: const <String>[],
+          maxSteps: 8,
+          maxMinutes: 5,
+          policy: _buildCuTestPolicy(),
+        );
+        expect(res.targetAlreadyFocused, isTrue);
+        expect(res.foregroundApp, equals('File Explorer'));
+        expect(res.windowTitle, isNot(contains('sk-secret987654')));
+        expect(res.snapshotId, equals('s00000001'));
+        expect(res.nodes, isNotNull);
+        expect(res.nodes!.isNotEmpty, isTrue);
+        expect(res.nodes!.first['ref'], equals('@s00000001:e1'));
+        // Password node in FakeXunaHostChannel (e4) must be redacted.
+        final pwdNode = res.nodes!.firstWhere((n) => n['isPassword'] == true);
+        expect(pwdNode['name'], equals('•••'));
+        expect(pwdNode.containsKey('value'), isFalse);
+
+        // Immediately click @s00000001:e2 without needing a separate ui.inspect call.
+        final clickOut = await manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: const <String, Object?>{'elementId': '@s00000001:e2'},
+          hasR3Approval: false,
+        );
+        expect(
+          clickOut['effect'],
+          isIn(const <String>['changed', 'no_change']),
+        );
+        expect(
+          channel.invokedMethods,
+          contains('invokeWindowUiControl:invoke_ref:ui_2'),
+        );
+      },
+    );
+
+    test(
+      'returns targetAlreadyFocused=false without snapshotId/nodes when foreground app does not match session apps',
+      () async {
+        final channel = FakeXunaHostChannel()
+          ..activeWindowContextResult = const ActiveWindowContextSnapshot(
+            appName: 'Visual Studio Code',
+            processName: 'Code.exe',
+            windowTitle: 'workspace.dart',
+            focusedRole: 'editor',
+            visibleText: 'code',
+          );
+        final stopController = EmergencyStopController(
+          logger: ContentFreeLogger(),
+        );
+        final manager = ComputerUseSessionManager(
+          provider: NativeHostChannelComputerUseProvider(channel: channel),
+          stopController: stopController,
+        );
+        addTearDown(() async {
+          manager.dispose();
+          await stopController.dispose();
+        });
+
+        final res = await manager.startSessionWithContext(
+          goal: 'Open Explorer',
+          apps: const <String>['explorer'],
+          domains: const <String>[],
+          maxSteps: 8,
+          maxMinutes: 5,
+          policy: _buildCuTestPolicy(),
+        );
+        expect(res.targetAlreadyFocused, isFalse);
+        expect(res.foregroundApp, equals('Visual Studio Code'));
+        expect(res.windowTitle, equals('workspace.dart'));
+        expect(res.snapshotId, isNull);
+        expect(res.nodes, isNull);
+        expect(manager.activeSession?.latestSnapshotId, isNull);
+        expect(
+          channel.invokedMethods.where(
+            (m) => m.startsWith('inspectWindowUiTree'),
+          ),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'fails closed on elevated or hard-denied foreground windows (omits windowTitle/snapshotId/nodes and skips UI tree scan)',
+      () async {
+        for (final restricted in const <ActiveWindowContextSnapshot>[
+          ActiveWindowContextSnapshot(
+            appName: '1Password',
+            processName: 'com.1password.1password',
+            windowTitle: 'Master Vault',
+            focusedRole: 'window',
+            visibleText: 'secret',
+            isElevated: false,
+          ),
+          ActiveWindowContextSnapshot(
+            appName: 'File Explorer',
+            processName: 'explorer.exe',
+            windowTitle: 'Admin Explorer',
+            focusedRole: 'window',
+            visibleText: 'admin',
+            isElevated: true,
+          ),
+        ]) {
+          final channel = FakeXunaHostChannel()
+            ..activeWindowContextResult = restricted;
+          final stopController = EmergencyStopController(
+            logger: ContentFreeLogger(),
+          );
+          final manager = ComputerUseSessionManager(
+            provider: NativeHostChannelComputerUseProvider(channel: channel),
+            stopController: stopController,
+          );
+
+          final res = await manager.startSessionWithContext(
+            goal: 'Inspect Explorer',
+            apps: const <String>['explorer'],
+            domains: const <String>[],
+            maxSteps: 8,
+            maxMinutes: 5,
+            policy: _buildCuTestPolicy(),
+          );
+          expect(res.targetAlreadyFocused, isFalse);
+          expect(res.foregroundApp, isNull);
+          expect(res.windowTitle, isNull);
+          expect(res.snapshotId, isNull);
+          expect(res.nodes, isNull);
+          expect(
+            channel.invokedMethods.where(
+              (m) => m.startsWith('inspectWindowUiTree'),
+            ),
+            isEmpty,
+          );
+
+          manager.dispose();
+          await stopController.dispose();
+        }
+      },
+    );
+  });
+
+  group('M5 UTF-16 surrogate & SoM capture coalescing regressions', () {
+    test(
+      'input.click on @s:e ref succeeds without stale_ref when unchanged label has emoji across code unit 60',
+      () async {
+        final emojiLabel = '${'a' * 59}\u{1F600}tail';
+        final channel = _EmojiUiChannel(emojiLabel)
+          ..activeWindowContextResult = const ActiveWindowContextSnapshot(
+            appName: 'File Explorer',
+            processName: 'explorer.exe',
+            windowTitle: 'Files',
+            focusedRole: 'window',
+            visibleText: 'Files',
+          );
+        final stopController = EmergencyStopController(
+          logger: ContentFreeLogger(),
+        );
+        final manager = ComputerUseSessionManager(
+          provider: NativeHostChannelComputerUseProvider(channel: channel),
+          stopController: stopController,
+        );
+        addTearDown(() async {
+          manager.dispose();
+          await stopController.dispose();
+        });
+
+        final started = await manager.startSessionWithContext(
+          goal: 'Click emoji button',
+          apps: const <String>['explorer'],
+          domains: const <String>[],
+          maxSteps: 8,
+          maxMinutes: 5,
+          policy: _buildCuTestPolicy(),
+        );
+        expect(started.nodes, hasLength(1));
+        expect(started.nodes!.single['name'], equals('a' * 59));
+        final ref = started.nodes!.single['ref']! as String;
+
+        final out = await manager.executeInputAction(
+          toolName: 'input.click',
+          arguments: <String, Object?>{'elementId': ref},
+          hasR3Approval: false,
+        );
+        expect(out['effect'], isIn(const <String>['changed', 'no_change']));
+        expect(
+          channel.invokedMethods,
+          contains('invokeWindowUiControl:invoke_ref:ui_emoji'),
+        );
+      },
+    );
+
+    test(
+      'captureScreen skips coalescing when somMarks is non-empty so equal-length distinct marks do not collide',
+      () async {
+        final channel = _SoMRecordingChannel();
+        final provider = NativeHostChannelComputerUseProvider(
+          channel: channel,
+          enableNativePointerAndCapture: true,
+        );
+        final markA = <Map<String, Object?>>[
+          <String, Object?>{
+            'index': 1,
+            'bounds': <double>[0.1, 0.1, 0.2, 0.2],
+          },
+        ];
+        final markB = <Map<String, Object?>>[
+          <String, Object?>{
+            'index': 1,
+            'bounds': <double>[0.5, 0.5, 0.9, 0.9],
+          },
+        ];
+        final results = await Future.wait(<Future<ScreenCaptureObservation>>[
+          provider.captureScreen(
+            scope: 'active_window',
+            maxEdge: 960,
+            somMarks: markA,
+          ),
+          provider.captureScreen(
+            scope: 'active_window',
+            maxEdge: 960,
+            somMarks: markB,
+          ),
+        ]);
+        expect(channel.captureCallCount, equals(2));
+        expect(results[0].dataBase64, isNot(equals(results[1].dataBase64)));
+        expect(
+          utf8.decode(base64Decode(results[0].dataBase64)),
+          contains('0.1'),
+        );
+        expect(
+          utf8.decode(base64Decode(results[1].dataBase64)),
+          contains('0.9'),
+        );
+      },
+    );
+  });
+}
+
+class _EmojiUiChannel extends FakeXunaHostChannel {
+  _EmojiUiChannel(this.emojiLabel);
+
+  final String emojiLabel;
+
+  @override
+  Future<WindowUiTreeSnapshot> inspectWindowUiTree({
+    String? windowTitle,
+    int maxNodes = 35,
+  }) async {
+    invokedMethods.add(
+      'inspectWindowUiTree:${windowTitle ?? 'active'}:$maxNodes',
+    );
+    return WindowUiTreeSnapshot(
+      appName: 'File Explorer',
+      windowTitle: 'Files',
+      nodes: <Map<String, Object?>>[
+        <String, Object?>{
+          'refId': 'ui_emoji',
+          'role': 'AXButton',
+          'label': emojiLabel,
+          'bounds': <double>[0.2, 0.2, 0.4, 0.3],
+          'enabled': true,
+        },
+      ],
+    );
+  }
+}
+
+class _SoMRecordingChannel extends FakeXunaHostChannel {
+  int captureCallCount = 0;
+
+  @override
+  Future<HostScreenCaptureResult> captureScreen({
+    String scope = 'active_window',
+    int maxEdge = 1280,
+    List<Map<String, Object?>>? somMarks,
+  }) async {
+    captureCallCount++;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    return HostScreenCaptureResult(
+      mimeType: 'image/jpeg',
+      width: 640,
+      height: 480,
+      dataBase64: base64Encode(utf8.encode(jsonEncode(somMarks ?? const []))),
+    );
+  }
 }

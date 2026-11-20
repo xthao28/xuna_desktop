@@ -130,59 +130,119 @@ class AppListAllowedTool extends HostToolHandler {
 }
 
 class AppLaunchTool extends HostToolHandler {
-  const AppLaunchTool();
+  const AppLaunchTool({
+    this.postLaunchInspectDelay = const Duration(milliseconds: 350),
+  });
+
+  final Duration postLaunchInspectDelay;
 
   @override
   String get name => 'app.launch';
+
+  static String _clampHint(String text) =>
+      text.length > 512 ? text.substring(0, 512) : text;
 
   Future<Map<String, Object?>> _buildLaunchStructuredContent(
     ToolExecutionContext context, {
     required String appId,
     required String appName,
+    required String target,
+    String? bundleId,
+    required bool alreadyRunning,
+    String? openedTargetAlias,
   }) async {
-    final payload = <String, Object?>{'id': appId};
-    if (Platform.environment.containsKey('FLUTTER_TEST')) {
+    final safeName = appName.length > 64 ? appName.substring(0, 64) : appName;
+    final payload = <String, Object?>{
+      'id': appId,
+      if (openedTargetAlias != null && openedTargetAlias.isNotEmpty)
+        'openedTarget': openedTargetAlias,
+      'alreadyRunning': alreadyRunning,
+    };
+
+    final cuManager = context.computerUseManager;
+    if (cuManager == null || !cuManager.hasActiveSession) {
+      if (openedTargetAlias == null || openedTargetAlias.isEmpty) {
+        payload['nextStepHint'] = _clampHint(
+          'Nếu cần thao tác bên trong $safeName, hãy mở phiên computer-use bằng cu__session_start rồi dùng ui__inspect / ui__observe_hybrid.',
+        );
+      }
       return payload;
     }
+
+    const runningCap = Duration(milliseconds: 100);
+    final effectiveDelay = alreadyRunning && postLaunchInspectDelay > runningCap
+        ? runningCap
+        : postLaunchInspectDelay;
+    if (effectiveDelay > Duration.zero) {
+      await Future<void>.delayed(effectiveDelay);
+      if (context.cancellationToken.isCancelled) {
+        return payload;
+      }
+    }
+
     try {
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-      final snap = await context.channel.inspectWindowUiTree(
-        windowTitle: appName,
+      final inspected = await cuManager.inspectWindowForAppLaunch(
+        appId: appId,
+        appName: appName,
+        target: target,
+        bundleId: bundleId,
         maxNodes: 25,
+        nowUtc: context.nowUtc,
       );
-      if (snap.nodes.isNotEmpty) {
-        context.symbioticService.uiAccessibility.applyNativeWindowUiTree(
-          windowTitle: snap.windowTitle,
-          nodes: snap.nodes,
+      if (inspected != null) {
+        if (inspected.windowTitle.isNotEmpty) {
+          payload['windowTitle'] = inspected.windowTitle;
+        }
+        payload['snapshotId'] = inspected.snapshotId;
+        payload['nodes'] = inspected.nodes;
+        if (inspected.compactUiTree.isNotEmpty) {
+          payload['compactUiTree'] = inspected.compactUiTree;
+        }
+        payload['nextStepHint'] = _clampHint(
+          'Snapshot ${inspected.snapshotId} đã sẵn sàng; dùng trực tiếp ref @s... từ nodes/compactUiTree với input__click / input__type_text hoặc gọi ui__inspect / ui__observe_hybrid.',
         );
-        final treeRes = context.symbioticService.uiAccessibility
-            .executeUiAccessibilityTree(windowTitle: snap.windowTitle);
-        payload['windowTitle'] = treeRes.windowTitle;
-        payload['compactUiTree'] = treeRes.compactUiTree;
-        payload['nextStepHint'] =
-            'Dùng ui__accessibility_tree (action="inspect_window") để đọc lại cửa sổ; thao tác bên trong $appName cần phiên computer-use và các tool input.*.';
+      } else {
+        payload['nextStepHint'] = _clampHint(
+          'Gọi ui__inspect hoặc ui__observe_hybrid sau khi cửa sổ $safeName sẵn sàng để lấy ref phần tử.',
+        );
       }
     } catch (_) {
-      // Best-effort initial UI inspection on app launch
+      // Best-effort initial UI inspection on app launch: fail closed on
+      // mismatched/elevated/denylisted foreground windows without failing launch.
     }
     return payload;
   }
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final rawOpenTarget = (context.arguments['openTarget'] as String?)?.trim();
+    final resolvedOpen = (rawOpenTarget != null && rawOpenTarget.isNotEmpty)
+        ? await context.workspaceIndexer.resolveHomeOpenTarget(rawOpenTarget)
+        : null;
+
     final configured = context.evaluation.app;
     if (configured != null) {
-      await context.channel.appLaunch(
+      final launchRes = await context.channel.appLaunch(
         kind: configured.kind,
         target: configured.target,
+        openPath: resolvedOpen?.path,
       );
+      final discoveredMatch = context.appScanner.findApp(configured.id);
       final structured = await _buildLaunchStructuredContent(
         context,
         appId: configured.id,
         appName: configured.name,
+        target: configured.target,
+        bundleId: configured.kind == AppLaunchKind.bundle
+            ? configured.target
+            : discoveredMatch?.bundleId,
+        alreadyRunning: launchRes.alreadyRunning,
+        openedTargetAlias: resolvedOpen?.displayAlias,
       );
       return ToolHandlerOutput(
-        text: 'Đã mở ${configured.name}.',
+        text: resolvedOpen != null
+            ? 'Đã mở ${resolvedOpen.displayAlias} bằng ${configured.name}.'
+            : 'Đã mở ${configured.name}.',
         structuredContent: structured,
         toastBody: 'đã mở ${configured.name}',
       );
@@ -196,17 +256,24 @@ class AppLaunchTool extends HostToolHandler {
         errorCode: 'app_not_allowlisted',
       );
     }
-    await context.channel.appLaunch(
+    final launchRes = await context.channel.appLaunch(
       kind: discovered.kind,
       target: discovered.target,
+      openPath: resolvedOpen?.path,
     );
     final structured = await _buildLaunchStructuredContent(
       context,
       appId: discovered.id,
       appName: discovered.name,
+      target: discovered.target,
+      bundleId: discovered.bundleId,
+      alreadyRunning: launchRes.alreadyRunning,
+      openedTargetAlias: resolvedOpen?.displayAlias,
     );
     return ToolHandlerOutput(
-      text: 'Đã mở ${discovered.name}.',
+      text: resolvedOpen != null
+          ? 'Đã mở ${resolvedOpen.displayAlias} bằng ${discovered.name}.'
+          : 'Đã mở ${discovered.name}.',
       structuredContent: structured,
       toastBody: 'đã mở ${discovered.name}',
     );

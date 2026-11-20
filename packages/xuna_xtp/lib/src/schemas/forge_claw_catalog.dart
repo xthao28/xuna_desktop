@@ -48,6 +48,8 @@ List<ToolDescriptor> buildOmniForgeTools({
           },
           'fileExtensions': <String, Object?>{
             'type': 'array',
+            'minItems': 1,
+            'maxItems': 10,
             'items': <String, Object?>{'type': 'string', 'maxLength': 12},
           },
           'toolName': <String, Object?>{
@@ -386,7 +388,7 @@ List<ToolDescriptor> buildOmniForgeTools({
   ];
 }
 
-/// Builds the 16 `XUNA ClawPulse`, `XunaScript Universal Composable Engine`, `ClawWorkshop`, `ClawMind`, `Frontier 2026` & `UIA-1` (`CLAW-1`–`CLAW-3`, `UNIV-1`, `WORKSHOP-1`, `MIND-1`, `FRONTIER-1`–`FRONTIER-4`, `UIA-1`) tool descriptors:
+/// Builds the 9 `XUNA ClawPulse`, `XunaScript Universal Composable Engine`, `ClawWorkshop`, `ClawMind`, & `Frontier 2026` (`CLAW-1`–`CLAW-3`, `UNIV-1`, `WORKSHOP-1`, `MIND-1`, `FRONTIER-1`–`FRONTIER-4`) tool descriptors:
 /// - `skill.markdown_bridge` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `skill.record_correction` (`R1`, `observes: true`, `reversible: true`, family `app`)
 /// - `heartbeat.configure_and_tick` (`R1`, `observes: true`, `reversible: true`, family `app`)
@@ -636,6 +638,8 @@ List<ToolDescriptor> buildClawPulseTools({
           },
           'primitives': <String, Object?>{
             'type': 'array',
+            'minItems': 1,
+            'maxItems': 8,
             'items': <String, Object?>{
               'type': 'string',
               'enum': <String>[
@@ -782,6 +786,8 @@ List<ToolDescriptor> buildClawPulseTools({
         'properties': <String, Object?>{
           'chainSkillIds': <String, Object?>{
             'type': 'array',
+            'minItems': 1,
+            'maxItems': 5,
             'items': <String, Object?>{'type': 'string', 'maxLength': 64},
           },
           'runtimeParams': <String, Object?>{
@@ -984,84 +990,10 @@ List<ToolDescriptor> buildClawPulseTools({
         permission: defaultPermission,
       ),
     ),
-    ToolDescriptor(
-      name: 'ui.accessibility_tree',
-      description:
-          'Read-only native OS UI inspection: list the interactive controls of an app window as [ref=ui_1]..[ref=ui_N] (inspect_window). It never clicks or types; use input.* inside an approved computer-use session to act.',
-      inputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{
-          'action': <String, Object?>{
-            'type': 'string',
-            'enum': <String>['inspect_window'],
-          },
-          'windowTitle': <String, Object?>{
-            'type': 'string',
-            'maxLength': 120,
-          },
-          'maxNodes': <String, Object?>{
-            'type': 'integer',
-            'minimum': 1,
-            'maximum': 80,
-          },
-        },
-        'required': <String>['action'],
-        'additionalProperties': false,
-      },
-      outputSchema: const <String, Object?>{
-        'type': 'object',
-        'properties': <String, Object?>{
-          'action': <String, Object?>{'type': 'string', 'maxLength': 32},
-          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
-          'nodeCount': <String, Object?>{'type': 'integer', 'minimum': 0},
-          'tokenSavingsPercent': <String, Object?>{
-            'type': 'integer',
-            'minimum': 0,
-            'maximum': 99,
-          },
-          'screenshotBytesUsed': <String, Object?>{
-            'type': 'integer',
-            'minimum': 0,
-            'maximum': 0,
-          },
-          'compactUiTree': <String, Object?>{
-            'type': 'string',
-            'maxLength': 4000,
-          },
-          'invokedRefId': <String, Object?>{'type': 'string', 'maxLength': 32},
-          'redactedControlsCount': <String, Object?>{
-            'type': 'integer',
-            'minimum': 0,
-          },
-          'nodes': <String, Object?>{'type': 'array'},
-          'summaryVi': <String, Object?>{'type': 'string', 'maxLength': 240},
-        },
-        'required': <String>[
-          'action',
-          'windowTitle',
-          'nodeCount',
-          'tokenSavingsPercent',
-          'screenshotBytesUsed',
-          'compactUiTree',
-          'invokedRefId',
-          'redactedControlsCount',
-          'nodes',
-          'summaryVi',
-        ],
-        'additionalProperties': false,
-      },
-      policy: ToolPolicyMeta(
-        family: ToolFamily.app,
-        risk: RiskTier.r1,
-        observes: true,
-        reversible: true,
-        permission: defaultPermission,
-      ),
-    ),
   ];
 }
 
-/// Builds the 8 computer-use tool descriptors (`UDC-8` §4.2).
+/// Builds the 12 computer-use tool descriptors (`UDC-8` §4.2).
 List<ToolDescriptor> buildComputerUseTools({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
   XtpPermissionState? screenCapturePermission,
@@ -1086,11 +1018,13 @@ List<ToolDescriptor> buildComputerUseTools({
       // What changed in the window since before the action, with refs for
       // new elements in the current snapshot (UDC-17 S17.4).
       'changes': <String, Object?>{'type': 'object'},
+      'uiChanged': <String, Object?>{'type': 'boolean'},
+      'focusedRole': <String, Object?>{'type': 'string', 'maxLength': 40},
       'settled': <String, Object?>{'type': 'boolean'},
       'settleMs': <String, Object?>{
         'type': 'integer',
         'minimum': 0,
-        'maximum': 1500,
+        'maximum': 600,
       },
     },
     'required': <String>['effect'],
@@ -1145,6 +1079,11 @@ List<ToolDescriptor> buildComputerUseTools({
         'type': 'object',
         'properties': <String, Object?>{
           'sessionId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'foregroundApp': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 120},
+          'targetAlreadyFocused': <String, Object?>{'type': 'boolean'},
+          'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'nodes': <String, Object?>{'type': 'array'},
         },
         'required': <String>['sessionId'],
         'additionalProperties': false,
@@ -1306,7 +1245,7 @@ List<ToolDescriptor> buildComputerUseTools({
     ToolDescriptor(
       name: 'ui.observe_hybrid',
       description:
-          'Observe active window combining compact accessibility tree (with normalized bounding boxes [0.0, 1.0]) and active-window JPEG screenshot. Fails closed if screen recording permission is missing.',
+          'Observe active window with compact AX tree (bounds [0.0, 1.0]) and JPEG annotated with Set-of-Marks [1]..[N] boxes (@s<id>:eN) plus grid ticks. Fails closed without screen recording permission.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -1448,11 +1387,15 @@ List<ToolDescriptor> buildComputerUseTools({
     ToolDescriptor(
       name: 'input.click',
       description:
-          'Click a UI element by elementId (@s<id>:e<N> or id) or coordinates inside an allowlisted app, with actionability checks and optional wait.',
+          'Click, double-click, right-click, hover, or invoke an OS menu bar path inside an allowlisted app, by elementId (@s<id>:e<N>), normalized coordinates [0.0, 1.0], or menuPath.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
-          'elementId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'elementId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
           'elementName': <String, Object?>{'type': 'string', 'maxLength': 120},
           'x': <String, Object?>{'type': 'integer'},
           'y': <String, Object?>{'type': 'integer'},
@@ -1465,6 +1408,29 @@ List<ToolDescriptor> buildComputerUseTools({
             'type': 'number',
             'minimum': 0.0,
             'maximum': 1.0,
+          },
+          'clickCount': <String, Object?>{
+            'type': 'integer',
+            'minimum': 1,
+            'maximum': 3,
+            'description':
+                '1 for single click (default), 2 for double-click to open/play/activate list or table rows, 3 for line selection.',
+          },
+          'button': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['left', 'right', 'middle'],
+          },
+          'hover': <String, Object?>{
+            'type': 'boolean',
+            'description':
+                'When true, moves pointer over the target without clicking to reveal hover-only controls.',
+          },
+          'menuPath': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 160,
+            'description':
+                'Hierarchical OS menu bar path (e.g. "File > Open...", "View > Command Palette...") to invoke directly.',
           },
           'headed': <String, Object?>{'type': 'boolean'},
           'waitFor': <String, Object?>{'type': 'string', 'maxLength': 120},
@@ -1536,8 +1502,16 @@ List<ToolDescriptor> buildComputerUseTools({
           'startY': <String, Object?>{'type': 'integer'},
           'endX': <String, Object?>{'type': 'integer'},
           'endY': <String, Object?>{'type': 'integer'},
-          'fromElementId': <String, Object?>{'type': 'string', 'maxLength': 64},
-          'toElementId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'fromElementId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
+          'toElementId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
           'durationMs': <String, Object?>{
             'type': 'integer',
             'minimum': 50,
@@ -1634,7 +1608,11 @@ List<ToolDescriptor> buildComputerUseTools({
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
-          'elementId': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'elementId': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 64,
+          },
           'direction': <String, Object?>{
             'type': 'string',
             'enum': <String>['up', 'down', 'left', 'right'],

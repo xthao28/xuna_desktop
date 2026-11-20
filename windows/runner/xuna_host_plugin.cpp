@@ -482,7 +482,7 @@ void HandleMethodCallOnWorker(
         max_nodes = static_cast<int>(*i64);
     }
     if (max_nodes < 1) max_nodes = 1;
-    if (max_nodes > 80) max_nodes = 80;
+    if (max_nodes > 120) max_nodes = 120;
 
     const auto* wt_val = FindKey(args, "windowTitle");
     const auto* wt_str = wt_val ? std::get_if<std::string>(wt_val) : nullptr;

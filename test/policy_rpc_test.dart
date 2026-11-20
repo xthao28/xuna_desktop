@@ -253,5 +253,66 @@ void main() {
       expect(setParams.allowDomains, <String>['github.com']);
       expect(setParams.denyDomains, <String>['malware.com']);
     });
+
+    test(
+      'xuna/set_policy normalizes custom app names and CU session allows zero-config app.launch',
+      () async {
+        await h.dispatcher.policyStore.writeDefaultPolicy();
+
+        final setRes = await h.dispatcher.setPolicy(
+          requestId: 'req-custom-names',
+          params: const SetPolicyParams(
+            trustPreset: 'standard',
+            allowApps: <String>['Custom Music Player', 'custom_music_player'],
+          ),
+        );
+        expect(setRes, isA<XtpResponse>());
+        final saved = h.dispatcher.policyStore.evaluator.policy!;
+        expect(
+          saved.apps.map((a) => a.id).toList(),
+          <String>['custom_music_player'],
+        );
+
+        // Start a CU session scoped to 'custom_music_player'
+        await h.manager.startSession(
+          goal: 'Play music',
+          apps: const <String>['custom_music_player'],
+          domains: const <String>[],
+          maxSteps: 10,
+          maxMinutes: 5,
+          policy: saved,
+          allowZeroConfigAppDiscovery: true,
+        );
+
+        // In-scope app launches without a separate R2 approval
+        final launchInScope = await h.dispatcher.dispatch(
+          requestId: 'req-launch-in-scope',
+          params: const ToolsCallParams(
+            name: 'app.launch',
+            arguments: <String, Object?>{'id': 'custom_music_player'},
+            invocationId: '8a000001-0000-0000-0000-000000000001',
+            deadlineMs: 5000,
+          ),
+        );
+        final okMeta =
+            (launchInScope.result['_meta'] as Map).cast<String, Object?>();
+        expect(okMeta['xuna/status'], 'ok');
+
+        // Out-of-scope app ('notes', not in CU session) still requires R2 approval
+        final launchOutOfScope = await h.dispatcher.dispatch(
+          requestId: 'req-launch-out-of-scope',
+          params: const ToolsCallParams(
+            name: 'app.launch',
+            arguments: <String, Object?>{'id': 'notes'},
+            invocationId: '8a000001-0000-0000-0000-000000000002',
+            deadlineMs: 5000,
+          ),
+        );
+        final deniedMeta =
+            (launchOutOfScope.result['_meta'] as Map).cast<String, Object?>();
+        expect(deniedMeta['xuna/status'], 'denied');
+        expect(deniedMeta['xuna/errorCode'], 'approval_required');
+      },
+    );
   });
 }

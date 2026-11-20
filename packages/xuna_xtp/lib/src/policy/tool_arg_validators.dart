@@ -64,8 +64,7 @@ PolicyEvaluationResult? validateCuSessionScope({
         errorCode: 'policy_blocked',
       );
     }
-    if (activePolicy.findApp(appItem) == null &&
-        !allowZeroConfigAppDiscovery) {
+    if (activePolicy.findApp(appItem) == null && !allowZeroConfigAppDiscovery) {
       return const PolicyEvaluationResult(
         allowed: false,
         status: XtpStatus.denied,
@@ -120,8 +119,9 @@ PolicyEvaluationResult? validateCuSessionScope({
 final _shortcutNamePattern = RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,119}$');
 
 bool _isValidIsoDate(String dateStr) {
+  if (dateStr.length > 50) return false;
   final trimmed = dateStr.trim();
-  if (trimmed.isEmpty || trimmed.length > 50) return false;
+  if (trimmed.isEmpty) return false;
   try {
     DateTime.parse(trimmed);
     return true;
@@ -131,16 +131,25 @@ bool _isValidIsoDate(String dateStr) {
 }
 
 bool _isValidEmailAddress(String email) {
+  if (email.length > 320) return false;
   final trimmed = email.trim();
-  if (trimmed.isEmpty || trimmed.length > 320) return false;
-  if (trimmed.contains('\r') || trimmed.contains('\n') || trimmed.contains('\x00')) return false;
+  if (trimmed.isEmpty) return false;
+  if (trimmed.contains('\r') ||
+      trimmed.contains('\n') ||
+      trimmed.contains('\x00')) {
+    return false;
+  }
   final atIndex = trimmed.indexOf('@');
-  if (atIndex <= 0 || atIndex != trimmed.lastIndexOf('@') || atIndex == trimmed.length - 1) {
+  if (atIndex <= 0 ||
+      atIndex != trimmed.lastIndexOf('@') ||
+      atIndex == trimmed.length - 1) {
     return false;
   }
   final localPart = trimmed.substring(0, atIndex);
   final domainPart = trimmed.substring(atIndex + 1);
-  if (domainPart.contains(' ') || domainPart.contains(',') || domainPart.contains('"')) {
+  if (domainPart.contains(' ') ||
+      domainPart.contains(',') ||
+      domainPart.contains('"')) {
     return false;
   }
   // Disallow unquoted spaces or commas in local-part
@@ -219,6 +228,7 @@ PolicyEvaluationResult validateToolArguments({
       effectiveRisk = RiskTier.r1;
     case 'app.list_allowed':
     case 'workflow.list':
+    case 'host.status':
       if (arguments.isNotEmpty) {
         return const PolicyEvaluationResult(
           allowed: false,
@@ -229,7 +239,18 @@ PolicyEvaluationResult validateToolArguments({
       }
       effectiveRisk = RiskTier.r0;
     case 'app.launch':
-      if (arguments.length != 1 || arguments['id'] is! String) {
+      const allowedLaunchKeys = <String>{'id', 'openTarget'};
+      final rawOpenTarget = arguments['openTarget'];
+      final openTargetInvalid = rawOpenTarget != null &&
+          (rawOpenTarget is! String ||
+              rawOpenTarget.trim().isEmpty ||
+              rawOpenTarget.length > 256 ||
+              rawOpenTarget.contains('\u0000') ||
+              !isSafeAgentPrompt(rawOpenTarget));
+      if (arguments.isEmpty ||
+          arguments.keys.any((k) => !allowedLaunchKeys.contains(k)) ||
+          arguments['id'] is! String ||
+          openTargetInvalid) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -555,7 +576,9 @@ PolicyEvaluationResult validateToolArguments({
           sha256 is! String ||
           !RegExp(r'^[0-9a-f]{64}$').hasMatch(sha256) ||
           (dataBase64 != null &&
-              (dataBase64 is! String || dataBase64.isEmpty))) {
+              (dataBase64 is! String ||
+                  dataBase64.isEmpty ||
+                  dataBase64.length > 16384))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -577,7 +600,7 @@ PolicyEvaluationResult validateToolArguments({
           (payloadJson != null &&
               (payloadJson is! String ||
                   payloadJson.length > 1000 ||
-                  !isSafeAgentPrompt(payloadJson)))) {
+                  !isSafeClipboardWriteText(payloadJson)))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -866,8 +889,7 @@ PolicyEvaluationResult validateToolArguments({
                   toolName.length > 48)) ||
           (runtime != null &&
               (runtime is! String ||
-                  !allowedSynthesizedToolRuntimes
-                      .contains(runtime.trim().toLowerCase()))) ||
+                  !allowedSynthesizedToolRuntimes.contains(runtime))) ||
           (testArgsJson != null &&
               (testArgsJson is! String ||
                   testArgsJson.length > 1000 ||
@@ -935,14 +957,12 @@ PolicyEvaluationResult validateToolArguments({
       final outputFolder = arguments['outputFolder'];
       final exportCsv = arguments['exportCsv'];
       final argsJson = arguments['argsJson'];
-      final stepArgs = arguments['stepArgs'];
       const allowedRunKeys = <String>{
         'skillId',
         'maxItems',
         'outputFolder',
         'exportCsv',
         'argsJson',
-        'stepArgs',
       };
       if (arguments.keys.any((k) => !allowedRunKeys.contains(k)) ||
           skillId is! String ||
@@ -953,7 +973,6 @@ PolicyEvaluationResult validateToolArguments({
               (outputFolder is! String ||
                   !isValidSandboxFolderName(outputFolder))) ||
           (exportCsv != null && exportCsv is! bool) ||
-          (stepArgs != null && stepArgs is! Map) ||
           (argsJson != null &&
               (argsJson is! String ||
                   argsJson.length > 2000 ||
@@ -1037,6 +1056,7 @@ PolicyEvaluationResult validateToolArguments({
           !isValidSandboxFolderName(sourceFolder) ||
           (outputFileName != null &&
               (outputFileName is! String ||
+                  outputFileName.length > 80 ||
                   !isValidBeamFileName(outputFileName))) ||
           (detectDuplicates != null && detectDuplicates is! bool)) {
         return const PolicyEvaluationResult(
@@ -1061,6 +1081,8 @@ PolicyEvaluationResult validateToolArguments({
           !allowedSkillMarkdownActions.contains(action) ||
           (skillId != null &&
               (skillId is! String || !isValidShortId(skillId))) ||
+          (markdownContent != null &&
+              (markdownContent is! String || markdownContent.length > 4000)) ||
           (action == 'export_skill_md' &&
               (skillId is! String || !isValidShortId(skillId))) ||
           (action == 'import_skill_md' &&
@@ -1207,6 +1229,7 @@ PolicyEvaluationResult validateToolArguments({
                   !allowedUniversalExportFormats.contains(exportFormat))) ||
           (outputFileName != null &&
               (outputFileName is! String ||
+                  outputFileName.length > 80 ||
                   !isValidBeamFileName(outputFileName)))) {
         return const PolicyEvaluationResult(
           allowed: false,
@@ -1400,41 +1423,6 @@ PolicyEvaluationResult validateToolArguments({
         );
       }
       effectiveRisk = RiskTier.r1;
-    case 'ui.accessibility_tree':
-      final action = arguments['action'];
-      final windowTitle = arguments['windowTitle'];
-      final maxNodes = arguments['maxNodes'];
-      const allowedUiaKeys = <String>{'action', 'windowTitle', 'maxNodes'};
-      if (arguments.keys.any((k) => !allowedUiaKeys.contains(k)) ||
-          action is! String ||
-          !allowedUiAccessibilityActions.contains(action) ||
-          (windowTitle != null &&
-              (windowTitle is! String ||
-                  windowTitle.trim().isEmpty ||
-                  windowTitle.length > 120 ||
-                  !isSafeAgentPrompt(windowTitle))) ||
-          (maxNodes != null &&
-              (maxNodes is! int || maxNodes < 1 || maxNodes > 80))) {
-        return const PolicyEvaluationResult(
-          allowed: false,
-          status: XtpStatus.invalidArgs,
-          effectiveRisk: RiskTier.r1,
-          errorCode: 'schema_mismatch',
-        );
-      }
-      if (windowTitle is String) {
-        final lowerWin = windowTitle.toLowerCase();
-        if (forbiddenUiWindowPatterns.any((p) => lowerWin.contains(p))) {
-          return const PolicyEvaluationResult(
-            allowed: false,
-            status: XtpStatus.denied,
-            effectiveRisk: RiskTier.r1,
-            errorCode: 'ui_window_forbidden_target',
-          );
-        }
-      }
-      // Observation only (see [allowedUiAccessibilityActions]).
-      effectiveRisk = RiskTier.r1;
     case 'workspace.coding_agent':
       final proj = arguments['project'];
       final agent = arguments['agent'];
@@ -1503,7 +1491,7 @@ PolicyEvaluationResult validateToolArguments({
       normalizedUrlHost = urlCheck.asciiHost;
       effectiveRisk = RiskTier.r2;
     case 'browser.current_url':
-      if (arguments.length > 1 ||
+      if (arguments.keys.any((k) => k != 'browser') ||
           (arguments.containsKey('browser') &&
               (arguments['browser'] is! String ||
                   !<String>{'auto', 'edge', 'chrome', 'safari'}
@@ -1598,6 +1586,14 @@ PolicyEvaluationResult validateToolArguments({
           );
         }
         final stepTool = rawStep['tool'] as String;
+        if (stepTool.length > 64) {
+          return const PolicyEvaluationResult(
+            allowed: false,
+            status: XtpStatus.invalidArgs,
+            effectiveRisk: RiskTier.r2,
+            errorCode: 'schema_mismatch',
+          );
+        }
         if (stepTool == 'workflow.batch_steps' ||
             stepTool.startsWith('cu.') ||
             stepTool.startsWith('screen.') ||
@@ -1943,6 +1939,10 @@ PolicyEvaluationResult validateToolArguments({
       final headed = arguments['headed'];
       final waitFor = arguments['waitFor'];
       final waitForGone = arguments['waitForGone'];
+      final clickCount = arguments['clickCount'];
+      final button = arguments['button'];
+      final hover = arguments['hover'];
+      final menuPath = arguments['menuPath'];
       const allowedClickKeys = <String>{
         'elementId',
         'elementName',
@@ -1950,29 +1950,65 @@ PolicyEvaluationResult validateToolArguments({
         'y',
         'xNorm',
         'yNorm',
+        'clickCount',
+        'button',
+        'hover',
+        'menuPath',
         'headed',
         'waitFor',
         'waitForGone',
       };
-      final hasElement = elementId is String && elementId.isNotEmpty;
+      const allowedMouseButtons = <String>{'left', 'right', 'middle'};
+      final elementIdInvalid = elementId != null &&
+          (elementId is! String || elementId.isEmpty || elementId.length > 64);
+      final hasElement =
+          elementId is String && elementId.isNotEmpty && elementId.length <= 64;
+      final intCoordsInvalid =
+          (x != null && x is! int) || (y != null && y is! int);
       final hasIntCoords = x is int && y is int;
       final hasNormCoords = xNorm is num &&
           yNorm is num &&
+          xNorm.isFinite &&
+          yNorm.isFinite &&
           xNorm >= 0.0 &&
           xNorm <= 1.0 &&
           yNorm >= 0.0 &&
           yNorm <= 1.0;
       final hasCoords = hasIntCoords || hasNormCoords;
-      final normCoordsInvalid =
-          (xNorm != null && (xNorm is! num || xNorm < 0.0 || xNorm > 1.0)) ||
-          (yNorm != null && (yNorm is! num || yNorm < 0.0 || yNorm > 1.0)) ||
+      final hasMenu = menuPath is String && menuPath.trim().isNotEmpty;
+      final menuPathInvalid = menuPath != null &&
+          (menuPath is! String ||
+              menuPath.trim().isEmpty ||
+              menuPath.length > 160 ||
+              !isSafeAgentPrompt(menuPath));
+      final clickCountInvalid = clickCount != null &&
+          (clickCount is! int || clickCount < 1 || clickCount > 3);
+      final buttonInvalid = button != null &&
+          (button is! String || !allowedMouseButtons.contains(button));
+      final normCoordsInvalid = (xNorm != null &&
+              (xNorm is! num ||
+                  !xNorm.isFinite ||
+                  xNorm < 0.0 ||
+                  xNorm > 1.0)) ||
+          (yNorm != null &&
+              (yNorm is! num ||
+                  !yNorm.isFinite ||
+                  yNorm < 0.0 ||
+                  yNorm > 1.0)) ||
           (xNorm != null && yNorm == null) ||
           (xNorm == null && yNorm != null);
 
       if (arguments.keys.any((k) => !allowedClickKeys.contains(k)) ||
+          elementIdInvalid ||
+          intCoordsInvalid ||
           normCoordsInvalid ||
-          (!hasElement && !hasCoords) ||
-          (elementName != null && elementName is! String) ||
+          menuPathInvalid ||
+          clickCountInvalid ||
+          buttonInvalid ||
+          (hover != null && hover is! bool) ||
+          (!hasElement && !hasCoords && !hasMenu) ||
+          (elementName != null &&
+              (elementName is! String || elementName.length > 120)) ||
           (headed != null && headed is! bool) ||
           (waitFor != null && waitForGone != null) ||
           (waitFor != null &&
@@ -1992,7 +2028,25 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      effectiveRisk = isConsequentialElementName(elementName as String?)
+      const destructiveMenuTokens = <String>[
+        'quit',
+        'exit',
+        'empty trash',
+        'sign out',
+        'log out',
+        'logout',
+        'uninstall',
+        'format',
+        'thoát',
+        'đăng xuất',
+        'dọn sạch thùng rác',
+      ];
+      final lowerMenu = hasMenu ? menuPath.trim().toLowerCase() : '';
+      final menuIsConsequential = hasMenu &&
+          (isConsequentialElementName(menuPath) ||
+              destructiveMenuTokens.any(lowerMenu.contains));
+      effectiveRisk = (isConsequentialElementName(elementName as String?) ||
+              menuIsConsequential)
           ? RiskTier.r3
           : RiskTier.r2;
     case 'input.drag':
@@ -2049,10 +2103,51 @@ PolicyEvaluationResult validateToolArguments({
       final fromElementId = arguments['fromElementId'];
       final toElementId = arguments['toElementId'];
 
+      const dragNormCoordKeys = <String>[
+        'fromXNorm',
+        'fromYNorm',
+        'toXNorm',
+        'toYNorm',
+        'startXNorm',
+        'startYNorm',
+        'endXNorm',
+        'endYNorm',
+      ];
+      const dragIntCoordKeys = <String>[
+        'fromX',
+        'fromY',
+        'toX',
+        'toY',
+        'startX',
+        'startY',
+        'endX',
+        'endY',
+      ];
+      final dragNormCoordsInvalid = dragNormCoordKeys.any((k) {
+        final v = arguments[k];
+        return v != null && (v is! num || !v.isFinite || v < 0.0 || v > 1.0);
+      });
+      final dragIntCoordsInvalid = dragIntCoordKeys.any((k) {
+        final v = arguments[k];
+        return v != null && v is! int;
+      });
+      final dragElementIdsInvalid = (fromElementId != null &&
+              (fromElementId is! String ||
+                  fromElementId.isEmpty ||
+                  fromElementId.length > 64)) ||
+          (toElementId != null &&
+              (toElementId is! String ||
+                  toElementId.isEmpty ||
+                  toElementId.length > 64));
+
       final hasNormCoords = fromXNorm is num &&
           fromYNorm is num &&
           toXNorm is num &&
           toYNorm is num &&
+          fromXNorm.isFinite &&
+          fromYNorm.isFinite &&
+          toXNorm.isFinite &&
+          toYNorm.isFinite &&
           fromXNorm >= 0.0 &&
           fromXNorm <= 1.0 &&
           fromYNorm >= 0.0 &&
@@ -2067,10 +2162,15 @@ PolicyEvaluationResult validateToolArguments({
 
       final hasElements = fromElementId is String &&
           fromElementId.isNotEmpty &&
+          fromElementId.length <= 64 &&
           toElementId is String &&
-          toElementId.isNotEmpty;
+          toElementId.isNotEmpty &&
+          toElementId.length <= 64;
 
-      if (!hasNormCoords && !hasIntCoords && !hasElements) {
+      if (dragNormCoordsInvalid ||
+          dragIntCoordsInvalid ||
+          dragElementIdsInvalid ||
+          (!hasNormCoords && !hasIntCoords && !hasElements)) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -2149,7 +2249,8 @@ PolicyEvaluationResult validateToolArguments({
           text is! String ||
           text.isEmpty ||
           text.length > maxInputTypeTextLength ||
-          (elementName != null && elementName is! String) ||
+          (elementName != null &&
+              (elementName is! String || elementName.length > 120)) ||
           (headed != null && headed is! bool) ||
           (waitFor != null && waitForGone != null) ||
           (waitFor != null &&
@@ -2195,6 +2296,7 @@ PolicyEvaluationResult validateToolArguments({
       };
       if (arguments.keys.any((k) => !allowedKeyKeys.contains(k)) ||
           combo is! String ||
+          combo.length > 40 ||
           !isAllowedInputKeyCombo(combo) ||
           (inForm != null && inForm is! bool) ||
           (headed != null && headed is! bool) ||
@@ -2251,7 +2353,10 @@ PolicyEvaluationResult validateToolArguments({
           amount is! int ||
           amount < 1 ||
           amount > 10 ||
-          (elementId != null && elementId is! String) ||
+          (elementId != null &&
+              (elementId is! String ||
+                  elementId.isEmpty ||
+                  elementId.length > 64)) ||
           (headed != null && headed is! bool) ||
           (waitFor != null && waitForGone != null) ||
           (waitFor != null &&
@@ -2413,8 +2518,8 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      final parsedMin = DateTime.parse(timeMin);
-      final parsedMax = DateTime.parse(timeMax);
+      final parsedMin = DateTime.parse(timeMin.trim());
+      final parsedMax = DateTime.parse(timeMax.trim());
       if (parsedMin.isAfter(parsedMax)) {
         return const PolicyEvaluationResult(
           allowed: false,
@@ -2461,8 +2566,8 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      final parsedStart = DateTime.parse(startTime);
-      final parsedEnd = DateTime.parse(endTime);
+      final parsedStart = DateTime.parse(startTime.trim());
+      final parsedEnd = DateTime.parse(endTime.trim());
       if (parsedStart.isAfter(parsedEnd)) {
         return const PolicyEvaluationResult(
           allowed: false,
@@ -2518,12 +2623,12 @@ PolicyEvaluationResult validateToolArguments({
           !to.every((item) => item is String && _isValidEmailAddress(item)) ||
           (cc != null &&
               (cc is! List ||
-                  !cc.every(
-                      (item) => item is String && _isValidEmailAddress(item)))) ||
+                  !cc.every((item) =>
+                      item is String && _isValidEmailAddress(item)))) ||
           (bcc != null &&
               (bcc is! List ||
-                  !bcc.every(
-                      (item) => item is String && _isValidEmailAddress(item)))) ||
+                  !bcc.every((item) =>
+                      item is String && _isValidEmailAddress(item)))) ||
           subject is! String ||
           subject.length > 500 ||
           subject.contains('\r') ||
@@ -2641,7 +2746,12 @@ PolicyEvaluationResult validateToolArguments({
       final value = arguments['value'];
       final selector = arguments['selector'];
       final targetText = arguments['targetText'];
-      const allowedFillKeys = <String>{'ref', 'value', 'selector', 'targetText'};
+      const allowedFillKeys = <String>{
+        'ref',
+        'value',
+        'selector',
+        'targetText'
+      };
       if (arguments.keys.any((k) => !allowedFillKeys.contains(k)) ||
           ref is! String ||
           ref.trim().isEmpty ||
@@ -2735,7 +2845,12 @@ PolicyEvaluationResult validateToolArguments({
       final state = arguments['state'];
       final timeoutMs = arguments['timeoutMs'];
       const allowedWaitForKeys = <String>{'selector', 'state', 'timeoutMs'};
-      const allowedStates = <String>{'visible', 'hidden', 'attached', 'detached'};
+      const allowedStates = <String>{
+        'visible',
+        'hidden',
+        'attached',
+        'detached'
+      };
       if (arguments.keys.any((k) => !allowedWaitForKeys.contains(k)) ||
           (selector != null &&
               (selector is! String ||

@@ -16,13 +16,25 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
   static let keyTag = "ai.xuna.desktop.host.signing.v1"
   static let maxMetadataChars = 120
 
-  let workQueue = DispatchQueue(
-    label: "ai.xuna.desktop.host.queue",
+  let fastContextQueue = DispatchQueue(
+    label: "ai.xuna.desktop.host.fast-context",
+    qos: .userInitiated,
+    attributes: .concurrent
+  )
+  let uiActionQueue = DispatchQueue(
+    label: "ai.xuna.desktop.host.ui-action",
     qos: .userInitiated
   )
+  let captureQueue = DispatchQueue(
+    label: "ai.xuna.desktop.host.capture",
+    qos: .userInitiated
+  )
+  let uiCacheLock = NSLock()
+  let keyCacheLock = NSLock()
   var cachedKey: (SecKey, String)?
   var cachedUiElements: [String: AXUIElement] = [:]
   var cachedUiCenters: [String: CGPoint] = [:]
+  var cachedUiDescriptors: [String: (role: String, label: String)] = [:]
   var cachedUiPid: pid_t = 0
 
   static func register(with registrar: FlutterPluginRegistrar) {
@@ -98,68 +110,98 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     return false
   }
 
+  func onMainThread<T>(_ block: () -> T) -> T {
+    if Thread.isMainThread {
+      return block()
+    }
+    return DispatchQueue.main.sync(execute: block)
+  }
+
+  /// Executes AppleScript out-of-process via `/usr/bin/osascript` (`runInShell: false`) with a hard
+  /// timeout. Never uses in-process `NSAppleScript` on background queues, which loads OSA/SharedFileList
+  /// (`LSSharedFileListCreate`) and triggers a `libdispatch` main-thread assertion crash on macOS 12+.
   func runAppleScript(_ source: String, timeoutSeconds: TimeInterval = 2.5) -> String? {
-    var errDict: NSDictionary?
-    guard let scriptObj = NSAppleScript(source: source) else {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    proc.arguments = ["-e", source]
+    proc.environment = Self.sanitizedChildEnvironment()
+    let outPipe = Pipe()
+    let errPipe = Pipe()
+    proc.standardOutput = outPipe
+    proc.standardError = errPipe
+
+    let done = DispatchSemaphore(value: 0)
+    proc.terminationHandler = { _ in
+      done.signal()
+    }
+    do {
+      try proc.run()
+    } catch {
       return nil
     }
-    let desc = scriptObj.executeAndReturnError(&errDict)
-    if errDict != nil {
+    let waitRes = done.wait(timeout: .now() + max(0.5, timeoutSeconds))
+    if waitRes == .timedOut {
+      proc.terminate()
       return nil
     }
-    return desc.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard proc.terminationStatus == 0 else {
+      return nil
+    }
+    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+    return String(data: data, encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     let args = call.arguments as? [String: Any] ?? [:]
     let method = call.method
 
-    workQueue.async {
-      switch method {
-      case "keyEnsure":
-        self.handleKeyEnsure(result: result)
-      case "keySign":
-        self.handleKeySign(args: args, result: result)
-      case "media":
-        self.handleMedia(args: args, result: result)
-      case "volumeSet":
-        self.handleVolumeSet(args: args, result: result)
-      case "nowPlaying":
-        self.handleNowPlaying(args: args, result: result)
-      case "appLaunch":
-        self.handleAppLaunch(args: args, result: result)
-      case "urlOpen":
-        self.handleUrlOpen(args: args, result: result)
-      case "browserCurrentUrl":
-        self.handleBrowserCurrentUrl(args: args, result: result)
-      case "workflowRun":
-        self.handleWorkflowRun(args: args, result: result)
-      case "permissions":
-        self.handlePermissions(result: result)
-      case "requestPermission":
-        self.handleRequestPermission(args: args, result: result)
-      case "hostInfo":
-        self.handleHostInfo(result: result)
-      case "showToast":
-        self.handleShowToast(args: args, result: result)
-      case "displayWake":
-        self.handleDisplayWake(result: result)
-      case "clipboardReadText":
-        self.handleClipboardReadText(result: result)
-      case "lockScreen":
-        self.handleLockScreen(result: result)
-      case "readActiveWindowContext":
-        self.handleReadActiveWindowContext(args: args, result: result)
-      case "readBrowserPageSummary":
-        self.handleReadBrowserPageSummary(args: args, result: result)
-      case "inspectWindowUiTree":
-        self.handleInspectWindowUiTree(args: args, result: result)
-      case "invokeWindowUiControl":
-        self.handleInvokeWindowUiControl(args: args, result: result)
-      default:
-        DispatchQueue.main.async {
-          result(FlutterMethodNotImplemented)
-        }
+    switch method {
+    case "keyEnsure":
+      fastContextQueue.async { self.handleKeyEnsure(result: result) }
+    case "keySign":
+      fastContextQueue.async { self.handleKeySign(args: args, result: result) }
+    case "nowPlaying":
+      fastContextQueue.async { self.handleNowPlaying(args: args, result: result) }
+    case "browserCurrentUrl":
+      fastContextQueue.async { self.handleBrowserCurrentUrl(args: args, result: result) }
+    case "permissions":
+      fastContextQueue.async { self.handlePermissions(result: result) }
+    case "hostInfo":
+      fastContextQueue.async { self.handleHostInfo(result: result) }
+    case "clipboardReadText":
+      fastContextQueue.async { self.handleClipboardReadText(result: result) }
+    case "readActiveWindowContext":
+      fastContextQueue.async { self.handleReadActiveWindowContext(args: args, result: result) }
+    case "media":
+      uiActionQueue.async { self.handleMedia(args: args, result: result) }
+    case "volumeSet":
+      uiActionQueue.async { self.handleVolumeSet(args: args, result: result) }
+    case "appLaunch":
+      uiActionQueue.async { self.handleAppLaunch(args: args, result: result) }
+    case "urlOpen":
+      uiActionQueue.async { self.handleUrlOpen(args: args, result: result) }
+    case "workflowRun":
+      uiActionQueue.async { self.handleWorkflowRun(args: args, result: result) }
+    case "requestPermission":
+      uiActionQueue.async { self.handleRequestPermission(args: args, result: result) }
+    case "showToast":
+      uiActionQueue.async { self.handleShowToast(args: args, result: result) }
+    case "displayWake":
+      uiActionQueue.async { self.handleDisplayWake(result: result) }
+    case "lockScreen":
+      uiActionQueue.async { self.handleLockScreen(result: result) }
+    case "readBrowserPageSummary":
+      uiActionQueue.async { self.handleReadBrowserPageSummary(args: args, result: result) }
+    case "inspectWindowUiTree":
+      uiActionQueue.async { self.handleInspectWindowUiTree(args: args, result: result) }
+    case "invokeWindowUiControl":
+      uiActionQueue.async { self.handleInvokeWindowUiControl(args: args, result: result) }
+    case "captureScreen":
+      captureQueue.async { self.handleCaptureScreen(args: args, result: result) }
+    default:
+      DispatchQueue.main.async {
+        result(FlutterMethodNotImplemented)
       }
     }
   }

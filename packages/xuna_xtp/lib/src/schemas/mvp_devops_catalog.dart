@@ -185,9 +185,47 @@ List<ToolDescriptor> buildMvpToolCatalog({
     ),
     ToolDescriptor(
       name: 'app.launch',
-      description: 'Launch an allowlisted application by id.',
-      inputSchema: idPropertySchema,
-      outputSchema: idPropertySchema,
+      description:
+          'Launch an allowlisted application by id, optionally opening a folder, project, or file inside the owner home directory.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'id': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-z0-9_.-]{1,64}$',
+          },
+          'openTarget': <String, Object?>{
+            'type': 'string',
+            'minLength': 1,
+            'maxLength': 256,
+            'description':
+                'Optional folder, project, or file name or relative path inside the owner home directory to open directly in this application.',
+          },
+        },
+        'required': <String>['id'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'id': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-z0-9_.-]{1,64}$',
+          },
+          'openedTarget': <String, Object?>{'type': 'string', 'maxLength': 128},
+          'alreadyRunning': <String, Object?>{'type': 'boolean'},
+          'windowTitle': <String, Object?>{'type': 'string', 'maxLength': 200},
+          'compactUiTree': <String, Object?>{
+            'type': 'string',
+            'maxLength': 4096,
+          },
+          'snapshotId': <String, Object?>{'type': 'string', 'maxLength': 32},
+          'nodes': <String, Object?>{'type': 'array'},
+          'nextStepHint': <String, Object?>{'type': 'string', 'maxLength': 512},
+        },
+        'required': <String>['id'],
+        'additionalProperties': false,
+      },
       policy: ToolPolicyMeta(
         family: ToolFamily.app,
         risk: RiskTier.r2,
@@ -802,9 +840,25 @@ List<ToolDescriptor> buildAmbientCopilotTools({
             'type': 'string',
             'maxLength': 1200,
           },
+          'truncated': <String, Object?>{'type': 'boolean'},
           'redactedCount': <String, Object?>{
             'type': 'integer',
             'minimum': 0,
+          },
+          'runningApps': <String, Object?>{
+            'type': 'array',
+            'items': <String, Object?>{
+              'type': 'object',
+              'properties': <String, Object?>{
+                'name': <String, Object?>{'type': 'string', 'maxLength': 64},
+                'bundleId': <String, Object?>{
+                  'type': 'string',
+                  'maxLength': 128,
+                },
+              },
+              'required': <String>['name', 'bundleId'],
+              'additionalProperties': false,
+            },
           },
         },
         'required': <String>[
@@ -887,11 +941,11 @@ List<ToolDescriptor> buildAmbientCopilotTools({
         'properties': <String, Object?>{
           'direction': <String, Object?>{
             'type': 'string',
-            'enum': <String>['phone_to_host', 'host_to_phone'],
+            'enum': <String>['phone_to_desktop', 'desktop_to_phone'],
           },
           'kind': <String, Object?>{
             'type': 'string',
-            'enum': <String>['text', 'image', 'file'],
+            'enum': <String>['clipboard_text', 'screenshot', 'file'],
           },
           'fileName': <String, Object?>{'type': 'string', 'maxLength': 120},
           'sizeBytes': <String, Object?>{
@@ -947,13 +1001,15 @@ List<ToolDescriptor> buildAmbientCopilotTools({
         'properties': <String, Object?>{
           'steps': <String, Object?>{
             'type': 'array',
+            'minItems': 1,
+            'maxItems': 5,
             'items': <String, Object?>{
               'type': 'object',
               'properties': <String, Object?>{
                 'tool': <String, Object?>{'type': 'string', 'maxLength': 64},
                 'arguments': <String, Object?>{'type': 'object'},
               },
-              'required': <String>['tool'],
+              'required': <String>['tool', 'arguments'],
               'additionalProperties': false,
             },
           },
