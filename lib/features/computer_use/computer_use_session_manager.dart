@@ -3515,6 +3515,7 @@ class ComputerUseSessionManager {
     required String toolName,
     required Map<String, Object?> arguments,
     required bool hasR3Approval,
+    bool autopilot = false,
     DateTime? nowUtc,
   }) async {
     final session = _requireActiveSession(nowUtc: nowUtc);
@@ -3649,6 +3650,7 @@ class ComputerUseSessionManager {
         focusedRole: beforeWindow.focusedRole,
         draftCharsRemaining: session.draftCharsRemaining,
         hasUncommittedDraft: session.hasUncommittedDraft,
+        autopilot: autopilot,
       );
       if (stepRisk.reasonCode == 'password_field_forbidden') {
         throw const XunaHostChannelException(
@@ -3662,7 +3664,7 @@ class ComputerUseSessionManager {
           errorCode: 'approval_required',
         );
       }
-      if (toolName == 'input.type_text' && !hasR3Approval) {
+      if (toolName == 'input.type_text' && !hasR3Approval && !autopilot) {
         // An unsigned draft (ADR-0015 D1) spends the session's draft budget
         // before anything is typed.
         session.draftCharsTyped += (arguments['text'] as String).length;
@@ -3994,6 +3996,7 @@ class ComputerUseSessionManager {
   preflightInputAction({
     required String toolName,
     required Map<String, Object?> arguments,
+    bool autopilot = false,
     DateTime? nowUtc,
   }) async {
     _invalidatePreflightCache();
@@ -4098,10 +4101,17 @@ class ComputerUseSessionManager {
       }
       final endName = dragEndNode?['name'];
       final startName = dragStartNode?['name'];
-      targetNode =
-          (endName is String &&
-              isConsequentialElementName(endName) &&
-              !(startName is String && isConsequentialElementName(startName)))
+      final isEndRisky =
+          endName is String &&
+          (autopilot
+              ? isHighImpactElementName(endName)
+              : isConsequentialElementName(endName));
+      final isStartRisky =
+          startName is String &&
+          (autopilot
+              ? isHighImpactElementName(startName)
+              : isConsequentialElementName(startName));
+      targetNode = (isEndRisky && !isStartRisky)
           ? dragEndNode
           : (dragStartNode ?? dragEndNode);
     }
@@ -4128,6 +4138,7 @@ class ComputerUseSessionManager {
       focusedRole: window.focusedRole,
       draftCharsRemaining: session.draftCharsRemaining,
       hasUncommittedDraft: session.hasUncommittedDraft,
+      autopilot: autopilot,
     );
     if (stepRisk.reasonCode == 'password_field_forbidden') {
       throw const XunaHostChannelException(
@@ -4873,6 +4884,7 @@ class InputClickTool extends HostToolHandler {
       toolName: name,
       arguments: context.arguments,
       hasR3Approval: context.hasVerifiedR3Approval,
+      autopilot: context.policy?.trustPreset == TrustPreset.autopilot,
     );
     return ToolHandlerOutput(
       text: 'Đã nhấn chuột (${result['effect']}).',
@@ -4894,6 +4906,7 @@ class InputDragTool extends HostToolHandler {
       toolName: name,
       arguments: context.arguments,
       hasR3Approval: context.hasVerifiedR3Approval,
+      autopilot: context.policy?.trustPreset == TrustPreset.autopilot,
     );
     return ToolHandlerOutput(
       text: 'Đã kéo thả chuột (${result['effect']}).',
@@ -4915,6 +4928,7 @@ class InputTypeTextTool extends HostToolHandler {
       toolName: name,
       arguments: context.arguments,
       hasR3Approval: context.hasVerifiedR3Approval,
+      autopilot: context.policy?.trustPreset == TrustPreset.autopilot,
     );
     return ToolHandlerOutput(
       text: 'Đã nhập văn bản (${result['effect']}).',
@@ -4937,6 +4951,7 @@ class InputKeyTool extends HostToolHandler {
       toolName: name,
       arguments: context.arguments,
       hasR3Approval: context.hasVerifiedR3Approval,
+      autopilot: context.policy?.trustPreset == TrustPreset.autopilot,
     );
     return ToolHandlerOutput(
       text: 'Đã nhấn phím (${result['effect']}).',
@@ -4958,6 +4973,7 @@ class InputScrollTool extends HostToolHandler {
       toolName: name,
       arguments: context.arguments,
       hasR3Approval: context.hasVerifiedR3Approval,
+      autopilot: context.policy?.trustPreset == TrustPreset.autopilot,
     );
     return ToolHandlerOutput(
       text: 'Đã cuộn trang (${result['effect']}).',

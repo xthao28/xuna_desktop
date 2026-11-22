@@ -48,7 +48,20 @@ InputStepRisk classifyInputStepRisk({
   List<Map<String, Object?>>? activeWindowNodes,
   double? windowWidth,
   double? windowHeight,
+  bool autopilot = false,
 }) {
+  if (autopilot) {
+    return _classifyAutopilotInputStepRisk(
+      toolName: toolName,
+      arguments: arguments,
+      liveTarget: liveTarget,
+      liveEndTarget: liveEndTarget,
+      focusedRole: focusedRole,
+      activeWindowNodes: activeWindowNodes,
+      windowWidth: windowWidth,
+      windowHeight: windowHeight,
+    );
+  }
   switch (toolName) {
     case 'input.type_text':
       if (liveTarget == null || !isDraftTextTarget(liveTarget)) {
@@ -266,6 +279,144 @@ InputStepRisk classifyInputStepRisk({
       }
 
       return const InputStepRisk(RiskTier.r2, 'navigation_target');
+    default:
+      return const InputStepRisk(RiskTier.r3, 'unclassified_tool');
+  }
+}
+
+/// Relaxed `TrustPreset.autopilot` risk classifier (ADR-0015 Autopilot
+/// amendment 2026-11-22):
+/// - Password/secure fields ALWAYS stay forbidden (`password_field_forbidden`).
+/// - High-impact targets (financial/payment, destructive/account/system,
+///   external send/publish via [isHighImpactElementName]) ALWAYS stay `R3`.
+/// - Ordinary UI actions (normal clicks, coordinate clicks, typing including
+///   `headed` and newlines, `Enter`/`Space` prompt submission, drags, scrolls)
+///   stay `R2` so Autopilot runs uninterrupted.
+InputStepRisk _classifyAutopilotInputStepRisk({
+  required String toolName,
+  required Map<String, Object?> arguments,
+  Map<String, Object?>? liveTarget,
+  Map<String, Object?>? liveEndTarget,
+  String? focusedRole,
+  List<Map<String, Object?>>? activeWindowNodes,
+  double? windowWidth,
+  double? windowHeight,
+}) {
+  switch (toolName) {
+    case 'input.type_text':
+      if (liveTarget != null && isPasswordUiNode(liveTarget)) {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+      }
+      if (focusedRole == 'password') {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+      }
+      final text = arguments['text'];
+      if (text is! String) {
+        return const InputStepRisk(RiskTier.r3, 'unclassified_target');
+      }
+      return const InputStepRisk(RiskTier.r2, 'autopilot_type_text');
+    case 'input.key':
+      if (focusedRole == 'password') {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+      }
+      if (liveTarget != null && isPasswordUiNode(liveTarget)) {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+      }
+      final combo = arguments['combo'];
+      if (combo is! String || combo.trim().isEmpty) {
+        return const InputStepRisk(RiskTier.r3, 'activation_key');
+      }
+      return const InputStepRisk(RiskTier.r2, 'autopilot_key');
+    case 'input.scroll':
+      return const InputStepRisk(RiskTier.r2, 'scroll');
+    case 'input.click':
+      final rawMenuPath = arguments['menuPath'];
+      if (rawMenuPath is String && rawMenuPath.trim().isNotEmpty) {
+        final lowerMenu = rawMenuPath.trim().toLowerCase();
+        const highImpactMenuTokens = <String>[
+          'empty trash',
+          'sign out',
+          'log out',
+          'logout',
+          'uninstall',
+          'format',
+          'đăng xuất',
+          'dọn sạch thùng rác',
+        ];
+        if (isHighImpactElementName(rawMenuPath) ||
+            highImpactMenuTokens.any(lowerMenu.contains)) {
+          return const InputStepRisk(RiskTier.r3, 'consequential_target');
+        }
+        return const InputStepRisk(RiskTier.r2, 'autopilot_click');
+      }
+
+      var target = liveTarget;
+      final xNorm = (arguments['xNorm'] as num?)?.toDouble();
+      final yNorm = (arguments['yNorm'] as num?)?.toDouble();
+      final isCoordClick = xNorm != null && yNorm != null;
+      if (target == null && isCoordClick && activeWindowNodes != null) {
+        target = hitTestNodeAtCoordinates(
+          nodes: activeWindowNodes,
+          xNorm: xNorm,
+          yNorm: yNorm,
+          windowWidth: windowWidth,
+          windowHeight: windowHeight,
+        );
+      }
+      if (target != null && isPasswordUiNode(target)) {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+      }
+      final liveName = target?['name'];
+      final declaredName = arguments['elementName'];
+      if (isHighImpactElementName(liveName is String ? liveName : null) ||
+          isHighImpactElementName(
+            declaredName is String ? declaredName : null,
+          )) {
+        return const InputStepRisk(RiskTier.r3, 'consequential_target');
+      }
+      return const InputStepRisk(RiskTier.r2, 'autopilot_click');
+    case 'input.drag':
+      var startTarget = liveTarget;
+      var endTarget = liveEndTarget;
+      final fromXRaw = arguments['fromXNorm'] ?? arguments['startXNorm'];
+      final fromYRaw = arguments['fromYNorm'] ?? arguments['startYNorm'];
+      final toXRaw = arguments['toXNorm'] ?? arguments['endXNorm'];
+      final toYRaw = arguments['toYNorm'] ?? arguments['endYNorm'];
+      final fromXNorm = fromXRaw is num ? fromXRaw.toDouble() : null;
+      final fromYNorm = fromYRaw is num ? fromYRaw.toDouble() : null;
+      final toXNorm = toXRaw is num ? toXRaw.toDouble() : null;
+      final toYNorm = toYRaw is num ? toYRaw.toDouble() : null;
+      if (activeWindowNodes != null) {
+        if (startTarget == null && fromXNorm != null && fromYNorm != null) {
+          startTarget = hitTestNodeAtCoordinates(
+            nodes: activeWindowNodes,
+            xNorm: fromXNorm,
+            yNorm: fromYNorm,
+            windowWidth: windowWidth,
+            windowHeight: windowHeight,
+          );
+        }
+        if (endTarget == null && toXNorm != null && toYNorm != null) {
+          endTarget = hitTestNodeAtCoordinates(
+            nodes: activeWindowNodes,
+            xNorm: toXNorm,
+            yNorm: toYNorm,
+            windowWidth: windowWidth,
+            windowHeight: windowHeight,
+          );
+        }
+      }
+      if ((startTarget != null && isPasswordUiNode(startTarget)) ||
+          (endTarget != null && isPasswordUiNode(endTarget))) {
+        return const InputStepRisk(RiskTier.r3, 'password_field_forbidden');
+      }
+      final startName = startTarget?['name'] as String?;
+      final endName = endTarget?['name'] as String?;
+      if (isHighImpactElementName(startName) ||
+          isHighImpactElementName(endName)) {
+        return const InputStepRisk(RiskTier.r3, 'consequential_target');
+      }
+      return const InputStepRisk(RiskTier.r2, 'autopilot_drag');
     default:
       return const InputStepRisk(RiskTier.r3, 'unclassified_tool');
   }

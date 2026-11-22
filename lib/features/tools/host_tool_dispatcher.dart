@@ -952,9 +952,12 @@ class HostToolDispatcher {
     final manager = computerUseManager;
     if (_liveClassifiedInputTools.contains(params.name) && manager != null) {
       try {
+        final isAutopilot =
+            policyStore.evaluator.policy?.trustPreset == TrustPreset.autopilot;
         final live = await manager.preflightInputAction(
           toolName: params.name,
           arguments: params.arguments,
+          autopilot: isAutopilot,
           nowUtc: now,
         );
         if (live.stepRisk.risk > risk) risk = live.stepRisk.risk;

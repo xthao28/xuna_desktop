@@ -68,6 +68,156 @@ bool isConsequentialElementName(String? elementName) {
   return false;
 }
 
+/// High-impact UI element lexicon for `TrustPreset.autopilot` (ADR-0015
+/// Autopilot amendment 2026-11-22): financial/payment, destructive/account,
+/// and external outbound send/publish actions ALWAYS stay `R3` phone-signed.
+/// Normal UI/IDE controls (`submit`, bare `confirm`, `remove`, `cancel`/`hủy`,
+/// `order`) are intentionally excluded so Autopilot can work uninterrupted.
+const List<String> highImpactElementKeywords = <String>[
+  // External outbound send & public publish
+  'send',
+  'post',
+  'publish',
+  'gửi',
+  'xuất bản',
+  // Destructive & account/system impact
+  'delete',
+  'erase',
+  'empty trash',
+  'format',
+  'uninstall',
+  'sign out',
+  'log out',
+  'logout',
+  'xóa',
+  'xoá',
+  'gỡ cài đặt',
+  'hủy tài khoản',
+  'xóa tài khoản',
+  'xoá tài khoản',
+  'dọn sạch thùng rác',
+  'đăng xuất',
+  // Financial / payment / purchase / transfer
+  'buy',
+  'pay',
+  'payment',
+  'checkout',
+  'check out',
+  'purchase',
+  'transfer',
+  'wire',
+  'confirm payment',
+  'place order',
+  'mua',
+  'mua ngay',
+  'thanh toán',
+  'chuyển khoản',
+  'đặt hàng',
+];
+
+const Set<String> _nonPublishDangFollowers = <String>{
+  'nhập',
+  'nhap',
+  'ký',
+  'ky',
+};
+
+/// Returns `true` when [elementName] represents a high-impact action that must
+/// stay `R3` phone-signed even under `TrustPreset.autopilot`: financial,
+/// destructive/account/system, or external send/publish actions.
+bool isHighImpactElementName(String? elementName) {
+  if (elementName == null || elementName.trim().isEmpty) return false;
+  final decomposed = elementName.replaceAllMapped(
+    RegExp(r'([a-z])([A-Z])'),
+    (m) => '${m[1]} ${m[2]}',
+  );
+  final normalized = decomposed.trim().toLowerCase();
+  final wordList =
+      normalized.split(_wordSplitRe).where((w) => w.isNotEmpty).toList();
+  final words = wordList.toSet();
+  if (words.contains('checkout') ||
+      normalized.replaceAll(' ', '').contains('checkout') ||
+      normalized.replaceAll(RegExp(r'[\s_\-]+'), '').contains('checkout')) {
+    return true;
+  }
+  for (var i = 0; i < wordList.length; i++) {
+    if (wordList[i] == 'đăng') {
+      final next = i + 1 < wordList.length ? wordList[i + 1] : null;
+      if (next == null || !_nonPublishDangFollowers.contains(next)) {
+        return true;
+      }
+    }
+  }
+  for (final keyword in highImpactElementKeywords) {
+    if (keyword.contains(' ')) {
+      if (normalized.contains(keyword)) return true;
+    } else if (words.contains(keyword)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Checks whether a browser interaction is high-impact under
+/// `TrustPreset.autopilot` (financial/payment, credentials/cards, destructive,
+/// or external send/publish). Excludes bare `submit`/`confirm`/`xac nhan`.
+bool isHighImpactBrowserTarget({
+  required String ref,
+  String? selector,
+  String? targetText,
+  String? value,
+}) {
+  if (isHighImpactElementName(ref)) return true;
+  if (selector != null && isHighImpactElementName(selector)) return true;
+  if (targetText != null && isHighImpactElementName(targetText)) return true;
+  if (value != null && isHighImpactElementName(value)) return true;
+
+  final rawCombined =
+      '$ref ${selector ?? ''} ${targetText ?? ''} ${value ?? ''}';
+  final decomposed = rawCombined
+      .replaceAllMapped(
+        RegExp(r'([a-z])([A-Z])'),
+        (m) => '${m[1]} ${m[2]}',
+      )
+      .toLowerCase();
+  final words =
+      decomposed.split(_wordSplitRe).where((w) => w.isNotEmpty).toSet();
+
+  if (words.contains('pin') ||
+      words.contains('card') ||
+      words.contains('credit') ||
+      words.contains('token') ||
+      words.contains('secret') ||
+      words.contains('thẻ') ||
+      words.contains('transfer') ||
+      words.contains('payment') ||
+      words.contains('checkout') ||
+      words.contains('wire') ||
+      decomposed.replaceAll(RegExp(r'[\s_\-]+'), '').contains('checkout') ||
+      decomposed.contains('check out')) {
+    return true;
+  }
+
+  if (decomposed.contains('password') ||
+      decomposed.contains('passwd') ||
+      decomposed.contains('cvv') ||
+      decomposed.contains('cvc') ||
+      decomposed.contains('mật khẩu') ||
+      decomposed.contains('mat khau') ||
+      decomposed.contains('chuyen khoan') ||
+      decomposed.contains('thanh toan') ||
+      decomposed.contains('dat hang') ||
+      decomposed.contains('mua ngay') ||
+      decomposed.contains('the tin dung') ||
+      decomposed.contains('the visa') ||
+      decomposed.contains('the mastercard') ||
+      decomposed.contains('the atm') ||
+      decomposed.contains('the ngan hang')) {
+    return true;
+  }
+  return false;
+}
+
 /// Checks whether a browser interaction is consequential and requires elevation to R3 (`UDC-18` §Wave B).
 bool isConsequentialBrowserTarget({
   required String ref,

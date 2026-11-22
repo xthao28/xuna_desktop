@@ -1711,7 +1711,9 @@ PolicyEvaluationResult validateToolArguments({
         allowPublicHttpsDomains: allowPublicHttpsDomains,
       );
       if (startScopeError != null) return startScopeError;
-      effectiveRisk = RiskTier.r3;
+      effectiveRisk = activePolicy.trustPreset == TrustPreset.autopilot
+          ? RiskTier.r2
+          : RiskTier.r3;
     case 'cu.session_extend':
       // UDC-17 S17.3: add apps/domains to the running session without
       // restarting it. Same checks as `cu.session_start`; R3, phone-signed.
@@ -1750,7 +1752,9 @@ PolicyEvaluationResult validateToolArguments({
         allowPublicHttpsDomains: allowPublicHttpsDomains,
       );
       if (extendScopeError != null) return extendScopeError;
-      effectiveRisk = RiskTier.r3;
+      effectiveRisk = activePolicy.trustPreset == TrustPreset.autopilot
+          ? RiskTier.r2
+          : RiskTier.r3;
     case 'cu.session_end':
       final sessionId = arguments['sessionId'];
       final outcome = arguments['outcome'];
@@ -2734,11 +2738,17 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      final isConsequential = isConsequentialBrowserTarget(
-        ref: ref,
-        selector: selector as String?,
-        targetText: targetText as String?,
-      );
+      final isConsequential = activePolicy.trustPreset == TrustPreset.autopilot
+          ? isHighImpactBrowserTarget(
+              ref: ref,
+              selector: selector as String?,
+              targetText: targetText as String?,
+            )
+          : isConsequentialBrowserTarget(
+              ref: ref,
+              selector: selector as String?,
+              targetText: targetText as String?,
+            );
       effectiveRisk = isConsequential ? RiskTier.r3 : RiskTier.r2;
 
     case 'web.fill':
@@ -2774,12 +2784,19 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      final isConsequential = isConsequentialBrowserTarget(
-        ref: ref,
-        selector: selector as String?,
-        targetText: targetText as String?,
-        value: value,
-      );
+      final isConsequential = activePolicy.trustPreset == TrustPreset.autopilot
+          ? isHighImpactBrowserTarget(
+              ref: ref,
+              selector: selector as String?,
+              targetText: targetText as String?,
+              value: value,
+            )
+          : isConsequentialBrowserTarget(
+              ref: ref,
+              selector: selector as String?,
+              targetText: targetText as String?,
+              value: value,
+            );
       effectiveRisk = isConsequential ? RiskTier.r3 : RiskTier.r2;
 
     case 'web.select':
