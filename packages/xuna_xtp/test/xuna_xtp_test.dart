@@ -126,6 +126,7 @@ void main() {
 
   late Map<String, Object?> golden;
   late Map<String, Object?> sampleFrames;
+  late Map<String, Object?> meshFrames;
 
   group('xuna/policy.idempotent (optional, additive)', () {
     const base = <String, Object?>{
@@ -171,14 +172,17 @@ void main() {
   setUpAll(() {
     final goldenFile = File('test/fixtures/xtp/golden_vectors.json');
     final framesFile = File('test/fixtures/xtp/sample_frames.json');
+    final meshFile = File('test/fixtures/xtp/mesh_frames.json');
     golden = jsonDecode(goldenFile.readAsStringSync()) as Map<String, Object?>;
     sampleFrames =
         jsonDecode(framesFile.readAsStringSync()) as Map<String, Object?>;
+    meshFrames =
+        jsonDecode(meshFile.readAsStringSync()) as Map<String, Object?>;
   });
 
   group('Contract fixtures byte-match backend', () {
     test(
-        'golden_vectors.json and sample_frames.json match backend byte-for-byte',
+        'golden_vectors.json, sample_frames.json, and mesh_frames.json match backend byte-for-byte',
         () {
       final backendDir = Directory('../../../backend/tests/fixtures/xtp');
       if (!backendDir.existsSync()) {
@@ -188,6 +192,7 @@ void main() {
       for (final name in <String>[
         'golden_vectors.json',
         'sample_frames.json',
+        'mesh_frames.json',
       ]) {
         final localBytes = File('test/fixtures/xtp/$name').readAsBytesSync();
         final backendBytes =
@@ -409,7 +414,7 @@ void main() {
     });
 
     test(
-        'enforces frame size limit (64 KiB) and structuredContent limit (16 KiB)',
+        'enforces frame size limit (512 KiB) and structuredContent limit (16 KiB)',
         () {
       final huge = 'a' * (maxXtpFrameBytes + 10);
       expect(
@@ -3803,6 +3808,656 @@ void main() {
         evaluateStep: forgeEvaluator.evaluateInvocation,
       );
       expect(okRuntime.allowed, isTrue);
+    });
+  });
+
+  group('M3 Spatial Device Mesh XTP frames', () {
+    test('parses and re-encodes all 7 frames in mesh_frames.json', () {
+      final frames = meshFrames['frames'] as Map<String, Object?>;
+      expect(frames, hasLength(7));
+      for (final entry in frames.entries) {
+        final rawText = jsonEncode(entry.value);
+        final parsed = XtpFrame.parse(rawText);
+        final reencoded = jsonDecode(parsed.encode());
+        expect(
+          reencoded,
+          equals(entry.value),
+          reason: 'Round-trip mismatch on mesh frame ${entry.key}',
+        );
+      }
+
+      final enroll = XtpFrame.parse(
+        jsonEncode(frames['helloEnrollLinuxRequest']),
+      ) as XtpRequest;
+      expect(enroll.typedParams, isA<HelloEnrollParams>());
+      expect(
+        (enroll.typedParams as HelloEnrollParams).platform,
+        equals(HostPlatform.linux),
+      );
+
+      final reconnect = XtpFrame.parse(
+        jsonEncode(frames['helloReconnectLinuxRequest']),
+      ) as XtpRequest;
+      expect(reconnect.typedParams, isA<HelloReconnectParams>());
+      expect(
+        (reconnect.typedParams as HelloReconnectParams).platform,
+        equals(HostPlatform.linux),
+      );
+
+      final presenceFull = XtpFrame.parse(
+        jsonEncode(frames['presenceNotification']),
+      ) as XtpNotification;
+      final presenceTyped = presenceFull.typedParams as PresenceParams;
+      expect(presenceTyped.idleSeconds, equals(12));
+      expect(presenceTyped.screenLocked, isFalse);
+      expect(presenceTyped.mediaPlaying, isTrue);
+      expect(presenceTyped.batteryPercent, equals(78));
+      expect(presenceTyped.isCharging, isTrue);
+      expect(presenceTyped.foregroundAppId, equals('vscode'));
+
+      final presenceNoBat = XtpFrame.parse(
+        jsonEncode(frames['presenceDesktopNoBatteryNotification']),
+      ) as XtpNotification;
+      final noBatTyped = presenceNoBat.typedParams as PresenceParams;
+      expect(noBatTyped.batteryPercent, isNull);
+      expect(noBatTyped.isCharging, isNull);
+      expect(noBatTyped.foregroundAppId, isNull);
+
+      final resources = XtpFrame.parse(
+        jsonEncode(frames['resourcesNotification']),
+      ) as XtpNotification;
+      final resTyped = resources.typedParams as ResourcesParams;
+      expect(resTyped.installedApps, equals(<String>['vscode', 'obsidian']));
+      expect(resTyped.workspaces, equals(<String>['xuna_pet', 'Notes_Vault']));
+      expect(resTyped.capabilitiesVersion, equals('r1_0001'));
+
+      final focusHotkey = XtpFrame.parse(
+        jsonEncode(frames['focusRequestHotkeyNotification']),
+      ) as XtpNotification;
+      final focusHotkeyTyped = focusHotkey.typedParams as FocusRequestParams;
+      expect(focusHotkeyTyped.source, equals(FocusRequestSource.hotkey));
+      expect(focusHotkeyTyped.followMe, isTrue);
+
+      final focusTray = XtpFrame.parse(
+        jsonEncode(frames['focusRequestTrayNotification']),
+      ) as XtpNotification;
+      final focusTrayTyped = focusTray.typedParams as FocusRequestParams;
+      expect(focusTrayTyped.source, equals(FocusRequestSource.tray));
+      expect(focusTrayTyped.followMe, isNull);
+    });
+
+    test('outbound constructors omit null optional keys and round-trip cleanly',
+        () {
+      final p = PresenceParams(
+        idleSeconds: 5,
+        screenLocked: false,
+        mediaPlaying: false,
+        updatedAt: DateTime.utc(2026, 11, 20, 16, 0, 0),
+      );
+      final pNotif = p.toNotification();
+      expect(pNotif.params.containsKey('batteryPercent'), isFalse);
+      expect(pNotif.params.containsKey('isCharging'), isFalse);
+      expect(pNotif.params.containsKey('subnetHash'), isFalse);
+      expect(pNotif.params.containsKey('foregroundAppId'), isFalse);
+      expect(XtpFrame.parse(pNotif.encode()), isA<XtpNotification>());
+
+      const r = ResourcesParams(
+        installedApps: <String>[],
+        workspaces: <String>[],
+      );
+      final rNotif = r.toNotification();
+      expect(rNotif.params.containsKey('capabilitiesVersion'), isFalse);
+      expect(XtpFrame.parse(rNotif.encode()), isA<XtpNotification>());
+
+      const f = FocusRequestParams(source: FocusRequestSource.tray);
+      final fNotif = f.toNotification();
+      expect(fNotif.params.containsKey('followMe'), isFalse);
+      expect(XtpFrame.parse(fNotif.encode()), isA<XtpNotification>());
+    });
+
+    test('rejects invalid enroll platforms while allowing all 5 on reconnect',
+        () {
+      final frames = meshFrames['frames'] as Map<String, Object?>;
+      final enrollBase = Map<String, Object?>.from(
+        frames['helloEnrollLinuxRequest']! as Map<String, Object?>,
+      );
+      final enrollParams =
+          Map<String, Object?>.from(enrollBase['params']! as Map);
+      final enrollBody =
+          Map<String, Object?>.from(enrollParams['enroll']! as Map);
+      for (final badPlatform in <String>['android', 'ios', 'freebsd']) {
+        enrollBody['platform'] = badPlatform;
+        enrollParams['enroll'] = enrollBody;
+        enrollBase['params'] = enrollParams;
+        expect(
+          () => XtpFrame.parse(jsonEncode(enrollBase)),
+          throwsA(
+            isA<XtpProtocolException>().having(
+              (e) => e.jsonRpcCode,
+              'jsonRpcCode',
+              JsonRpcErrorCode.invalidParams,
+            ),
+          ),
+          reason: 'Should reject enroll platform $badPlatform',
+        );
+      }
+
+      final reconnectBase = Map<String, Object?>.from(
+        frames['helloReconnectLinuxRequest']! as Map<String, Object?>,
+      );
+      final reconnectParams =
+          Map<String, Object?>.from(reconnectBase['params']! as Map);
+      for (final okPlatform in <String>[
+        'windows',
+        'macos',
+        'linux',
+        'android',
+        'ios',
+      ]) {
+        reconnectParams['platform'] = okPlatform;
+        reconnectBase['params'] = reconnectParams;
+        final parsed = XtpFrame.parse(jsonEncode(reconnectBase)) as XtpRequest;
+        expect(
+          (parsed.typedParams as HelloReconnectParams).platform.wire,
+          equals(okPlatform),
+        );
+      }
+    });
+
+    test('rejects invalid xuna/presence, xuna/resources, and xuna/focusRequest',
+        () {
+      void expectInvalidParams(Map<String, Object?> frame, String reason) {
+        expect(
+          () => XtpFrame.parse(jsonEncode(frame)),
+          throwsA(
+            isA<XtpProtocolException>().having(
+              (e) => e.jsonRpcCode,
+              'jsonRpcCode',
+              JsonRpcErrorCode.invalidParams,
+            ),
+          ),
+          reason: reason,
+        );
+      }
+
+      final validPresence = <String, Object?>{
+        'schemaVersion': 1,
+        'idleSeconds': 0,
+        'screenLocked': false,
+        'mediaPlaying': false,
+        'updatedAt': '2026-11-20T16:00:00Z',
+      };
+
+      for (final bad in <({String reason, Map<String, Object?> params})>[
+        (
+          reason: 'unknown key windowTitle',
+          params: <String, Object?>{...validPresence, 'windowTitle': 'secret'},
+        ),
+        (
+          reason: 'schemaVersion 2',
+          params: <String, Object?>{...validPresence, 'schemaVersion': 2},
+        ),
+        (
+          reason: 'negative idleSeconds',
+          params: <String, Object?>{...validPresence, 'idleSeconds': -1},
+        ),
+        (
+          reason: 'bool idleSeconds',
+          params: <String, Object?>{...validPresence, 'idleSeconds': true},
+        ),
+        (
+          reason: 'batteryPercent -1',
+          params: <String, Object?>{...validPresence, 'batteryPercent': -1},
+        ),
+        (
+          reason: 'batteryPercent 101',
+          params: <String, Object?>{...validPresence, 'batteryPercent': 101},
+        ),
+        (
+          reason: 'batteryPercent float',
+          params: <String, Object?>{...validPresence, 'batteryPercent': 55.5},
+        ),
+        (
+          reason: 'isCharging non-bool',
+          params: <String, Object?>{...validPresence, 'isCharging': 1},
+        ),
+        (
+          reason: 'subnetHash raw IP',
+          params: <String, Object?>{
+            ...validPresence,
+            'subnetHash': '192.168.1.1',
+          },
+        ),
+        (
+          reason: 'subnetHash uppercase/too short',
+          params: <String, Object?>{...validPresence, 'subnetHash': 'ABCDEF'},
+        ),
+        (
+          reason: 'subnetHash >64 hex chars',
+          params: <String, Object?>{
+            ...validPresence,
+            'subnetHash': 'a' * 65,
+          },
+        ),
+        (
+          reason: 'foregroundAppId with space/title',
+          params: <String, Object?>{
+            ...validPresence,
+            'foregroundAppId': 'VS Code — Secret.txt',
+          },
+        ),
+        (
+          reason: 'foregroundAppId empty',
+          params: <String, Object?>{...validPresence, 'foregroundAppId': ''},
+        ),
+        (
+          reason: 'foregroundAppId hard-denied 1password',
+          params: <String, Object?>{
+            ...validPresence,
+            'foregroundAppId': '1password',
+          },
+        ),
+        (
+          reason: 'invalid updatedAt',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': 'not-a-date',
+          },
+        ),
+        (
+          reason: 'date-only updatedAt without time/tz',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-11-20',
+          },
+        ),
+        (
+          reason: 'updatedAt month 13 day 45 calendar rollover',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-13-45T16:00:00Z',
+          },
+        ),
+        (
+          reason: 'updatedAt Feb 30 calendar rollover',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-02-30T16:00:00Z',
+          },
+        ),
+        (
+          reason: 'updatedAt non-leap Feb 29 calendar rollover',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-02-29T00:00:00Z',
+          },
+        ),
+        (
+          reason: 'updatedAt out-of-range hour 24',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-11-20T24:00:00Z',
+          },
+        ),
+        (
+          reason: 'updatedAt out-of-range tz offset +25:00',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-11-20T16:00:00+25:00',
+          },
+        ),
+        (
+          reason: 'updatedAt out-of-range tz minute +12:60',
+          params: <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-11-20T16:00:00+12:60',
+          },
+        ),
+      ]) {
+        expectInvalidParams(
+          <String, Object?>{
+            'jsonrpc': '2.0',
+            'method': 'xuna/presence',
+            'params': bad.params,
+          },
+          bad.reason,
+        );
+      }
+
+      // Valid leap-day and positive numeric timezone offset timestamps must succeed and normalize to UTC.
+      final leapFrame = XtpFrame.parse(
+        jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'method': 'xuna/presence',
+          'params': <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2024-02-29T00:00:00Z',
+          },
+        }),
+      ) as XtpNotification;
+      expect(
+        (leapFrame.typedParams as PresenceParams).updatedAt,
+        equals(DateTime.utc(2024, 2, 29, 0, 0, 0)),
+      );
+
+      final offsetFrame = XtpFrame.parse(
+        jsonEncode(<String, Object?>{
+          'jsonrpc': '2.0',
+          'method': 'xuna/presence',
+          'params': <String, Object?>{
+            ...validPresence,
+            'updatedAt': '2026-11-20T16:00:00+07:00',
+          },
+        }),
+      ) as XtpNotification;
+      expect(
+        (offsetFrame.typedParams as PresenceParams).updatedAt,
+        equals(DateTime.utc(2026, 11, 20, 9, 0, 0)),
+      );
+
+      final validResources = <String, Object?>{
+        'schemaVersion': 1,
+        'installedApps': <String>['vscode'],
+        'workspaces': <String>['xuna_pet'],
+      };
+
+      for (final bad in <({String reason, Map<String, Object?> params})>[
+        (
+          reason: 'resources unknown key',
+          params: <String, Object?>{...validResources, 'paths': <String>[]},
+        ),
+        (
+          reason: 'resources > 256 installedApps',
+          params: <String, Object?>{
+            ...validResources,
+            'installedApps': List<String>.generate(257, (i) => 'app_$i'),
+          },
+        ),
+        (
+          reason: 'resources hard-denied app in installedApps',
+          params: <String, Object?>{
+            ...validResources,
+            'installedApps': <String>['1password'],
+          },
+        ),
+        (
+          reason: 'resources invalid app id with slash',
+          params: <String, Object?>{
+            ...validResources,
+            'installedApps': <String>['/usr/bin/code'],
+          },
+        ),
+        (
+          reason: 'resources > 128 workspaces',
+          params: <String, Object?>{
+            ...validResources,
+            'workspaces': List<String>.generate(129, (i) => 'ws_$i'),
+          },
+        ),
+        (
+          reason: 'resources workspace with forward slash',
+          params: <String, Object?>{
+            ...validResources,
+            'workspaces': <String>['/Users/thao/xuna_pet'],
+          },
+        ),
+        (
+          reason: 'resources workspace with backslash',
+          params: <String, Object?>{
+            ...validResources,
+            'workspaces': <String>[r'C:\work\app'],
+          },
+        ),
+        (
+          reason: 'resources workspace with dotdot traversal',
+          params: <String, Object?>{
+            ...validResources,
+            'workspaces': <String>['..'],
+          },
+        ),
+        (
+          reason: 'resources invalid capabilitiesVersion',
+          params: <String, Object?>{
+            ...validResources,
+            'capabilitiesVersion': 'bad version!',
+          },
+        ),
+      ]) {
+        expectInvalidParams(
+          <String, Object?>{
+            'jsonrpc': '2.0',
+            'method': 'xuna/resources',
+            'params': bad.params,
+          },
+          bad.reason,
+        );
+      }
+
+      for (final bad in <({String reason, Map<String, Object?> params})>[
+        (
+          reason: 'focusRequest extra key',
+          params: <String, Object?>{
+            'schemaVersion': 1,
+            'source': 'hotkey',
+            'hostId': 'x',
+          },
+        ),
+        (
+          reason: 'focusRequest invalid source app',
+          params: <String, Object?>{'schemaVersion': 1, 'source': 'app'},
+        ),
+        (
+          reason: 'focusRequest invalid source slash_cmd',
+          params: <String, Object?>{'schemaVersion': 1, 'source': 'slash_cmd'},
+        ),
+        (
+          reason: 'focusRequest non-bool followMe',
+          params: <String, Object?>{
+            'schemaVersion': 1,
+            'source': 'tray',
+            'followMe': 'true',
+          },
+        ),
+      ]) {
+        expectInvalidParams(
+          <String, Object?>{
+            'jsonrpc': '2.0',
+            'method': 'xuna/focusRequest',
+            'params': bad.params,
+          },
+          bad.reason,
+        );
+      }
+    });
+  });
+
+  group('Phase 3 redaction, binary/surrogate & path guardrails', () {
+    test(
+        'hasBinaryOrInvalidSurrogates & isSafeClipboardWriteText reject control bytes and unpaired surrogates',
+        () {
+      expect(hasBinaryOrInvalidSurrogates('hello\n\r\t world 😀 Tiếng Việt'),
+          isFalse);
+      expect(
+          isSafeClipboardWriteText('hello\n\r\t world 😀 Tiếng Việt'), isTrue);
+
+      for (final bad in <String>[
+        'abc\u0000def',
+        'abc\u0007def',
+        'abc\u000Bdef',
+        'abc\u001Fdef',
+        'abc\u007Fdef',
+        String.fromCharCodes(<int>[0xD83D]), // orphan high surrogate
+        String.fromCharCodes(<int>[0xDE00]), // orphan low surrogate
+        String.fromCharCodes(<int>[0xD83D, 0x0041]), // high followed by ASCII
+      ]) {
+        expect(hasBinaryOrInvalidSurrogates(bad), isTrue,
+            reason: 'Expected binary/surrogate rejection for ${bad.codeUnits}');
+        expect(isSafeClipboardWriteText(bad), isFalse,
+            reason: 'Expected unsafe clipboard rejection for ${bad.codeUnits}');
+      }
+      expect(isSafeClipboardWriteText('a' * 4000), isTrue);
+      expect(isSafeClipboardWriteText('a' * 4001), isFalse);
+    });
+
+    test(
+        'redactSensitiveClipboardText preserves 1601..4000 chars while redacting secrets',
+        () {
+      final body = '${'x' * 2500} token=sk-secretValue1234567890';
+      final res = redactSensitiveClipboardText(body);
+      expect(res.truncated, isFalse);
+      expect(res.redactedCount, greaterThanOrEqualTo(1));
+      expect(res.text.length, greaterThan(2500));
+      expect(res.text, contains('[REDACTED]'));
+      expect(res.text, isNot(contains('sk-secretValue1234567890')));
+
+      final over4k = '${'y' * 4010} sk-secretValue1234567890';
+      final capped = redactSensitiveClipboardText(over4k);
+      expect(capped.truncated, isTrue);
+      expect(capped.text.length, equals(4000));
+
+      // Existing selection.read 1600 cap remains intact.
+      final selRes = redactSensitiveSelectionText('z' * 2500, maxChars: 2500);
+      expect(selRes.truncated, isTrue);
+      expect(selRes.text.length, equals(1600));
+    });
+
+    test('redactFilesystemPaths replaces Unix and Windows paths with [PATH]',
+        () {
+      const input =
+          r'Open /Users/thao/xuna_pet/lib/main.dart, /home/dev/repo, /tmp/run.log, /var/log/xuna.log and C:\Users\thao\project\file.txt';
+      final scrubbed = redactFilesystemPaths(input);
+      expect(scrubbed, isNot(contains('/Users/')));
+      expect(scrubbed, isNot(contains('/home/')));
+      expect(scrubbed, isNot(contains('/tmp/')));
+      expect(scrubbed, isNot(contains('/var/')));
+      expect(scrubbed, isNot(contains(r'C:\Users')));
+      expect(
+        scrubbed,
+        equals('Open [PATH], [PATH], [PATH], [PATH] and [PATH]'),
+      );
+    });
+
+    test(
+        'Iteration 2 regressions: AWS AKIA/ASIA redaction, UTF-16 emoji truncation, expanded paths & URL control-char rejection',
+        () {
+      // 1. AWS AKIA/ASIA keys redacted even past 3500 chars.
+      final awsBody =
+          '${'a' * 3500} AKIAIOSFODNN7EXAMPLE and ASIAIOSFODNN7TEMPKEY';
+      final clipAws = redactSensitiveClipboardText(awsBody);
+      expect(clipAws.redactedCount, equals(2));
+      expect(clipAws.text, isNot(contains('AKIAIOSFODNN7EXAMPLE')));
+      expect(clipAws.text, isNot(contains('ASIAIOSFODNN7TEMPKEY')));
+      expect(clipAws.text, contains('[REDACTED]'));
+
+      final selAws = redactSensitiveSelectionText(
+        'key=AKIAIOSFODNN7EXAMPLE',
+        maxChars: 1200,
+      );
+      expect(selAws.redactedCount, greaterThanOrEqualTo(1));
+      expect(selAws.text, isNot(contains('AKIAIOSFODNN7EXAMPLE')));
+
+      // 2. UTF-16 surrogate pairs are never split on truncation.
+      final selEmoji =
+          redactSensitiveSelectionText('${'a' * 1199}😀tail', maxChars: 1200);
+      expect(selEmoji.truncated, isTrue);
+      expect(selEmoji.text.length, equals(1199));
+      expect(hasBinaryOrInvalidSurrogates(selEmoji.text), isFalse);
+
+      final clipEmoji =
+          redactSensitiveClipboardText('${'a' * 3999}😀tail', maxChars: 4000);
+      expect(clipEmoji.truncated, isTrue);
+      expect(clipEmoji.text.length, equals(3999));
+      expect(hasBinaryOrInvalidSurrogates(clipEmoji.text), isFalse);
+
+      // 3. Expanded redactFilesystemPaths scrubs ~/..., ../..., UNC, and Unix system paths without breaking https:// URLs.
+      const mixedPathsAndUrl =
+          r'Check ~/secret, ~\win\secret, ../escape, ..\win\escape, \\fileserver\share\docs\a.txt, '
+          '/etc/passwd, /opt/homebrew/bin/tool, /Applications/App.app, /Volumes/Disk/a, '
+          '/Library/Preferences/a, /System/Library/a, /usr/local/bin/a, /bin/sh, /sbin/init, '
+          'and keep https://example.com/etc/passwd?x=1&opt=/bin';
+      final scrubbedMixed = redactFilesystemPaths(mixedPathsAndUrl);
+      for (final leaked in const <String>[
+        '~/secret',
+        r'~\win',
+        '../escape',
+        r'..\win',
+        r'\\fileserver\share',
+        '/etc/passwd,',
+        '/opt/homebrew',
+        '/Applications/App.app',
+        '/Volumes/Disk',
+        '/Library/Preferences',
+        '/System/Library',
+        '/usr/local',
+        '/bin/sh',
+        '/sbin/init',
+      ]) {
+        expect(scrubbedMixed, isNot(contains(leaked)),
+            reason: 'Path leaked: $leaked');
+      }
+      expect(
+        scrubbedMixed,
+        contains('https://example.com/etc/passwd?x=1&opt=/bin'),
+      );
+
+      // 4. validateHttpsUrlAgainstAllowlist rejects ASCII control characters and unpaired surrogates with url_invalid.
+      for (final badUrl in <String>[
+        'https://example.com/path\n',
+        'https://example.com/path\r\n',
+        'https://example.com/path\x00',
+        'https://example.com/path\t',
+        'https://example.com/path\x7F',
+        'https://example.com/path${String.fromCharCode(0xD83D)}',
+      ]) {
+        final res = validateHttpsUrlAgainstAllowlist(badUrl, const <String>[]);
+        expect(res.validUrl, isFalse, reason: 'Expected rejection for $badUrl');
+        expect(res.errorCode, equals('url_invalid'));
+      }
+    });
+
+    test(
+        'Iteration 3 polish: AWS KEY_AKIA_ prefix & URL-preserving redactFilesystemPaths with ./ /root/ file:///',
+        () {
+      // 1. AWS AKIA/ASIA regex matches after underscores without matching inside alphanumeric tokens.
+      final envAws = redactSensitiveClipboardText(
+        'KEY_AKIAIOSFODNN7EXAMPLE foo_ASIAIOSFODNN7TEMPKEY_bar',
+      );
+      expect(envAws.redactedCount, equals(2));
+      expect(envAws.text, equals('KEY_[REDACTED] foo_[REDACTED]_bar'));
+      expect(envAws.text, isNot(contains('AKIAIOSFODNN7EXAMPLE')));
+      expect(envAws.text, isNot(contains('ASIAIOSFODNN7TEMPKEY')));
+
+      final nonBoundaryAws =
+          redactSensitiveClipboardText('MYAKIA1234567890ABCDEF');
+      expect(nonBoundaryAws.redactedCount, equals(0));
+      expect(nonBoundaryAws.text, equals('MYAKIA1234567890ABCDEF'));
+
+      // 2. Full https:// and http:// URLs remain unmangled even when query params contain path-like values.
+      const urlWithQueryPaths =
+          'Visit https://example.com/etc/passwd?opt=/bin/sh&path=/Users/alice/secret&next=../escape '
+          'and http://docs.example.com/v?p=./local, then scrub ./secret, .\\win\\a, /root/.ssh/id_rsa, '
+          'file:///Users/alice/secret, and file:///etc/passwd';
+      final scrubbed = redactFilesystemPaths(urlWithQueryPaths);
+      expect(
+        scrubbed,
+        contains(
+          'https://example.com/etc/passwd?opt=/bin/sh&path=/Users/alice/secret&next=../escape',
+        ),
+      );
+      expect(
+        scrubbed,
+        contains('http://docs.example.com/v?p=./local'),
+      );
+      for (final leaked in const <String>[
+        './secret',
+        r'.\win\a',
+        '/root/.ssh/id_rsa',
+        'file:///Users/alice/secret',
+        'file:///etc/passwd',
+      ]) {
+        expect(scrubbed, isNot(contains(leaked)),
+            reason: 'Path leaked: $leaked');
+      }
     });
   });
 }

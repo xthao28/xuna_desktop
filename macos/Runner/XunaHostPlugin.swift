@@ -81,6 +81,13 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
   }
 
   static func isHardDeniedApp(_ appName: String, bundleId: String?) -> Bool {
+    let trimmedName = appName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if trimmedName == "hyper"
+      || trimmedName == "system settings"
+      || trimmedName == "system preferences"
+    {
+      return true
+    }
     let combined = "\(appName) \(bundleId ?? "")".lowercased()
     let deniedTokens = [
       "1password",
@@ -91,7 +98,11 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       "keychain",
       "securityagent",
       "coreautha",
-      " CleanMyMac",
+      "cleanmymac",
+      "systemsettings",
+      "systempreferences",
+      "com.apple.systempreferences",
+      "co.zeit.hyper",
       // Terminal emulators: typing into them is arbitrary command execution, which
       // desktop/AGENTS.md §3 forbids. Matched by bundle id, not by display name.
       "com.apple.terminal",
@@ -103,7 +114,7 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       "com.github.wez.wezterm",
     ]
     for token in deniedTokens {
-      if combined.contains(token.trimmingCharacters(in: .whitespaces)) {
+      if combined.contains(token.trimmingCharacters(in: .whitespaces).lowercased()) {
         return true
       }
     }
@@ -117,10 +128,20 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     return DispatchQueue.main.sync(execute: block)
   }
 
+  struct AppleScriptRunResult {
+    let output: String?
+    let errorOutput: String
+    let exitCode: Int32
+    let timedOut: Bool
+  }
+
   /// Executes AppleScript out-of-process via `/usr/bin/osascript` (`runInShell: false`) with a hard
   /// timeout. Never uses in-process `NSAppleScript` on background queues, which loads OSA/SharedFileList
   /// (`LSSharedFileListCreate`) and triggers a `libdispatch` main-thread assertion crash on macOS 12+.
-  func runAppleScript(_ source: String, timeoutSeconds: TimeInterval = 2.5) -> String? {
+  func runAppleScriptWithResult(
+    _ source: String,
+    timeoutSeconds: TimeInterval = 2.5
+  ) -> AppleScriptRunResult {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
     proc.arguments = ["-e", source]
@@ -137,19 +158,46 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     do {
       try proc.run()
     } catch {
-      return nil
+      return AppleScriptRunResult(
+        output: nil,
+        errorOutput: error.localizedDescription,
+        exitCode: -1,
+        timedOut: false
+      )
     }
     let waitRes = done.wait(timeout: .now() + max(0.5, timeoutSeconds))
     if waitRes == .timedOut {
       proc.terminate()
-      return nil
+      if done.wait(timeout: .now() + 0.2) == .timedOut, proc.isRunning {
+        kill(proc.processIdentifier, SIGKILL)
+        _ = done.wait(timeout: .now() + 0.2)
+      }
+      outPipe.fileHandleForReading.closeFile()
+      errPipe.fileHandleForReading.closeFile()
+      return AppleScriptRunResult(
+        output: nil,
+        errorOutput: "AppleScript execution timed out",
+        exitCode: -1,
+        timedOut: true
+      )
     }
-    guard proc.terminationStatus == 0 else {
-      return nil
-    }
-    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-    return String(data: data, encoding: .utf8)?
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+    let outText = String(data: outData, encoding: .utf8)?
       .trimmingCharacters(in: .whitespacesAndNewlines)
+    let errText = String(data: errData, encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return AppleScriptRunResult(
+      output: proc.terminationStatus == 0 ? outText : nil,
+      errorOutput: errText,
+      exitCode: proc.terminationStatus,
+      timedOut: false
+    )
+  }
+
+  func runAppleScript(_ source: String, timeoutSeconds: TimeInterval = 2.5) -> String? {
+    let res = runAppleScriptWithResult(source, timeoutSeconds: timeoutSeconds)
+    return (!res.timedOut && res.exitCode == 0) ? res.output : nil
   }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -171,8 +219,12 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       fastContextQueue.async { self.handleHostInfo(result: result) }
     case "clipboardReadText":
       fastContextQueue.async { self.handleClipboardReadText(result: result) }
+    case "clipboardWriteText":
+      fastContextQueue.async { self.handleClipboardWriteText(args: args, result: result) }
     case "readActiveWindowContext":
       fastContextQueue.async { self.handleReadActiveWindowContext(args: args, result: result) }
+    case "presenceProbe":
+      fastContextQueue.async { self.handlePresenceProbe(result: result) }
     case "media":
       uiActionQueue.async { self.handleMedia(args: args, result: result) }
     case "volumeSet":
@@ -224,10 +276,14 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
   func replyError(
     _ result: @escaping FlutterResult,
     code: String,
-    message: String
+    message: String,
+    errorCode: String? = nil
   ) {
+    let details: [String: Any]? = errorCode.flatMap { ec in
+      ec.isEmpty ? nil : ["errorCode": ec]
+    }
     DispatchQueue.main.async {
-      result(FlutterError(code: code, message: message, details: nil))
+      result(FlutterError(code: code, message: message, details: details))
     }
   }
 }

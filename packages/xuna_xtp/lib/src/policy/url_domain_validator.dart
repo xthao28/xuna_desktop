@@ -1,3 +1,5 @@
+import 'security_redaction.dart';
+
 /// Converts full-width ASCII variants (digits U+FF10..U+FF19, letters
 /// U+FF21..U+FF3A / U+FF41..U+FF5A, dots U+FF0E, U+3002, U+FF61) to their
 /// ASCII equivalents to prevent Unicode IP smuggling (UDC-18 Wave B).
@@ -47,9 +49,20 @@ typedef UrlValidationResult = ({
   String? errorCode,
 });
 
+bool _hasAnyAsciiControlChar(String value) {
+  for (var i = 0; i < value.length; i++) {
+    final code = value.codeUnitAt(i);
+    if ((code >= 0x00 && code <= 0x1F) || code == 0x7F) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Validates [rawUrl] per `XUNA_XTP_V1_CONTRACT.md` §6:
 /// 1. `https` scheme only (case-insensitive)
-/// 2. Length `<= 2048` and no `userinfo` (`user:pass@`)
+/// 2. Length `<= 2048` and no `userinfo` (`user:pass@`), ASCII control bytes,
+///    or invalid UTF-16 surrogates
 /// 3. Hostname converted from IDN to ASCII punycode (`xn--...`)
 /// 4. Reject IPv4 literals, IPv6 literals, `localhost`, `.local`, `.localhost`
 /// 5. ASCII hostname equals or is a `.`-bounded subdomain of an entry in
@@ -58,7 +71,10 @@ UrlValidationResult validateHttpsUrlAgainstAllowlist(
   String rawUrl,
   List<String> allowedDomains,
 ) {
-  if (rawUrl.isEmpty || rawUrl.length > 2048) {
+  if (rawUrl.isEmpty ||
+      rawUrl.length > 2048 ||
+      _hasAnyAsciiControlChar(rawUrl) ||
+      hasBinaryOrInvalidSurrogates(rawUrl)) {
     return (
       validUrl: false,
       domainAllowed: false,

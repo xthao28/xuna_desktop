@@ -8,6 +8,62 @@ import UserNotifications
 extension XunaHostPlugin {
   // MARK: - App Launch, URL Open & Workflow Run
 
+  static let hardDeniedTerminalBinaryStems: Set<String> = [
+    "terminal",
+    "iterm",
+    "iterm2",
+    "warp",
+    "alacritty",
+    "kitty",
+    "hyper",
+    "wezterm",
+    "wezterm-gui",
+    "ghostty",
+    "bash",
+    "zsh",
+    "sh",
+    "fish",
+    "pwsh",
+    "powershell",
+    "cmd",
+  ]
+
+  static func isHardDeniedResolvedTarget(url: URL, kind: String) -> Bool {
+    let urlsToCheck = [
+      url.standardizedFileURL,
+      url.resolvingSymlinksInPath().standardizedFileURL,
+    ]
+    for candidate in urlsToCheck {
+      let stem = candidate.deletingPathExtension().lastPathComponent
+      let bundleId = Bundle(url: candidate)?.bundleIdentifier
+      if isHardDeniedApp(stem, bundleId: bundleId) {
+        return true
+      }
+      if hardDeniedTerminalBinaryStems.contains(stem.lowercased()) {
+        return true
+      }
+      var current = candidate
+      for _ in 0..<256 {
+        if current.path == "/" || current.path.isEmpty {
+          break
+        }
+        if current.pathExtension.lowercased() == "app" {
+          let appStem = current.deletingPathExtension().lastPathComponent
+          let appBundleId = Bundle(url: current)?.bundleIdentifier
+          if isHardDeniedApp(appStem, bundleId: appBundleId) {
+            return true
+          }
+        }
+        let next = current.deletingLastPathComponent()
+        if next.path == current.path {
+          break
+        }
+        current = next
+      }
+    }
+    return false
+  }
+
   func handleAppLaunch(args: [String: Any], result: @escaping FlutterResult) {
     guard let kind = args["kind"] as? String,
           let target = args["target"] as? String,
@@ -17,10 +73,23 @@ extension XunaHostPlugin {
       return
     }
 
+    let rawStem = URL(fileURLWithPath: target).deletingPathExtension().lastPathComponent.lowercased()
+    if Self.isHardDeniedApp(target, bundleId: kind == "bundle" ? target : nil)
+      || Self.hardDeniedTerminalBinaryStems.contains(rawStem)
+    {
+      replyError(
+        result,
+        code: "denied",
+        message: "Target application is forbidden by policy",
+        errorCode: "denylisted_target_forbidden"
+      )
+      return
+    }
+
     let appUrl: URL?
     if kind == "bundle" {
       if target.hasPrefix("/") || target.hasSuffix(".app") {
-        let candidate = URL(fileURLWithPath: target)
+        let candidate = URL(fileURLWithPath: target).standardizedFileURL
         appUrl = FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
       } else {
         appUrl = onMainThread {
@@ -28,14 +97,38 @@ extension XunaHostPlugin {
         }
       }
     } else if kind == "exe" {
-      appUrl = URL(fileURLWithPath: target)
+      let candidate = URL(fileURLWithPath: target).standardizedFileURL
+      appUrl = FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
     } else {
       replyError(result, code: "unsupported", message: "Unsupported app kind on macOS")
       return
     }
 
-    guard let resolvedUrl = appUrl else {
+    guard let rawResolvedUrl = appUrl else {
       replyError(result, code: "failed", message: "Application not found")
+      return
+    }
+
+    if Self.isHardDeniedResolvedTarget(url: rawResolvedUrl, kind: kind) {
+      replyError(
+        result,
+        code: "denied",
+        message: "Target application is forbidden by policy",
+        errorCode: "denylisted_target_forbidden"
+      )
+      return
+    }
+    let resolvedUrl = rawResolvedUrl.resolvingSymlinksInPath().standardizedFileURL
+    if kind == "bundle" &&
+      (rawResolvedUrl.standardizedFileURL.pathExtension.lowercased() != "app" ||
+        resolvedUrl.pathExtension.lowercased() != "app")
+    {
+      replyError(
+        result,
+        code: "invalid_args",
+        message: "Bundle target must resolve to a .app application bundle",
+        errorCode: "invalid_bundle_target"
+      )
       return
     }
 
@@ -200,13 +293,128 @@ extension XunaHostPlugin {
     }
   }
 
-  func handleUrlOpen(args: [String: Any], result: @escaping FlutterResult) {
-    guard let urlString = args["url"] as? String,
-          urlString.lowercased().hasPrefix("https://"),
-          let url = URL(string: urlString),
-          url.scheme?.lowercased() == "https"
+  struct BrowserCandidate {
+    let id: String
+    let bundleId: String
+    let displayName: String
+    let script: String
+  }
+
+  enum BrowserResolutionResult {
+    case resolved(BrowserCandidate)
+    case error(code: String, errorCode: String, message: String)
+  }
+
+  static let supportedBrowserCandidates: [BrowserCandidate] = [
+    BrowserCandidate(
+      id: "safari",
+      bundleId: "com.apple.Safari",
+      displayName: "Safari",
+      script: "tell application \"Safari\" to get URL of current tab of front window"
+    ),
+    BrowserCandidate(
+      id: "chrome",
+      bundleId: "com.google.Chrome",
+      displayName: "Google Chrome",
+      script: "tell application \"Google Chrome\" to get URL of active tab of front window"
+    ),
+    BrowserCandidate(
+      id: "edge",
+      bundleId: "com.microsoft.edgemac",
+      displayName: "Microsoft Edge",
+      script: "tell application \"Microsoft Edge\" to get URL of active tab of front window"
+    ),
+  ]
+
+  static func isValidPublicHttpsTabUrl(_ raw: String) -> Bool {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= 2048 else { return false }
+    guard let comps = URLComponents(string: trimmed) else { return false }
+    guard comps.scheme?.lowercased() == "https",
+          comps.user == nil,
+          comps.password == nil,
+          let host = comps.host,
+          !host.isEmpty
     else {
-      replyError(result, code: "failed", message: "Only https:// URLs are permitted")
+      return false
+    }
+    return true
+  }
+
+  static func resolveBrowserCandidate(
+    requested: String,
+    frontmostBundleId: String?,
+    runningBundleIds: Set<String>
+  ) -> BrowserResolutionResult {
+    let normalizedReq = requested.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let req = normalizedReq.isEmpty ? "auto" : normalizedReq
+    let runningLower = Set(runningBundleIds.map { $0.lowercased() })
+    let frontLower = frontmostBundleId?.lowercased()
+
+    if req != "auto" {
+      guard let candidate = supportedBrowserCandidates.first(where: { $0.id == req }) else {
+        return .error(
+          code: "invalid_args",
+          errorCode: "unsupported_browser",
+          message: "Unsupported browser: \(requested)"
+        )
+      }
+      guard runningLower.contains(candidate.bundleId.lowercased()) else {
+        return .error(
+          code: "failed",
+          errorCode: "browser_not_running",
+          message: "\(candidate.displayName) is not running"
+        )
+      }
+      return .resolved(candidate)
+    }
+
+    let running = supportedBrowserCandidates.filter {
+      runningLower.contains($0.bundleId.lowercased())
+    }
+    if running.isEmpty {
+      return .error(
+        code: "failed",
+        errorCode: "browser_not_running",
+        message: "No supported browser (Safari, Chrome, Edge) is running"
+      )
+    }
+    if let front = frontLower,
+       let frontCandidate = running.first(where: { $0.bundleId.lowercased() == front })
+    {
+      return .resolved(frontCandidate)
+    }
+    if running.count == 1 {
+      return .resolved(running[0])
+    }
+    let names = running.map { $0.id }.joined(separator: ", ")
+    return .error(
+      code: "invalid_args",
+      errorCode: "browser_ambiguous",
+      message: "Multiple browsers running (\(names)); specify browser or focus one"
+    )
+  }
+
+  func handleUrlOpen(args: [String: Any], result: @escaping FlutterResult) {
+    guard let rawUrl = args["url"] as? String else {
+      replyError(
+        result,
+        code: "invalid_args",
+        message: "Only valid https:// URLs are permitted",
+        errorCode: "url_invalid"
+      )
+      return
+    }
+    let urlString = rawUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard Self.isValidPublicHttpsTabUrl(urlString),
+          let url = URL(string: urlString)
+    else {
+      replyError(
+        result,
+        code: "invalid_args",
+        message: "Only valid https:// URLs without userinfo (<= 2048 chars) are permitted",
+        errorCode: "url_invalid"
+      )
       return
     }
 
@@ -219,47 +427,74 @@ extension XunaHostPlugin {
   }
 
   func handleBrowserCurrentUrl(args: [String: Any], result: @escaping FlutterResult) {
-    let requested = (args["browser"] as? String ?? "auto").lowercased()
-    let candidates: [(id: String, bundleId: String, script: String)] = [
-      (
-        "safari",
-        "com.apple.Safari",
-        "tell application \"Safari\" to get URL of current tab of front window"
-      ),
-      (
-        "chrome",
-        "com.google.Chrome",
-        "tell application \"Google Chrome\" to get URL of active tab of front window"
-      ),
-    ]
-
-    let runningBundles = onMainThread {
-      Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+    let requested = args["browser"] as? String ?? "auto"
+    let (frontmostBundleId, runningBundles) = onMainThread { () -> (String?, Set<String>) in
+      let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+      let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+      return (front, running)
     }
 
-    for candidate in candidates {
-      if requested != "auto" && requested != candidate.id {
-        continue
-      }
-      if !runningBundles.contains(candidate.bundleId) {
-        continue
-      }
-      if let rawUrl = runAppleScript(candidate.script, timeoutSeconds: 2.0),
-         rawUrl.lowercased().hasPrefix("https://")
+    let candidate: BrowserCandidate
+    switch Self.resolveBrowserCandidate(
+      requested: requested,
+      frontmostBundleId: frontmostBundleId,
+      runningBundleIds: runningBundles
+    ) {
+    case .resolved(let found):
+      candidate = found
+    case .error(let code, let errorCode, let message):
+      replyError(result, code: code, message: message, errorCode: errorCode)
+      return
+    }
+
+    let scriptRes = runAppleScriptWithResult(candidate.script, timeoutSeconds: 2.0)
+    if scriptRes.timedOut {
+      replyError(
+        result,
+        code: "timeout",
+        message: "Timed out querying active tab in \(candidate.displayName)",
+        errorCode: "deadline_exceeded"
+      )
+      return
+    }
+    if scriptRes.exitCode != 0 {
+      let errLower = scriptRes.errorOutput.lowercased()
+      if errLower.contains("-1743")
+        || errLower.contains("not authorized")
+        || checkAutomationPermission(bundleId: candidate.bundleId, prompt: false) == "denied"
       {
-        replySuccess(result, [
-          "url": rawUrl,
-          "browser": candidate.id,
-        ])
+        replyError(
+          result,
+          code: "needs_permission",
+          message: "Automation permission denied for \(candidate.displayName)",
+          errorCode: "automation_denied"
+        )
         return
       }
+      replyError(
+        result,
+        code: "invalid_args",
+        message: "No active https:// tab found in \(candidate.displayName)",
+        errorCode: "url_invalid"
+      )
+      return
     }
 
-    replyError(
-      result,
-      code: "invalid_args",
-      message: "No active https:// browser tab found"
-    )
+    let rawUrl = (scriptRes.output ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard Self.isValidPublicHttpsTabUrl(rawUrl) else {
+      replyError(
+        result,
+        code: "invalid_args",
+        message: "Active tab URL in \(candidate.displayName) is not a valid https:// URL",
+        errorCode: "url_invalid"
+      )
+      return
+    }
+
+    replySuccess(result, [
+      "url": rawUrl,
+      "browser": candidate.id,
+    ])
   }
 
   func handleWorkflowRun(args: [String: Any], result: @escaping FlutterResult) {
@@ -503,10 +738,125 @@ extension XunaHostPlugin {
     }
   }
 
+  enum ClipboardValidationResult {
+    case valid(String)
+    case error(code: String, errorCode: String, message: String)
+  }
+
+  static func hasForbiddenControlBytes(_ text: String) -> Bool {
+    for unit in text.utf16 {
+      if (unit >= 0x00 && unit <= 0x08)
+        || unit == 0x0B
+        || unit == 0x0C
+        || (unit >= 0x0E && unit <= 0x1F)
+        || unit == 0x7F
+      {
+        return true
+      }
+    }
+    return false
+  }
+
+  static func clampUtf16Safe(_ value: String, maxCodeUnits: Int) -> String {
+    if value.utf16.count <= maxCodeUnits {
+      return value
+    }
+    var out = ""
+    var utf16Len = 0
+    for scalar in value.unicodeScalars {
+      let scalarLen = scalar.utf16.count
+      if utf16Len + scalarLen > maxCodeUnits {
+        break
+      }
+      out.unicodeScalars.append(scalar)
+      utf16Len += scalarLen
+    }
+    return out
+  }
+
+  static func validateClipboardReadPayload(
+    stringValue: String?,
+    hasPasteboardItems: Bool
+  ) -> ClipboardValidationResult {
+    guard let raw = stringValue else {
+      if hasPasteboardItems {
+        return .error(
+          code: "invalid_args",
+          errorCode: "clipboard_binary",
+          message: "Clipboard contains binary or non-text data"
+        )
+      }
+      return .valid("")
+    }
+    if hasForbiddenControlBytes(raw) {
+      return .error(
+        code: "invalid_args",
+        errorCode: "clipboard_binary",
+        message: "Clipboard contains binary control characters"
+      )
+    }
+    let capped = clampUtf16Safe(raw, maxCodeUnits: 2400)
+    return .valid(capped)
+  }
+
+  static func validateClipboardWritePayload(_ rawArg: Any?) -> ClipboardValidationResult {
+    guard let text = rawArg as? String else {
+      return .error(
+        code: "invalid_args",
+        errorCode: "schema_mismatch",
+        message: "Missing clipboard text payload"
+      )
+    }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty || text.utf16.count > 4000 || hasForbiddenControlBytes(text) {
+      return .error(
+        code: "invalid_args",
+        errorCode: "schema_mismatch",
+        message: "Clipboard write text is empty, > 4000 UTF-16 code units, or contains binary control bytes"
+      )
+    }
+    return .valid(text)
+  }
+
   func handleClipboardReadText(result: @escaping FlutterResult) {
-    let raw = onMainThread { NSPasteboard.general.string(forType: .string) ?? "" }
-    let capped = raw.count > 2400 ? String(raw.prefix(2400)) : raw
-    replySuccess(result, ["text": capped])
+    let (stringValue, hasItems) = onMainThread { () -> (String?, Bool) in
+      let pb = NSPasteboard.general
+      let str = pb.string(forType: .string)
+      let has = !(pb.pasteboardItems?.isEmpty ?? true)
+      return (str, has)
+    }
+    switch Self.validateClipboardReadPayload(
+      stringValue: stringValue,
+      hasPasteboardItems: hasItems
+    ) {
+    case .valid(let text):
+      replySuccess(result, ["text": text])
+    case .error(let code, let errorCode, let message):
+      replyError(result, code: code, message: message, errorCode: errorCode)
+    }
+  }
+
+  func handleClipboardWriteText(args: [String: Any], result: @escaping FlutterResult) {
+    switch Self.validateClipboardWritePayload(args["text"]) {
+    case .error(let code, let errorCode, let message):
+      replyError(result, code: code, message: message, errorCode: errorCode)
+    case .valid(let text):
+      let ok = onMainThread { () -> Bool in
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        return pb.setString(text, forType: .string)
+      }
+      if ok {
+        replySuccess(result, ["written": true])
+      } else {
+        replyError(
+          result,
+          code: "failed",
+          message: "Failed to write text to macOS pasteboard",
+          errorCode: "clipboard_write_failed"
+        )
+      }
+    }
   }
 
   func handleLockScreen(result: @escaping FlutterResult) {

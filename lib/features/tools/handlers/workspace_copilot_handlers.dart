@@ -40,11 +40,7 @@ class WorkspaceOpenTool extends HostToolHandler {
         errorCode: 'workspace_not_found',
       );
     }
-    final resolvedIde =
-        context.appScanner.resolveCodingAgent(
-          ide == 'auto' ? 'antigravity' : ide,
-        ) ??
-        context.appScanner.resolveCodingAgent('auto');
+    final resolvedIde = context.appScanner.resolveCodingAgent(ide);
     if (resolvedIde == null) {
       throw const XunaHostChannelException(
         status: XtpStatus.unsupported,
@@ -150,6 +146,13 @@ class SelectionReadTool extends HostToolHandler {
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final maxChars = (context.arguments['maxChars'] as int?) ?? 1200;
     final raw = await context.channel.clipboardReadText();
+    if (hasBinaryOrInvalidSurrogates(raw)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'invalid_args',
+        message: 'Clipboard contains binary or invalid text data.',
+      );
+    }
     final redacted = redactSensitiveSelectionText(raw, maxChars: maxChars);
     return ToolHandlerOutput(
       text: redacted.text.isEmpty
@@ -373,10 +376,15 @@ class BrowserReadPageTool extends HostToolHandler {
         errorCode: urlCheck.errorCode ?? 'url_invalid',
       );
     }
-    final resolvedBrowser =
-        const <String>{'edge', 'chrome', 'safari'}.contains(snap.browser)
-        ? snap.browser
-        : 'edge';
+    const allowedBrowsers = <String>{'edge', 'chrome', 'safari'};
+    if (!allowedBrowsers.contains(snap.browser)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'Native browserReadPage returned an unsupported browser.',
+      );
+    }
+    final resolvedBrowser = snap.browser;
     final host = urlCheck.asciiHost!;
     final titleRedacted = redactSensitiveSelectionText(
       snap.title,

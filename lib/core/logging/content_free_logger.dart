@@ -49,6 +49,7 @@ class ContentFreeLogger {
     'healthy',
     'purpose',
     'platform',
+    'source',
   };
 
   final int maxEntries;

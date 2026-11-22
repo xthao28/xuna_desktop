@@ -33,20 +33,27 @@ class SymbioticVitalsService {
 
   /// Writes [rawText] to the OS clipboard after redacting sensitive tokens (`UDC-15` S15.1).
   Future<({bool written, int charCount, int redactedCount})> writeClipboardText(
-    String rawText,
-  ) async {
+    String rawText, {
+    Future<void> Function(String text)? channelWriter,
+  }) async {
     if (!isSafeClipboardWriteText(rawText)) {
-      throw ArgumentError.value(rawText, 'text', 'Invalid clipboard text');
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'schema_mismatch',
+        message: 'Invalid clipboard text payload.',
+      );
     }
-    final redacted = redactSensitiveSelectionText(rawText, maxChars: 1600);
+    final redacted = redactSensitiveClipboardText(rawText, maxChars: 4000);
     final cleanText = redacted.text;
-    _lastWrittenClipboard = cleanText;
 
     if (_clipboardWriter != null) {
       await _clipboardWriter(cleanText);
+    } else if (channelWriter != null) {
+      await channelWriter(cleanText);
     } else {
       await _writeNativeClipboard(cleanText);
     }
+    _lastWrittenClipboard = cleanText;
     return (
       written: true,
       charCount: cleanText.length,
@@ -123,11 +130,13 @@ class SymbioticVitalsService {
 
   Future<int?> _freeDiskGbViaDf(String dfExecutable) async {
     try {
-      final dfRes = await Process.run(
-        dfExecutable,
-        const <String>['-k', '/'],
-        runInShell: false,
-      ).timeout(const Duration(seconds: 2));
+      final dfRes = await Process.run(dfExecutable, const <String>[
+        '-k',
+        '/',
+      ], runInShell: false).timeout(const Duration(seconds: 2));
+      if (dfRes.exitCode != 0) {
+        return null;
+      }
       final lines = (dfRes.stdout?.toString() ?? '')
           .split('\n')
           .map((l) => l.trim())
@@ -159,17 +168,20 @@ class SymbioticVitalsService {
         const psScript =
             r'$b = Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1; '
             r'$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue; '
-            r'$d = Get-PSDrive -Name C -ErrorAction SilentlyContinue; '
+            r'$sysDrive = if ($env:SystemDrive) { $env:SystemDrive.TrimEnd(":") } else { "C" }; '
+            r'$d = Get-PSDrive -Name $sysDrive -ErrorAction SilentlyContinue; '
             r'$batPct = if ($b -and $null -ne $b.EstimatedChargeRemaining) { [int]$b.EstimatedChargeRemaining } else { "" }; '
             r'$chg = if ($b -and $null -ne $b.BatteryStatus) { if ($b.BatteryStatus -eq 1) { 0 } else { 1 } } else { "" }; '
             r'$memPct = if ($os -and $os.TotalVisibleMemorySize -gt 0) { [int][math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) * 100.0) / $os.TotalVisibleMemorySize) } else { "" }; '
             r'$diskGb = if ($d -and $null -ne $d.Free) { [int][math]::Floor($d.Free / 1GB) } else { "" }; '
             r'Write-Output "$batPct|$chg|$memPct|$diskGb"';
-        final res = await Process.run(
-          'powershell.exe',
-          const <String>['-NoProfile', '-NonInteractive', '-Command', psScript],
-          runInShell: false,
-        ).timeout(const Duration(seconds: 3));
+        final res = await Process.run('powershell.exe', const <String>[
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          psScript,
+        ], runInShell: false).timeout(const Duration(seconds: 3));
+        if (res.exitCode != 0) return null;
         final parts = (res.stdout?.toString() ?? '').trim().split('|');
         if (parts.length < 4) return null;
         batteryPercent = _percentOrNull(int.tryParse(parts[0].trim()));
@@ -180,18 +192,19 @@ class SymbioticVitalsService {
         diskFreeGb = disk?.clamp(0, 99999);
       } else if (Platform.isMacOS) {
         try {
-          final battRes = await Process.run(
-            '/usr/bin/pmset',
-            const <String>['-g', 'batt'],
-            runInShell: false,
-          ).timeout(const Duration(seconds: 2));
-          final battOut = battRes.stdout?.toString() ?? '';
-          final pctMatch = RegExp(r'(\d+)%').firstMatch(battOut);
-          if (pctMatch != null) {
-            batteryPercent = _percentOrNull(int.tryParse(pctMatch.group(1)!));
-            isCharging = batteryPercent == null
-                ? null
-                : !battOut.toLowerCase().contains('discharging');
+          final battRes = await Process.run('/usr/bin/pmset', const <String>[
+            '-g',
+            'batt',
+          ], runInShell: false).timeout(const Duration(seconds: 2));
+          if (battRes.exitCode == 0) {
+            final battOut = battRes.stdout?.toString() ?? '';
+            final pctMatch = RegExp(r'(\d+)%').firstMatch(battOut);
+            if (pctMatch != null) {
+              batteryPercent = _percentOrNull(int.tryParse(pctMatch.group(1)!));
+              isCharging = batteryPercent == null
+                  ? null
+                  : !battOut.toLowerCase().contains('discharging');
+            }
           }
         } catch (_) {
           // No battery information: leave null.
@@ -203,22 +216,26 @@ class SymbioticVitalsService {
             const <String>[],
             runInShell: false,
           ).timeout(const Duration(seconds: 2));
-          final vmOut = vmRes.stdout?.toString() ?? '';
-          int extractPages(String label) {
-            final m = RegExp('$label:\\s+(\\d+)').firstMatch(vmOut);
-            return m != null ? (int.tryParse(m.group(1)!) ?? 0) : 0;
-          }
+          if (vmRes.exitCode == 0) {
+            final vmOut = vmRes.stdout?.toString() ?? '';
+            int extractPages(String label) {
+              final m = RegExp('$label:\\s+(\\d+)').firstMatch(vmOut);
+              return m != null ? (int.tryParse(m.group(1)!) ?? 0) : 0;
+            }
 
-          final freePages =
-              extractPages('Pages free') + extractPages('Pages speculative');
-          final activePages = extractPages('Pages active') +
-              extractPages('Pages wired down') +
-              extractPages('Pages occupied by compressor');
-          final totalPages =
-              freePages + activePages + extractPages('Pages inactive');
-          if (totalPages > 0) {
-            memoryUsedPercent =
-                ((activePages * 100) / totalPages).round().clamp(1, 99);
+            final freePages =
+                extractPages('Pages free') + extractPages('Pages speculative');
+            final activePages =
+                extractPages('Pages active') +
+                extractPages('Pages wired down') +
+                extractPages('Pages occupied by compressor');
+            final totalPages =
+                freePages + activePages + extractPages('Pages inactive');
+            if (totalPages > 0) {
+              memoryUsedPercent = ((activePages * 100) / totalPages)
+                  .round()
+                  .clamp(1, 99);
+            }
           }
         } catch (_) {
           // vm_stat unavailable: leave null.
@@ -249,8 +266,9 @@ class SymbioticVitalsService {
           if (memFile.existsSync()) {
             final content = memFile.readAsStringSync();
             final totalMatch = RegExp(r'MemTotal:\s+(\d+)').firstMatch(content);
-            final availMatch =
-                RegExp(r'MemAvailable:\s+(\d+)').firstMatch(content);
+            final availMatch = RegExp(
+              r'MemAvailable:\s+(\d+)',
+            ).firstMatch(content);
             if (totalMatch != null && availMatch != null) {
               final totalKb = int.tryParse(totalMatch.group(1)!) ?? 0;
               final availKb = int.tryParse(availMatch.group(1)!) ?? 0;
@@ -273,11 +291,15 @@ class SymbioticVitalsService {
     }
 
     final isWarning =
-        (batteryPercent != null && batteryPercent < 20 && isCharging == false) ||
-            (memoryUsedPercent != null && memoryUsedPercent >= 90) ||
-            (diskFreeGb != null && diskFreeGb < 10);
+        (batteryPercent != null &&
+            batteryPercent < 20 &&
+            isCharging == false) ||
+        (memoryUsedPercent != null && memoryUsedPercent >= 90) ||
+        (diskFreeGb != null && diskFreeGb < 10);
     final measured =
-        batteryPercent != null || memoryUsedPercent != null || diskFreeGb != null;
+        batteryPercent != null ||
+        memoryUsedPercent != null ||
+        diskFreeGb != null;
     return SystemVitalsSnapshot(
       batteryPercent: batteryPercent,
       isCharging: isCharging,
@@ -326,8 +348,8 @@ class SymbioticVitalsService {
   }
 
   Future<void> _writeNativeClipboard(String text) async {
-    try {
-      if (Platform.isMacOS) {
+    if (Platform.isMacOS) {
+      try {
         final proc = await Process.start(
           '/usr/bin/pbcopy',
           const <String>[],
@@ -335,39 +357,69 @@ class SymbioticVitalsService {
         );
         proc.stdin.add(utf8.encode(text));
         await proc.stdin.close();
-        await proc.exitCode.timeout(const Duration(seconds: 2));
-      } else if (Platform.isWindows) {
-        final proc = await Process.start(
-          'clip.exe',
-          const <String>[],
-          runInShell: false,
+        final code = await proc.exitCode.timeout(const Duration(seconds: 2));
+        if (code != 0) {
+          throw XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'clipboard_write_failed',
+            message: 'pbcopy exited with code $code.',
+          );
+        }
+        return;
+      } on XunaHostChannelException {
+        rethrow;
+      } on TimeoutException {
+        throw const XunaHostChannelException(
+          status: XtpStatus.timeout,
+          errorCode: 'deadline_exceeded',
+          message: 'pbcopy timed out.',
         );
-        proc.stdin.add(utf8.encode(text));
-        await proc.stdin.close();
-        await proc.exitCode.timeout(const Duration(seconds: 2));
-      } else if (Platform.isLinux) {
-        for (final cmd in const <List<String>>[
-          <String>['xclip', '-selection', 'clipboard'],
-          <String>['xsel', '--clipboard', '--input'],
-          <String>['wl-copy'],
-        ]) {
-          try {
-            final proc = await Process.start(
-              cmd.first,
-              cmd.sublist(1),
-              runInShell: false,
-            );
-            proc.stdin.add(utf8.encode(text));
-            await proc.stdin.close();
-            final code = await proc.exitCode.timeout(
-              const Duration(seconds: 2),
-            );
-            if (code == 0) break;
-          } catch (_) {}
+      } catch (error) {
+        throw XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'clipboard_write_failed',
+          message: 'Failed to write clipboard via pbcopy: $error',
+        );
+      }
+    } else if (Platform.isWindows) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'clipboard_channel_required',
+        message:
+            'Windows clipboard write must use the native xuna/host MethodChannel.',
+      );
+    } else if (Platform.isLinux) {
+      for (final cmd in const <List<String>>[
+        <String>['wl-copy'],
+        <String>['xclip', '-selection', 'clipboard'],
+        <String>['xsel', '--clipboard', '--input'],
+      ]) {
+        try {
+          final proc = await Process.start(
+            cmd.first,
+            cmd.sublist(1),
+            runInShell: false,
+          );
+          proc.stdin.add(utf8.encode(text));
+          await proc.stdin.close();
+          final code = await proc.exitCode.timeout(const Duration(seconds: 2));
+          if (code == 0) return;
+        } catch (_) {
+          // Try next clipboard utility before failing closed.
         }
       }
-    } catch (_) {
-      // Best-effort in headless environments
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'clipboard_write_failed',
+        message:
+            'Failed to write clipboard on Linux (wl-copy/xclip/xsel failed).',
+      );
+    } else {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'platform_unsupported',
+        message: 'Clipboard write is not supported on this platform.',
+      );
     }
   }
 }

@@ -1,4 +1,5 @@
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
+import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -11,7 +12,10 @@ class ClipboardWriteTool extends HostToolHandler {
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
     final rawText = context.arguments['text'] as String;
-    final res = await context.symbioticService.writeClipboardText(rawText);
+    final res = await context.symbioticService.writeClipboardText(
+      rawText,
+      channelWriter: context.channel.clipboardWriteText,
+    );
     return ToolHandlerOutput(
       text: 'Đã chép ${res.charCount} ký tự vào clipboard.',
       structuredContent: <String, Object?>{
@@ -79,8 +83,8 @@ class WorkspaceCaptureCapsuleTool extends HostToolHandler {
     final projectQuery = (context.arguments['project'] as String?) ?? 'recent';
     final nextStepHint = context.arguments['nextStepHint'] as String?;
     final ws = context.workspaceIndexer.resolveWorkspace(projectQuery);
-    var resolvedProject = projectQuery;
-    var branch = 'main';
+    var resolvedProject = AutoWorkspaceIndexer.sanitizeAlias(projectQuery);
+    var branch = 'unknown';
     var dirtyCount = 0;
     if (ws != null) {
       resolvedProject = ws.alias;
@@ -89,7 +93,7 @@ class WorkspaceCaptureCapsuleTool extends HostToolHandler {
         branch = summary.branch;
         dirtyCount = summary.modifiedCount + summary.untrackedCount;
       } catch (_) {
-        // Fallback if Git CLI is unavailable
+        // Keep branch='unknown' if Git CLI is unavailable (H2)
       }
     }
     final capsule = context.symbioticService.captureWorkspaceCapsule(
@@ -130,27 +134,37 @@ class WorkspaceRestoreCapsuleTool extends HostToolHandler {
       );
     }
     final ws = context.workspaceIndexer.resolveWorkspace(capsule.project);
-    if (ws != null) {
-      final resolvedIde =
-          context.appScanner.resolveCodingAgent(
-            ide == 'auto' ? 'antigravity' : ide,
-          ) ??
-          context.appScanner.resolveCodingAgent('auto');
-      if (resolvedIde != null) {
-        await context.workspaceIndexer.launchCodingAgent(
-          workspace: ws,
-          agent: resolvedIde.agent,
-          executable: resolvedIde.executable,
-          resumeLast: true,
-        );
-      }
+    final resolvedIde = context.appScanner.resolveCodingAgent(ide);
+    if (ide != 'auto' && (ws == null || resolvedIde == null)) {
+      throw XunaHostChannelException(
+        status: ws == null ? XtpStatus.invalidArgs : XtpStatus.unsupported,
+        errorCode: ws == null ? 'workspace_not_found' : 'ide_not_found',
+      );
     }
-    final briefingVi =
+    var ideLaunched = false;
+    String? launchedIde;
+    if (ws != null && resolvedIde != null) {
+      await context.workspaceIndexer.launchCodingAgent(
+        workspace: ws,
+        agent: resolvedIde.agent,
+        executable: resolvedIde.executable,
+        resumeLast: true,
+      );
+      ideLaunched = true;
+      launchedIde = resolvedIde.agent;
+    }
+    final rawBriefing =
         'Đã rã đông dự án ${capsule.project} (nhánh ${capsule.branch}). Việc tiếp theo: ${capsule.nextStepHint}';
+    final briefingVi = rawBriefing.length <= 240
+        ? rawBriefing
+        : '${clampUtf16Safe(rawBriefing, 237)}...';
     return ToolHandlerOutput(
       text: briefingVi,
       structuredContent: <String, Object?>{
-        'restored': true,
+        'restored': ideLaunched,
+        'briefingRestored': true,
+        'ideLaunched': ideLaunched,
+        if (launchedIde != null) 'ide': launchedIde,
         'capsuleId': capsule.capsuleId,
         'project': capsule.project,
         'branch': capsule.branch,

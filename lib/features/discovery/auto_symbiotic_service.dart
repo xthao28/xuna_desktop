@@ -102,8 +102,7 @@ class AutoSymbioticService {
       'seafoam' || 'theme_03' || 'theme_03_seafoam' => 'seafoam',
       'lavender_dream' ||
       'theme_04' ||
-      'theme_04_lavender_dream' =>
-        'lavender_dream',
+      'theme_04_lavender_dream' => 'lavender_dream',
       'sunny_gold' || 'theme_05' || 'theme_05_sunny_gold' => 'sunny_gold',
       'sky_blue' || 'theme_06' || 'theme_06_sky_blue' => 'sky_blue',
       'berry_candy' || 'theme_07' || 'theme_07_berry_candy' => 'berry_candy',
@@ -171,8 +170,7 @@ class AutoSymbioticService {
     String? kind,
     String? query,
     int limit = 10,
-  }) =>
-      workspacePocket.listPocketItems(kind: kind, query: query, limit: limit);
+  }) => workspacePocket.listPocketItems(kind: kind, query: query, limit: limit);
 
   ({String mode, String transformedText, int itemCount}) transformPocketItem({
     String? itemId,
@@ -193,8 +191,9 @@ class AutoSymbioticService {
   // ── UDC-15: Clipboard, Dev Ports & System Vitals ─────────────────
 
   Future<({bool written, int charCount, int redactedCount})> writeClipboardText(
-    String rawText,
-  ) => vitals.writeClipboardText(rawText);
+    String rawText, {
+    Future<void> Function(String text)? channelWriter,
+  }) => vitals.writeClipboardText(rawText, channelWriter: channelWriter);
 
   Future<({String lanIp, List<DevPortEntry> activePorts})> scanDevPorts({
     List<int>? ports,
@@ -337,13 +336,12 @@ class AutoSymbioticService {
     String? skillId,
     Map<String, Object?>? skillRecipe,
     String? workshopFolder,
-  }) =>
-      forge.listAndManageForgedSkills(
-        action: action,
-        skillId: skillId,
-        skillRecipe: skillRecipe,
-        workshopFolder: workshopFolder,
-      );
+  }) => forge.listAndManageForgedSkills(
+    action: action,
+    skillId: skillId,
+    skillRecipe: skillRecipe,
+    workshopFolder: workshopFolder,
+  );
 
   ForgedSkillEntry? findForgedSkill(String skillId) =>
       forge.findForgedSkill(skillId);

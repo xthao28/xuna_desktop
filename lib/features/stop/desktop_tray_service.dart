@@ -1,20 +1,46 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:xuna_desktop/core/controller/desktop_agent_controller.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
+import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Integrates system tray (`tray_manager`), settings window visibility
-/// (`window_manager`), and global emergency-stop hotkey (`hotkey_manager`)
-/// (`UDC-3` §5.6.1 & §5.6.2).
+/// (`window_manager`), global emergency-stop hotkey (`Ctrl+Alt+Shift+X`), and
+/// spatial focus hotkey/menu controls (`Cmd/Ctrl+Alt+Shift+F`, `"Gọi XUNA sang máy này"`,
+/// `"Follow Me"`) (`UDC-3` §5.6, `XUNA_SPATIAL_DEVICE_MESH.md` §6.3).
 class DesktopTrayService with TrayListener, WindowListener {
-  DesktopTrayService({required this.controller});
+  DesktopTrayService({
+    required this.controller,
+    TrayManager? trayManagerOverride,
+    HotKeyManager? hotKeyManagerOverride,
+    WindowManager? windowManagerOverride,
+    bool? isMacOsOverride,
+    VoidCallback? onFocusHotkeyPressed,
+    VoidCallback? onFocusTrayPressed,
+    ValueChanged<bool>? onToggleFollowMe,
+  }) : _trayManager = trayManagerOverride ?? trayManager,
+       _hotKeyManager = hotKeyManagerOverride ?? hotKeyManager,
+       _windowManager = windowManagerOverride ?? windowManager,
+       _isMacOs = isMacOsOverride ?? Platform.isMacOS,
+       _onFocusHotkeyPressed = onFocusHotkeyPressed,
+       _onFocusTrayPressed = onFocusTrayPressed,
+       _onToggleFollowMe = onToggleFollowMe;
 
   final DesktopAgentController controller;
+  final TrayManager _trayManager;
+  final HotKeyManager _hotKeyManager;
+  final WindowManager _windowManager;
+  final bool _isMacOs;
+  final VoidCallback? _onFocusHotkeyPressed;
+  final VoidCallback? _onFocusTrayPressed;
+  final ValueChanged<bool>? _onToggleFollowMe;
+
   final List<StreamSubscription<Object?>> _subs =
       <StreamSubscription<Object?>>[];
   bool _initialized = false;
@@ -25,15 +51,15 @@ class DesktopTrayService with TrayListener, WindowListener {
     _initialized = true;
 
     try {
-      await windowManager.ensureInitialized();
-      windowManager.addListener(this);
-      await windowManager.setPreventClose(true);
+      await _windowManager.ensureInitialized();
+      _windowManager.addListener(this);
+      await _windowManager.setPreventClose(true);
     } catch (_) {
       // Safe fallback in headless/test environments.
     }
 
     try {
-      trayManager.addListener(this);
+      _trayManager.addListener(this);
       await refreshTrayMenu();
 
       _subs.add(
@@ -48,13 +74,16 @@ class DesktopTrayService with TrayListener, WindowListener {
       _subs.add(
         controller.activeCuSession.listen((_) => unawaited(refreshTrayMenu())),
       );
+      _subs.add(
+        controller.followMeEnabled.listen((_) => unawaited(refreshTrayMenu())),
+      );
     } catch (_) {
       // Safe fallback in headless/test environments.
     }
 
     try {
-      await hotKeyManager.unregisterAll();
-      final hotKey = HotKey(
+      await _hotKeyManager.unregisterAll();
+      final emergencyStopKey = HotKey(
         key: PhysicalKeyboardKey.keyX,
         modifiers: <HotKeyModifier>[
           HotKeyModifier.control,
@@ -63,16 +92,45 @@ class DesktopTrayService with TrayListener, WindowListener {
         ],
         scope: HotKeyScope.system,
       );
-      await hotKeyManager.register(
-        hotKey,
+      await _hotKeyManager.register(
+        emergencyStopKey,
         keyDownHandler: (_) {
           controller.triggerEmergencyStop();
           unawaited(refreshTrayMenu());
         },
       );
+
+      final focusKey = HotKey(
+        key: PhysicalKeyboardKey.keyF,
+        modifiers: _isMacOs
+            ? <HotKeyModifier>[
+                HotKeyModifier.meta,
+                HotKeyModifier.alt,
+                HotKeyModifier.shift,
+              ]
+            : <HotKeyModifier>[
+                HotKeyModifier.control,
+                HotKeyModifier.alt,
+                HotKeyModifier.shift,
+              ],
+        scope: HotKeyScope.system,
+      );
+      await _hotKeyManager.register(
+        focusKey,
+        keyDownHandler: (_) => _triggerFocusHotkey(),
+      );
     } catch (_) {
       // Safe fallback when global hotkey registration is unavailable.
     }
+  }
+
+  void _triggerFocusHotkey() {
+    final hook = _onFocusHotkeyPressed;
+    if (hook != null) {
+      hook();
+      return;
+    }
+    controller.requestFocusHere(source: FocusRequestSource.hotkey);
   }
 
   String _resolveIconAsset() {
@@ -85,23 +143,22 @@ class DesktopTrayService with TrayListener, WindowListener {
     return 'assets/images/xuna_tray_idle.png';
   }
 
-  Future<void> refreshTrayMenu() async {
+  @visibleForTesting
+  Menu buildTrayMenu() {
     final stopped = controller.isStopped.value;
     final statusLabel = controller.trayStatusLabel;
-    final iconAsset = _resolveIconAsset();
-
-    final menu = Menu(
+    return Menu(
       items: <MenuItem>[
-        MenuItem(
-          key: 'status',
-          label: '🐾 XUNA: $statusLabel',
-          disabled: true,
+        MenuItem(key: 'status', label: '🐾 XUNA: $statusLabel', disabled: true),
+        MenuItem.separator(),
+        MenuItem(key: 'focus_here', label: 'Gọi XUNA sang máy này'),
+        MenuItem.checkbox(
+          key: 'toggle_follow_me',
+          label: 'Follow Me',
+          checked: controller.followMeEnabled.value,
         ),
         MenuItem.separator(),
-        MenuItem(
-          key: 'open_settings',
-          label: 'Mở Trạm điều khiển XUNA',
-        ),
+        MenuItem(key: 'open_settings', label: 'Mở Trạm điều khiển XUNA'),
         MenuItem(
           key: 'quick_capsule',
           label: 'Đóng băng nhanh không gian làm việc',
@@ -115,32 +172,54 @@ class DesktopTrayService with TrayListener, WindowListener {
         MenuItem(key: 'quit', label: 'Thoát XUNA'),
       ],
     );
+  }
+
+  Future<void> refreshTrayMenu() async {
+    final statusLabel = controller.trayStatusLabel;
+    final iconAsset = _resolveIconAsset();
+    final menu = buildTrayMenu();
+
     try {
       if (_currentIconAsset != iconAsset) {
-        await trayManager.setIcon(iconAsset, isTemplate: false);
+        await _trayManager.setIcon(iconAsset, isTemplate: false);
         _currentIconAsset = iconAsset;
       }
-      if (Platform.isMacOS) {
-        await trayManager.setTitle('');
+      if (_isMacOs) {
+        await _trayManager.setTitle('');
       }
-      await trayManager.setContextMenu(menu);
-      await trayManager.setToolTip('XUNA ($statusLabel)');
+      await _trayManager.setContextMenu(menu);
+      await _trayManager.setToolTip('XUNA ($statusLabel)');
     } catch (_) {}
   }
 
   @override
   void onTrayIconMouseDown() {
-    unawaited(trayManager.popUpContextMenu());
+    unawaited(_trayManager.popUpContextMenu());
   }
 
   @override
   void onTrayIconRightMouseDown() {
-    unawaited(trayManager.popUpContextMenu());
+    unawaited(_trayManager.popUpContextMenu());
   }
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
     switch (menuItem.key) {
+      case 'focus_here':
+        final hook = _onFocusTrayPressed;
+        if (hook != null) {
+          hook();
+        } else {
+          controller.requestFocusHere(source: FocusRequestSource.tray);
+        }
+      case 'toggle_follow_me':
+        final hook = _onToggleFollowMe;
+        if (hook != null) {
+          hook(!controller.followMeEnabled.value);
+        } else {
+          controller.toggleFollowMe();
+        }
+        unawaited(refreshTrayMenu());
       case 'stop':
         controller.triggerEmergencyStop();
         unawaited(refreshTrayMenu());
@@ -162,7 +241,7 @@ class DesktopTrayService with TrayListener, WindowListener {
 
   @override
   void onWindowClose() {
-    unawaited(windowManager.hide());
+    unawaited(_windowManager.hide());
   }
 
   @override
@@ -172,8 +251,8 @@ class DesktopTrayService with TrayListener, WindowListener {
 
   Future<void> _showSettingsWindow() async {
     try {
-      await windowManager.show();
-      await windowManager.focus();
+      await _windowManager.show();
+      await _windowManager.focus();
     } catch (_) {}
   }
 
@@ -183,10 +262,10 @@ class DesktopTrayService with TrayListener, WindowListener {
       unawaited(sub.cancel());
     }
     _subs.clear();
-    trayManager.removeListener(this);
-    windowManager.removeListener(this);
+    _trayManager.removeListener(this);
+    _windowManager.removeListener(this);
     try {
-      await hotKeyManager.unregisterAll();
+      await _hotKeyManager.unregisterAll();
     } catch (_) {}
   }
 }

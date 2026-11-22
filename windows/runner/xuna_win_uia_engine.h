@@ -17,31 +17,6 @@ struct WindowSearchContext {
   int best_score = 0;
 };
 
-inline std::string QueryProcessBaseNameForHwnd(HWND hwnd) {
-  if (hwnd == nullptr) return std::string();
-  DWORD pid = 0;
-  GetWindowThreadProcessId(hwnd, &pid);
-  if (pid == 0) return std::string();
-  HANDLE h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-  if (h_proc == nullptr) return std::string();
-  wchar_t img_path[MAX_PATH] = {};
-  DWORD img_len = MAX_PATH;
-  std::string proc_stem;
-  if (QueryFullProcessImageNameW(h_proc, 0, img_path, &img_len)) {
-    std::wstring full(img_path, img_len);
-    size_t slash = full.find_last_of(L"\\/");
-    std::wstring base =
-        slash != std::wstring::npos ? full.substr(slash + 1) : full;
-    proc_stem = WideToUtf8(base);
-    if (proc_stem.size() > 4 &&
-        ToLowerAscii(proc_stem.substr(proc_stem.size() - 4)) == ".exe") {
-      proc_stem = proc_stem.substr(0, proc_stem.size() - 4);
-    }
-  }
-  CloseHandle(h_proc);
-  return proc_stem;
-}
-
 inline bool IsHardDeniedOrElevatedHwnd(HWND hwnd) {
   if (hwnd == nullptr) return false;
   DWORD pid = 0;
@@ -543,23 +518,46 @@ inline void SendUnicodeTextInput(const std::string& utf8_text) {
   SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
 }
 
-inline void SetClipboardUnicodeText(const std::string& utf8_text) {
+inline bool SetClipboardUnicodeText(const std::string& utf8_text,
+                                    std::string* out_error = nullptr) {
   std::wstring wtext = Utf8ToWide(utf8_text);
-  if (!OpenClipboard(nullptr)) return;
-  EmptyClipboard();
+  if (!utf8_text.empty() && wtext.empty()) {
+    if (out_error) *out_error = "Failed to convert UTF-8 text to UTF-16";
+    return false;
+  }
+  if (!OpenClipboard(nullptr)) {
+    if (out_error) *out_error = "OpenClipboard failed";
+    return false;
+  }
+  if (!EmptyClipboard()) {
+    CloseClipboard();
+    if (out_error) *out_error = "EmptyClipboard failed";
+    return false;
+  }
   size_t bytes = (wtext.size() + 1) * sizeof(wchar_t);
   HGLOBAL h_mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-  if (h_mem != nullptr) {
-    void* ptr = GlobalLock(h_mem);
-    if (ptr != nullptr) {
-      memcpy(ptr, wtext.c_str(), bytes);
-      GlobalUnlock(h_mem);
-      SetClipboardData(CF_UNICODETEXT, h_mem);
-    } else {
-      GlobalFree(h_mem);
-    }
+  if (h_mem == nullptr) {
+    CloseClipboard();
+    if (out_error) *out_error = "GlobalAlloc failed";
+    return false;
+  }
+  void* ptr = GlobalLock(h_mem);
+  if (ptr == nullptr) {
+    GlobalFree(h_mem);
+    CloseClipboard();
+    if (out_error) *out_error = "GlobalLock failed";
+    return false;
+  }
+  memcpy(ptr, wtext.c_str(), bytes);
+  GlobalUnlock(h_mem);
+  if (SetClipboardData(CF_UNICODETEXT, h_mem) == nullptr) {
+    GlobalFree(h_mem);
+    CloseClipboard();
+    if (out_error) *out_error = "SetClipboardData failed";
+    return false;
   }
   CloseClipboard();
+  return true;
 }
 
 inline bool SendKeyboardShortcutSpec(const std::string& raw_spec) {

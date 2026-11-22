@@ -127,9 +127,13 @@ inline std::string ToLowerAscii(std::string s) {
   return s;
 }
 
-inline std::string TruncateUtf8(const std::string& s, size_t max_chars) {
-  if (s.size() <= max_chars) return s;
-  return s.substr(0, max_chars);
+inline std::string TruncateUtf8(const std::string& s, size_t max_bytes) {
+  if (s.size() <= max_bytes) return s;
+  size_t end = max_bytes;
+  while (end > 0 && (static_cast<unsigned char>(s[end]) & 0xC0) == 0x80) {
+    --end;
+  }
+  return s.substr(0, end);
 }
 
 inline std::string CompactAlphaNumLower(const std::string& s) {
@@ -229,6 +233,31 @@ struct ScopedComInitializer {
   ScopedComInitializer(const ScopedComInitializer&) = delete;
   ScopedComInitializer& operator=(const ScopedComInitializer&) = delete;
 };
+
+inline std::string QueryProcessBaseNameForHwnd(HWND hwnd) {
+  if (hwnd == nullptr) return std::string();
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid == 0) return std::string();
+  HANDLE h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (h_proc == nullptr) return std::string();
+  wchar_t img_path[MAX_PATH] = {};
+  DWORD img_len = MAX_PATH;
+  std::string proc_stem;
+  if (QueryFullProcessImageNameW(h_proc, 0, img_path, &img_len)) {
+    std::wstring full(img_path, img_len);
+    size_t slash = full.find_last_of(L"\\/");
+    std::wstring base =
+        slash != std::wstring::npos ? full.substr(slash + 1) : full;
+    proc_stem = WideToUtf8(base);
+    if (proc_stem.size() > 4 &&
+        ToLowerAscii(proc_stem.substr(proc_stem.size() - 4)) == ".exe") {
+      proc_stem = proc_stem.substr(0, proc_stem.size() - 4);
+    }
+  }
+  CloseHandle(h_proc);
+  return proc_stem;
+}
 
 }  // namespace xuna_win
 

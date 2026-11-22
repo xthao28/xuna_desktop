@@ -16,6 +16,7 @@ import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
+import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/shared/themes/xuna_color_themes.dart';
@@ -37,7 +38,11 @@ class DesktopAgentController extends BaseGetxController {
     this.lanServer,
     this.computerUseManager,
     this.symbioticService,
-  }) {
+    this.presenceCoordinator,
+    AutoAppScanner? appScanner,
+    AutoWorkspaceIndexer? workspaceIndexer,
+  }) : _appScanner = appScanner ?? AutoAppScanner(),
+       _workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer() {
     _appAutomationRunner = DesktopAppAutomationRunner(
       channel: channel,
       appScanner: _appScanner,
@@ -71,6 +76,7 @@ class DesktopAgentController extends BaseGetxController {
   final LanOfflineServer? lanServer;
   final ComputerUseSessionManager? computerUseManager;
   final AutoSymbioticService? symbioticService;
+  final PresenceCoordinator? presenceCoordinator;
 
   final activeTab = AgentWindowTab.enrollment.obs;
   final sessionPhase = HostSessionPhase.disconnected.obs;
@@ -80,6 +86,7 @@ class DesktopAgentController extends BaseGetxController {
   final policyBanner = RxnString();
   final activePolicy = Rxn<HostPolicy>();
   final isStopped = false.obs;
+  final followMeEnabled = false.obs;
   final lanModeEnabled = false.obs;
   final activeCuSession = Rxn<ComputerUseSessionState>();
   final permissionsSnapshot = const HostPermissionSnapshot().obs;
@@ -105,8 +112,8 @@ class DesktopAgentController extends BaseGetxController {
   final learnedAppPlaybooks = <AppPlaybookEntry>[].obs;
   final activeHandover = Rxn<HumanHandoverSnapshot>();
   final activeFocusedAppName = 'Visual Studio Code'.obs;
-  final AutoAppScanner _appScanner = AutoAppScanner();
-  final AutoWorkspaceIndexer _workspaceIndexer = AutoWorkspaceIndexer();
+  final AutoAppScanner _appScanner;
+  final AutoWorkspaceIndexer _workspaceIndexer;
   late final DesktopAppAutomationRunner _appAutomationRunner;
   late final DesktopSkillRunner _skillRunner;
 
@@ -141,6 +148,9 @@ class DesktopAgentController extends BaseGetxController {
       sessionClient.phaseChanges.listen((phase) {
         sessionPhase.value = phase;
         enrolledState.value = enrollmentStore.current;
+        if (phase == HostSessionPhase.disconnected) {
+          followMeEnabled.value = false;
+        }
       }),
     );
     _subs.add(
@@ -208,6 +218,7 @@ class DesktopAgentController extends BaseGetxController {
         forceRefresh: forceRefresh,
       );
       discoveredWorkspaces.assignAll(list);
+      presenceCoordinator?.scheduleResourcesPublish();
       return list;
     } catch (_) {
       return const <DiscoveredWorkspace>[];
@@ -608,12 +619,33 @@ class DesktopAgentController extends BaseGetxController {
     final clean = text.trim();
     if (clean.isEmpty) return;
     try {
-      await symbioticService?.writeClipboardText(clean);
-      await Clipboard.setData(
-        ClipboardData(text: clean),
-      ).timeout(const Duration(milliseconds: 300), onTimeout: () {});
-    } catch (_) {}
-    frontierStatusSummaryVi.value = '📋 Đã sao chép $labelVi vào Clipboard PC!';
+      if (symbioticService != null) {
+        await symbioticService!.writeClipboardText(
+          clean,
+          channelWriter: channel.clipboardWriteText,
+        );
+      } else {
+        if (!isSafeClipboardWriteText(clean)) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.invalidArgs,
+            errorCode: 'schema_mismatch',
+            message: 'Invalid clipboard text payload.',
+          );
+        }
+        final redacted = redactSensitiveClipboardText(clean, maxChars: 4000);
+        await channel.clipboardWriteText(redacted.text);
+      }
+      frontierStatusSummaryVi.value =
+          '📋 Đã sao chép $labelVi vào Clipboard PC!';
+    } catch (error) {
+      logger.warning('clipboard.ui_copy_failed', <String, Object?>{
+        'errorCode': error is XunaHostChannelException
+            ? error.errorCode
+            : 'clipboard_write_failed',
+      });
+      frontierStatusSummaryVi.value =
+          '⚠️ Không thể sao chép $labelVi vào Clipboard PC.';
+    }
   }
 
   void removeWorkspaceCapsule(String capsuleId) {
@@ -741,6 +773,7 @@ class DesktopAgentController extends BaseGetxController {
     try {
       final apps = _appScanner.discoverApps(forceRefresh: forceRefresh);
       discoveredApps.assignAll(apps);
+      presenceCoordinator?.scheduleResourcesPublish();
       return apps;
     } catch (_) {
       return const <DiscoveredApp>[];
@@ -859,7 +892,33 @@ class DesktopAgentController extends BaseGetxController {
     stopController.resumeFromTray();
   }
 
+  bool requestFocusHere({FocusRequestSource source = FocusRequestSource.tray}) {
+    final coordinator = presenceCoordinator;
+    if (coordinator != null) {
+      return coordinator.requestFocus(source: source);
+    }
+    return sessionClient.sendFocusRequest(FocusRequestParams(source: source));
+  }
+
+  bool toggleFollowMe() {
+    final next = !followMeEnabled.value;
+    final coordinator = presenceCoordinator;
+    final sent = coordinator != null
+        ? coordinator.requestFocus(
+            source: FocusRequestSource.tray,
+            followMe: next,
+          )
+        : sessionClient.sendFocusRequest(
+            FocusRequestParams(source: FocusRequestSource.tray, followMe: next),
+          );
+    if (sent) {
+      followMeEnabled.value = next;
+    }
+    return sent;
+  }
+
   Future<void> unpairAndRestartEnrollment() async {
+    followMeEnabled.value = false;
     await enrollmentStore.clear();
     enrolledState.value = null;
     await sessionClient.connect();

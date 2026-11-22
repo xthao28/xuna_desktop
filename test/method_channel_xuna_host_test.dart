@@ -548,4 +548,246 @@ void main() {
       );
     },
   );
+
+  test(
+    'presenceProbe parses laptop & desktop payloads, filters hard-denied apps, and fails closed on invalid/error responses',
+    () async {
+      var mode = 'laptop';
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            if (call.method != 'presenceProbe') return null;
+            switch (mode) {
+              case 'laptop':
+                return <String, Object?>{
+                  'idleSeconds': 12,
+                  'screenLocked': false,
+                  'mediaPlaying': true,
+                  'batteryPercent': 78,
+                  'isCharging': true,
+                  'foregroundAppId': 'Visual Studio Code',
+                };
+              case 'hard_denied':
+                return <String, Object?>{
+                  'idleSeconds': 0,
+                  'screenLocked': false,
+                  'mediaPlaying': false,
+                  'foregroundAppId': '1Password',
+                };
+              case 'desktop_no_battery':
+                return <String, Object?>{
+                  'idleSeconds': 45,
+                  'screenLocked': true,
+                  'mediaPlaying': false,
+                };
+              case 'missing_required':
+                return <String, Object?>{
+                  'idleSeconds': 1,
+                  'screenLocked': false,
+                };
+              case 'bool_idle':
+                return <String, Object?>{
+                  'idleSeconds': true,
+                  'screenLocked': false,
+                  'mediaPlaying': false,
+                };
+              case 'bad_battery':
+                return <String, Object?>{
+                  'idleSeconds': 1,
+                  'screenLocked': false,
+                  'mediaPlaying': false,
+                  'batteryPercent': 101,
+                };
+              case 'native_error':
+                throw PlatformException(
+                  code: 'failed',
+                  message: 'CGSessionCopyCurrentDictionary returned nil',
+                );
+              case 'timeout':
+                await Future<void>.delayed(const Duration(milliseconds: 500));
+                return <String, Object?>{
+                  'idleSeconds': 0,
+                  'screenLocked': false,
+                  'mediaPlaying': false,
+                };
+              default:
+                return null;
+            }
+          });
+
+      final laptop = await hostChannel.presenceProbe();
+      expect(laptop.idleSeconds, 12);
+      expect(laptop.screenLocked, isFalse);
+      expect(laptop.mediaPlaying, isTrue);
+      expect(laptop.batteryPercent, 78);
+      expect(laptop.isCharging, isTrue);
+      expect(laptop.foregroundAppId, 'visual_studio_code');
+
+      mode = 'hard_denied';
+      final denied = await hostChannel.presenceProbe();
+      expect(denied.foregroundAppId, isNull);
+
+      mode = 'desktop_no_battery';
+      final desktop = await hostChannel.presenceProbe();
+      expect(desktop.idleSeconds, 45);
+      expect(desktop.screenLocked, isTrue);
+      expect(desktop.mediaPlaying, isFalse);
+      expect(desktop.batteryPercent, isNull);
+      expect(desktop.isCharging, isNull);
+      expect(desktop.foregroundAppId, isNull);
+
+      for (final badMode in <String>[
+        'missing_required',
+        'bool_idle',
+        'bad_battery',
+        'native_error',
+      ]) {
+        mode = badMode;
+        await expectLater(
+          hostChannel.presenceProbe(),
+          throwsA(
+            isA<XunaHostChannelException>().having(
+              (e) => e.status,
+              'status',
+              XtpStatus.failed,
+            ),
+          ),
+          reason: 'Expected fail-closed XunaHostChannelException for $badMode',
+        );
+      }
+
+      mode = 'timeout';
+      await expectLater(
+        hostChannel.presenceProbe(),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.timeout)
+              .having((e) => e.errorCode, 'errorCode', 'deadline_exceeded'),
+        ),
+      );
+    },
+  );
+
+  test(
+    'clipboardWriteText round-trip, PlatformException errorCode preservation, and browserCurrentUrl fail-closed',
+    () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            recordedCalls.add(call);
+            switch (call.method) {
+              case 'clipboardWriteText':
+                final args = call.arguments as Map<Object?, Object?>;
+                if (args['text'] == 'fail_native') {
+                  throw PlatformException(
+                    code: 'failed',
+                    message: 'Pasteboard write failed',
+                    details: <String, Object?>{
+                      'errorCode': 'clipboard_write_failed',
+                    },
+                  );
+                }
+                return <String, Object?>{'written': true};
+              case 'browserCurrentUrl':
+                final args = call.arguments as Map<Object?, Object?>;
+                final req = args['browser'] as String?;
+                if (req == 'missing_browser') {
+                  return <String, Object?>{'url': 'https://example.com'};
+                }
+                if (req == 'ambiguous') {
+                  throw PlatformException(
+                    code: 'invalid_args',
+                    message: 'Multiple browsers running',
+                    details: <String, Object?>{
+                      'errorCode': 'browser_ambiguous',
+                    },
+                  );
+                }
+                if (req == 'tcc_denied') {
+                  throw PlatformException(
+                    code: 'needs_permission',
+                    message: 'Automation denied',
+                    details: <String, Object?>{
+                      'errorCode': 'automation_denied',
+                    },
+                  );
+                }
+                if (req == 'bad_args_no_details') {
+                  throw PlatformException(code: 'invalid_args', message: 'bad');
+                }
+                if (req == 'denied_no_details') {
+                  throw PlatformException(code: 'denied', message: 'blocked');
+                }
+                return <String, Object?>{
+                  'url': 'https://github.com/xthao28/xuna_pet',
+                  'browser': 'safari',
+                };
+              default:
+                return null;
+            }
+          });
+
+      await hostChannel.clipboardWriteText('Hello XUNA');
+      expect(recordedCalls.last.method, 'clipboardWriteText');
+      expect(
+        (recordedCalls.last.arguments as Map<Object?, Object?>)['text'],
+        'Hello XUNA',
+      );
+
+      await expectLater(
+        hostChannel.clipboardWriteText('fail_native'),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.failed)
+              .having(
+                (e) => e.errorCode,
+                'errorCode',
+                'clipboard_write_failed',
+              ),
+        ),
+      );
+
+      // Missing/invalid browser from native fails closed instead of defaulting to 'edge'.
+      await expectLater(
+        hostChannel.browserCurrentUrl(browser: 'missing_browser'),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.failed)
+              .having((e) => e.errorCode, 'errorCode', 'os_error'),
+        ),
+      );
+
+      // Preserves details['errorCode'] and maps invalid_args / denied without details cleanly.
+      await expectLater(
+        hostChannel.browserCurrentUrl(browser: 'ambiguous'),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.invalidArgs)
+              .having((e) => e.errorCode, 'errorCode', 'browser_ambiguous'),
+        ),
+      );
+      await expectLater(
+        hostChannel.browserCurrentUrl(browser: 'tcc_denied'),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.needsPermission)
+              .having((e) => e.errorCode, 'errorCode', 'automation_denied'),
+        ),
+      );
+      await expectLater(
+        hostChannel.browserCurrentUrl(browser: 'bad_args_no_details'),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.invalidArgs)
+              .having((e) => e.errorCode, 'errorCode', 'invalid_args'),
+        ),
+      );
+      await expectLater(
+        hostChannel.browserCurrentUrl(browser: 'denied_no_details'),
+        throwsA(
+          isA<XunaHostChannelException>()
+              .having((e) => e.status, 'status', XtpStatus.denied)
+              .having((e) => e.errorCode, 'errorCode', 'policy_blocked'),
+        ),
+      );
+    },
+  );
 }

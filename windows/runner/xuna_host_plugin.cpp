@@ -3,11 +3,30 @@
 #include "xuna_win_apps_browser.h"
 #include "xuna_win_common.h"
 #include "xuna_win_crypto_media.h"
+#include "xuna_win_presence.h"
 #include "xuna_win_uia_engine.h"
 
 namespace {
 
 using namespace xuna_win;
+
+flutter::EncodableValue MakeErrorDetails(const std::string& error_code) {
+  if (error_code.empty()) return flutter::EncodableValue();
+  flutter::EncodableMap details;
+  details[flutter::EncodableValue("errorCode")] =
+      flutter::EncodableValue(error_code);
+  return flutter::EncodableValue(details);
+}
+
+bool HasForbiddenClipboardControlBytes(const std::string& text) {
+  for (unsigned char ch : text) {
+    if ((ch <= 0x08) || ch == 0x0B || ch == 0x0C || (ch >= 0x0E && ch <= 0x1F) ||
+        ch == 0x7F) {
+      return true;
+    }
+  }
+  return false;
+}
 
 void HandleMethodCallOnWorker(
     std::string method, flutter::EncodableMap args,
@@ -103,18 +122,49 @@ void HandleMethodCallOnWorker(
   }
 
   if (method == "appLaunch" || method == "workflowRun") {
+    const bool is_workflow = (method == "workflowRun");
     const auto* kind_val = FindKey(args, "kind");
     const auto* target_val = FindKey(args, "target");
+    const auto* open_val = FindKey(args, "openPath");
     const auto* kind_str =
         kind_val ? std::get_if<std::string>(kind_val) : nullptr;
     const auto* target_str =
         target_val ? std::get_if<std::string>(target_val) : nullptr;
-    if (!kind_str || !target_str ||
-        !LaunchAppOrWorkflow(*kind_str, *target_str)) {
-      result->Error("failed", "ShellExecuteExW / ActivateApplication failed");
+    const auto* open_str =
+        open_val ? std::get_if<std::string>(open_val) : nullptr;
+    if (!kind_str || !target_str || target_str->empty()) {
+      result->Error("invalid_args", "Missing kind or target",
+                    MakeErrorDetails("schema_mismatch"));
       return;
     }
-    result->Success(flutter::EncodableValue(flutter::EncodableMap()));
+    bool already_running = false;
+    std::string err_code;
+    std::string err_msg;
+    if (!LaunchAppOrWorkflow(*kind_str, *target_str, is_workflow,
+                             open_str ? *open_str : "", &already_running,
+                             &err_code, &err_msg)) {
+      const char* code =
+          (err_code == "denylisted_target_forbidden" ||
+           err_code == "policy_blocked")
+              ? "denied"
+              : (err_code == "platform_unsupported"
+                     ? "unsupported"
+                     : (err_code == "invalid_args" ? "invalid_args"
+                                                   : "failed"));
+      result->Error(code,
+                    err_msg.empty()
+                        ? "ShellExecuteExW / ActivateApplication failed"
+                        : err_msg,
+                    MakeErrorDetails(err_code));
+      return;
+    }
+    flutter::EncodableMap out;
+    if (!is_workflow) {
+      out[flutter::EncodableValue("launched")] = flutter::EncodableValue(true);
+      out[flutter::EncodableValue("alreadyRunning")] =
+          flutter::EncodableValue(already_running);
+    }
+    result->Success(flutter::EncodableValue(out));
     return;
   }
 
@@ -122,8 +172,15 @@ void HandleMethodCallOnWorker(
     const auto* url_val = FindKey(args, "url");
     const auto* url_str =
         url_val ? std::get_if<std::string>(url_val) : nullptr;
-    if (!url_str || !OpenHttpsUrl(*url_str)) {
-      result->Error("failed", "ShellExecuteExW urlOpen failed");
+    if (!url_str || !IsValidPublicHttpsUrlWindows(*url_str)) {
+      result->Error("invalid_args",
+                    "Only valid https:// URLs without userinfo (<= 2048 chars) are permitted",
+                    MakeErrorDetails("url_invalid"));
+      return;
+    }
+    if (!OpenHttpsUrl(*url_str)) {
+      result->Error("failed", "ShellExecuteExW urlOpen failed",
+                    MakeErrorDetails("os_error"));
       return;
     }
     result->Success(flutter::EncodableValue(flutter::EncodableMap()));
@@ -136,10 +193,19 @@ void HandleMethodCallOnWorker(
     std::string req_browser = br_str ? *br_str : "auto";
     std::string active_url;
     std::string resolved_browser;
-    if (!QueryBrowserCurrentUrlUia(req_browser, &active_url,
-                                   &resolved_browser)) {
-      result->Error("invalid_args",
-                    "No active https:// browser tab found via UIA");
+    std::string err_code;
+    std::string err_msg;
+    if (!QueryBrowserCurrentUrlUia(req_browser, &active_url, &resolved_browser,
+                                   &err_code, &err_msg)) {
+      const char* code =
+          (err_code == "browser_not_running" || err_code == "os_error")
+              ? "failed"
+              : "invalid_args";
+      result->Error(code,
+                    err_msg.empty()
+                        ? "No active https:// browser tab found via UIA"
+                        : err_msg,
+                    MakeErrorDetails(err_code));
       return;
     }
     flutter::EncodableMap out;
@@ -214,20 +280,90 @@ void HandleMethodCallOnWorker(
   }
 
   if (method == "clipboardReadText") {
-    std::string text;
-    if (OpenClipboard(nullptr)) {
-      HANDLE h_data = GetClipboardData(CF_UNICODETEXT);
-      if (h_data != nullptr) {
-        const auto* wstr = static_cast<const wchar_t*>(GlobalLock(h_data));
-        if (wstr != nullptr) {
-          text = TruncateUtf8(WideToUtf8(std::wstring(wstr)), 2400);
-          GlobalUnlock(h_data);
-        }
-      }
-      CloseClipboard();
+    if (!OpenClipboard(nullptr)) {
+      result->Error("failed", "OpenClipboard failed",
+                    MakeErrorDetails("os_error"));
+      return;
     }
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+      UINT fmt_count = CountClipboardFormats();
+      CloseClipboard();
+      if (fmt_count > 0) {
+        result->Error("invalid_args",
+                      "Clipboard contains binary or non-text data",
+                      MakeErrorDetails("clipboard_binary"));
+        return;
+      }
+      flutter::EncodableMap out;
+      out[flutter::EncodableValue("text")] =
+          flutter::EncodableValue(std::string());
+      result->Success(flutter::EncodableValue(out));
+      return;
+    }
+    HANDLE h_data = GetClipboardData(CF_UNICODETEXT);
+    if (h_data == nullptr) {
+      CloseClipboard();
+      result->Error("failed", "Failed to read CF_UNICODETEXT clipboard data",
+                    MakeErrorDetails("os_error"));
+      return;
+    }
+    const auto* wstr = static_cast<const wchar_t*>(GlobalLock(h_data));
+    if (wstr == nullptr) {
+      CloseClipboard();
+      result->Error("failed", "Failed to lock CF_UNICODETEXT clipboard data",
+                    MakeErrorDetails("os_error"));
+      return;
+    }
+    std::string raw_utf8 = WideToUtf8(std::wstring(wstr));
+    GlobalUnlock(h_data);
+    CloseClipboard();
+    if (HasForbiddenClipboardControlBytes(raw_utf8)) {
+      result->Error("invalid_args",
+                    "Clipboard contains binary control characters",
+                    MakeErrorDetails("clipboard_binary"));
+      return;
+    }
+    std::string text = TruncateUtf8(raw_utf8, 2400);
     flutter::EncodableMap out;
     out[flutter::EncodableValue("text")] = flutter::EncodableValue(text);
+    result->Success(flutter::EncodableValue(out));
+    return;
+  }
+
+  if (method == "clipboardWriteText") {
+    const auto* text_val = FindKey(args, "text");
+    const auto* text_str =
+        text_val ? std::get_if<std::string>(text_val) : nullptr;
+    if (!text_str) {
+      result->Error("invalid_args", "Missing text argument",
+                    MakeErrorDetails("schema_mismatch"));
+      return;
+    }
+    bool has_non_ws = false;
+    for (unsigned char ch : *text_str) {
+      if (!std::isspace(ch)) {
+        has_non_ws = true;
+        break;
+      }
+    }
+    std::wstring wtext = Utf8ToWide(*text_str);
+    if (!has_non_ws || wtext.size() > 4000 ||
+        HasForbiddenClipboardControlBytes(*text_str)) {
+      result->Error("invalid_args",
+                    "Clipboard write text is empty, > 4000 chars, or contains binary control bytes",
+                    MakeErrorDetails("schema_mismatch"));
+      return;
+    }
+    std::string write_err;
+    if (!SetClipboardUnicodeText(*text_str, &write_err)) {
+      result->Error("failed",
+                    write_err.empty() ? "SetClipboardUnicodeText failed"
+                                      : write_err,
+                    MakeErrorDetails("clipboard_write_failed"));
+      return;
+    }
+    flutter::EncodableMap out;
+    out[flutter::EncodableValue("written")] = flutter::EncodableValue(true);
     result->Success(flutter::EncodableValue(out));
     return;
   }
@@ -511,6 +647,18 @@ void HandleMethodCallOnWorker(
 
   if (method == "invokeWindowUiControl") {
     ExecuteInvokeWindowUiControl(args, std::move(result));
+    return;
+  }
+
+  if (method == "presenceProbe") {
+    flutter::EncodableMap out;
+    std::string error_msg;
+    if (!QueryWindowsPresence(&out, &error_msg)) {
+      result->Error("failed",
+                    error_msg.empty() ? "presenceProbe failed" : error_msg);
+      return;
+    }
+    result->Success(flutter::EncodableValue(out));
     return;
   }
 

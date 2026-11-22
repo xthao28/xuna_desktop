@@ -12,9 +12,13 @@ import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/browser_bridge/cdp_browser_engine_provider.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
+import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
+import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
+import 'package:xuna_desktop/features/presence/resource_digest_builder.dart';
+import 'package:xuna_desktop/features/presence/subnet_hash.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/desktop_tray_service.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
@@ -55,6 +59,7 @@ Future<void> main() async {
   final auditStore = AuditLogStore(auditDir: paths.auditDir);
   final stopController = EmergencyStopController(logger: logger);
   final appScanner = AutoAppScanner();
+  final workspaceIndexer = AutoWorkspaceIndexer();
   final computerUseManager = ComputerUseSessionManager(
     provider: NativeHostChannelComputerUseProvider(
       channel: channel,
@@ -96,6 +101,17 @@ Future<void> main() async {
     logger: logger,
   );
 
+  final presenceCoordinator = PresenceCoordinator(
+    channel: channel,
+    sessionClient: sessionClient,
+    resourceDigestBuilder: ResourceDigestBuilder(
+      appScanner: appScanner,
+      workspaceIndexer: workspaceIndexer,
+    ),
+    subnetHashCalculator: SubnetHashCalculator(),
+    logger: logger,
+  );
+
   if (Get.isRegistered<DesktopAgentController>()) {
     await Get.delete<DesktopAgentController>(force: true);
   }
@@ -110,6 +126,9 @@ Future<void> main() async {
       lanServer: lanServer,
       computerUseManager: computerUseManager,
       symbioticService: dispatcher.symbioticService,
+      presenceCoordinator: presenceCoordinator,
+      appScanner: appScanner,
+      workspaceIndexer: workspaceIndexer,
       logger: logger,
     ),
   );

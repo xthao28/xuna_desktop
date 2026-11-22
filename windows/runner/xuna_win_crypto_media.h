@@ -1,6 +1,8 @@
 #ifndef RUNNER_XUNA_WIN_CRYPTO_MEDIA_H_
 #define RUNNER_XUNA_WIN_CRYPTO_MEDIA_H_
 
+#include <chrono>
+
 #include "xuna_win_common.h"
 
 namespace xuna_win {
@@ -127,50 +129,68 @@ inline bool SignMessageCngP256(const std::vector<uint8_t>& message,
   return status == ERROR_SUCCESS && sig_len == 64;
 }
 
-inline void SendMediaVirtualKey(WORD vk) {
+inline bool SendMediaVirtualKey(WORD vk) {
   INPUT inputs[2] = {};
   inputs[0].type = INPUT_KEYBOARD;
   inputs[0].ki.wVk = vk;
   inputs[1].type = INPUT_KEYBOARD;
   inputs[1].ki.wVk = vk;
   inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-  SendInput(2, inputs, sizeof(INPUT));
+  return SendInput(2, inputs, sizeof(INPUT)) == 2;
 }
 
 inline bool HandleMediaCommand(const std::string& cmd, std::string* out_state) {
   *out_state = "unknown";
 #if XUNA_HAS_CPPWINRT_GSMTC
   try {
+    using winrt::Windows::Foundation::AsyncStatus;
     using winrt::Windows::Media::Control::
         GlobalSystemMediaTransportControlsSessionManager;
     using winrt::Windows::Media::Control::
         GlobalSystemMediaTransportControlsSessionPlaybackStatus;
 
-    auto manager =
-        GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
-    auto session = manager ? manager.GetCurrentSession() : nullptr;
-    if (session != nullptr) {
-      bool ok = false;
-      if (cmd == "play_pause") {
-        auto info = session.GetPlaybackInfo();
-        auto status = info.PlaybackStatus();
-        ok = session.TryTogglePlayPauseAsync().get();
-        if (ok) {
-          *out_state =
-              (status == GlobalSystemMediaTransportControlsSessionPlaybackStatus::
-                             Playing)
-                  ? "paused"
-                  : "playing";
+    auto req_op =
+        GlobalSystemMediaTransportControlsSessionManager::RequestAsync();
+    if (req_op.wait_for(std::chrono::milliseconds(150)) ==
+        AsyncStatus::Completed) {
+      auto manager = req_op.GetResults();
+      auto session = manager ? manager.GetCurrentSession() : nullptr;
+      if (session != nullptr) {
+        bool ok = false;
+        if (cmd == "play_pause") {
+          auto info = session.GetPlaybackInfo();
+          auto status = info.PlaybackStatus();
+          auto op = session.TryTogglePlayPauseAsync();
+          if (op.wait_for(std::chrono::milliseconds(300)) ==
+              AsyncStatus::Completed) {
+            ok = op.GetResults();
+          }
+          if (ok) {
+            *out_state =
+                (status ==
+                 GlobalSystemMediaTransportControlsSessionPlaybackStatus::
+                     Playing)
+                    ? "paused"
+                    : "playing";
+          }
+        } else if (cmd == "next") {
+          auto op = session.TrySkipNextAsync();
+          if (op.wait_for(std::chrono::milliseconds(300)) ==
+              AsyncStatus::Completed) {
+            ok = op.GetResults();
+          }
+          *out_state = "playing";
+        } else if (cmd == "previous") {
+          auto op = session.TrySkipPreviousAsync();
+          if (op.wait_for(std::chrono::milliseconds(300)) ==
+              AsyncStatus::Completed) {
+            ok = op.GetResults();
+          }
+          *out_state = "playing";
         }
-      } else if (cmd == "next") {
-        ok = session.TrySkipNextAsync().get();
-        *out_state = "playing";
-      } else if (cmd == "previous") {
-        ok = session.TrySkipPreviousAsync().get();
-        *out_state = "playing";
-      }
-      if (ok) {
-        return true;
+        if (ok) {
+          return true;
+        }
       }
     }
   } catch (...) {
@@ -179,19 +199,16 @@ inline bool HandleMediaCommand(const std::string& cmd, std::string* out_state) {
 #endif
 
   if (cmd == "play_pause") {
-    SendMediaVirtualKey(VK_MEDIA_PLAY_PAUSE);
     *out_state = "unknown";
-    return true;
+    return SendMediaVirtualKey(VK_MEDIA_PLAY_PAUSE);
   }
   if (cmd == "next") {
-    SendMediaVirtualKey(VK_MEDIA_NEXT_TRACK);
     *out_state = "unknown";
-    return true;
+    return SendMediaVirtualKey(VK_MEDIA_NEXT_TRACK);
   }
   if (cmd == "previous") {
-    SendMediaVirtualKey(VK_MEDIA_PREV_TRACK);
     *out_state = "unknown";
-    return true;
+    return SendMediaVirtualKey(VK_MEDIA_PREV_TRACK);
   }
   return false;
 }
@@ -205,13 +222,19 @@ inline bool HandleNowPlaying(const std::vector<std::string>& allowed_players,
   }
 #if XUNA_HAS_CPPWINRT_GSMTC
   try {
+    using winrt::Windows::Foundation::AsyncStatus;
     using winrt::Windows::Media::Control::
         GlobalSystemMediaTransportControlsSessionManager;
     using winrt::Windows::Media::Control::
         GlobalSystemMediaTransportControlsSessionPlaybackStatus;
 
-    auto manager =
-        GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
+    auto req_op =
+        GlobalSystemMediaTransportControlsSessionManager::RequestAsync();
+    if (req_op.wait_for(std::chrono::milliseconds(150)) !=
+        AsyncStatus::Completed) {
+      return true;
+    }
+    auto manager = req_op.GetResults();
     auto session = manager ? manager.GetCurrentSession() : nullptr;
     if (session == nullptr) {
       (*out_map)[flutter::EncodableValue("state")] =
@@ -258,19 +281,23 @@ inline bool HandleNowPlaying(const std::vector<std::string>& allowed_players,
     (*out_map)[flutter::EncodableValue("app")] =
         flutter::EncodableValue(TruncateUtf8(matched_player, 120));
 
-    auto props = session.TryGetMediaPropertiesAsync().get();
-    if (props != nullptr) {
-      std::string title =
-          TruncateUtf8(WideToUtf8(std::wstring(props.Title().c_str())), 120);
-      std::string artist =
-          TruncateUtf8(WideToUtf8(std::wstring(props.Artist().c_str())), 120);
-      if (!title.empty()) {
-        (*out_map)[flutter::EncodableValue("title")] =
-            flutter::EncodableValue(title);
-      }
-      if (!artist.empty()) {
-        (*out_map)[flutter::EncodableValue("artist")] =
-            flutter::EncodableValue(artist);
+    auto props_op = session.TryGetMediaPropertiesAsync();
+    if (props_op.wait_for(std::chrono::milliseconds(200)) ==
+        AsyncStatus::Completed) {
+      auto props = props_op.GetResults();
+      if (props != nullptr) {
+        std::string title =
+            TruncateUtf8(WideToUtf8(std::wstring(props.Title().c_str())), 120);
+        std::string artist =
+            TruncateUtf8(WideToUtf8(std::wstring(props.Artist().c_str())), 120);
+        if (!title.empty()) {
+          (*out_map)[flutter::EncodableValue("title")] =
+              flutter::EncodableValue(title);
+        }
+        if (!artist.empty()) {
+          (*out_map)[flutter::EncodableValue("artist")] =
+              flutter::EncodableValue(artist);
+        }
       }
     }
     return true;

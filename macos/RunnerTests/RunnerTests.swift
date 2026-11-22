@@ -2,6 +2,7 @@ import Cocoa
 import CoreText
 import FlutterMacOS
 import ImageIO
+import IOKit.ps
 import XCTest
 @testable import xuna_desktop
 
@@ -502,6 +503,591 @@ class RunnerTests: XCTestCase {
     XCTAssertLessThanOrEqual(encoded.data.count, 220_000)
     XCTAssertEqual(encoded.data[0], 0xFF)
     XCTAssertEqual(encoded.data[1], 0xD8)
+  }
+
+  func testPresenceParseIdleSecondsRejectsInvalidAndTruncatesValid() {
+    XCTAssertNil(XunaHostPlugin.parseIdleSeconds(-0.1))
+    XCTAssertNil(XunaHostPlugin.parseIdleSeconds(Double.nan))
+    XCTAssertNil(XunaHostPlugin.parseIdleSeconds(Double.infinity))
+    XCTAssertNil(XunaHostPlugin.parseIdleSeconds(-Double.infinity))
+    XCTAssertNil(XunaHostPlugin.parseIdleSeconds(Double(Int.max)))
+    XCTAssertNil(XunaHostPlugin.parseIdleSeconds(Double(Int.max) * 2.0))
+    XCTAssertEqual(XunaHostPlugin.parseIdleSeconds(0.0), 0)
+    XCTAssertEqual(XunaHostPlugin.parseIdleSeconds(12.9), 12)
+  }
+
+  func testPresenceParseScreenLockedHandlesNilAbsentBoolAndOffConsole() {
+    XCTAssertNil(XunaHostPlugin.parseScreenLocked(fromSessionDict: nil))
+    XCTAssertEqual(XunaHostPlugin.parseScreenLocked(fromSessionDict: [:]), false)
+    XCTAssertEqual(
+      XunaHostPlugin.parseScreenLocked(fromSessionDict: [
+        "CGSSessionScreenIsLocked": false,
+        kCGSessionOnConsoleKey as String: true,
+      ]),
+      false
+    )
+    XCTAssertEqual(
+      XunaHostPlugin.parseScreenLocked(fromSessionDict: ["CGSSessionScreenIsLocked": true]),
+      true
+    )
+    XCTAssertEqual(
+      XunaHostPlugin.parseScreenLocked(fromSessionDict: [
+        "CGSSessionScreenIsLocked": NSNumber(value: 1),
+      ]),
+      true
+    )
+    XCTAssertEqual(
+      XunaHostPlugin.parseScreenLocked(fromSessionDict: [
+        kCGSessionOnConsoleKey as String: false,
+      ]),
+      true
+    )
+  }
+
+  func testPresenceParseInternalBatteryOmitsDesktopAndHandlesFullAcCharge() throws {
+    // Desktop Mac (Mac mini / Studio / iMac) with no internal battery -> nil.
+    XCTAssertNil(XunaHostPlugin.parseInternalBattery(fromPowerSources: []))
+    XCTAssertNil(
+      XunaHostPlugin.parseInternalBattery(fromPowerSources: [
+        [
+          kIOPSTypeKey as String: kIOPSUPSType,
+          kIOPSCurrentCapacityKey as String: 100,
+          kIOPSMaxCapacityKey as String: 100,
+        ],
+      ])
+    )
+    // Absent internal battery flag -> nil.
+    XCTAssertNil(
+      XunaHostPlugin.parseInternalBattery(fromPowerSources: [
+        [
+          kIOPSTypeKey as String: kIOPSInternalBatteryType,
+          kIOPSIsPresentKey as String: false,
+          kIOPSCurrentCapacityKey as String: 50,
+          kIOPSMaxCapacityKey as String: 100,
+        ],
+      ])
+    )
+    // Zero max capacity -> nil (fail closed).
+    XCTAssertNil(
+      XunaHostPlugin.parseInternalBattery(fromPowerSources: [
+        [
+          kIOPSTypeKey as String: kIOPSInternalBatteryType,
+          kIOPSIsPresentKey as String: true,
+          kIOPSCurrentCapacityKey as String: 50,
+          kIOPSMaxCapacityKey as String: 0,
+        ],
+      ])
+    )
+
+    // Discharging laptop battery -> (42, false).
+    let discharging = try XCTUnwrap(
+      XunaHostPlugin.parseInternalBattery(fromPowerSources: [
+        [
+          kIOPSTypeKey as String: kIOPSInternalBatteryType,
+          kIOPSIsPresentKey as String: true,
+          kIOPSCurrentCapacityKey as String: 42,
+          kIOPSMaxCapacityKey as String: 100,
+          kIOPSIsChargingKey as String: false,
+          kIOPSPowerSourceStateKey as String: kIOPSBatteryPowerValue,
+        ],
+      ])
+    )
+    XCTAssertEqual(discharging.percent, 42)
+    XCTAssertFalse(discharging.isCharging)
+
+    // 100%-charged AC-plugged MacBook reports isCharging == false in IOKit but AC Power state -> (100, true).
+    let fullAc = try XCTUnwrap(
+      XunaHostPlugin.parseInternalBattery(fromPowerSources: [
+        [
+          kIOPSTypeKey as String: kIOPSInternalBatteryType,
+          kIOPSIsPresentKey as String: true,
+          kIOPSCurrentCapacityKey as String: 100,
+          kIOPSMaxCapacityKey as String: 100,
+          kIOPSIsChargingKey as String: false,
+          kIOPSPowerSourceStateKey as String: kIOPSACPowerValue,
+        ],
+      ])
+    )
+    XCTAssertEqual(fullAc.percent, 100)
+    XCTAssertTrue(fullAc.isCharging)
+  }
+
+  func testPresenceNormalizeForegroundAppIdMatchesAutoAppScanner() {
+    XCTAssertEqual(
+      XunaHostPlugin.normalizeForegroundAppId("Visual Studio Code"),
+      "visual_studio_code"
+    )
+    XCTAssertEqual(
+      XunaHostPlugin.normalizeForegroundAppId("Google Chrome.app"),
+      "google_chrome"
+    )
+    XCTAssertEqual(
+      XunaHostPlugin.normalizeForegroundAppId("  Code.exe  "),
+      "code"
+    )
+    XCTAssertNil(XunaHostPlugin.normalizeForegroundAppId(nil))
+    XCTAssertNil(XunaHostPlugin.normalizeForegroundAppId("   "))
+    XCTAssertNil(XunaHostPlugin.normalizeForegroundAppId("!!!"))
+
+    let overlong = String(repeating: "a", count: 80)
+    let normalized = XunaHostPlugin.normalizeForegroundAppId(overlong)
+    XCTAssertEqual(normalized?.count, 64)
+  }
+
+  func testPresenceProbeLiveSmokeCompletesFastWhenWindowServerAvailable() throws {
+    try XCTSkipIf(
+      CGSessionCopyCurrentDictionary() == nil,
+      "WindowServer session dictionary unavailable in headless environment"
+    )
+    let plugin = XunaHostPlugin()
+    // Warm up MediaRemote XPC once outside the steady-state latency assertion.
+    _ = XunaHostPlugin.queryMediaPlayingFast()
+
+    let start = CFAbsoluteTimeGetCurrent()
+    let res = plugin.buildPresenceProbePayload()
+    let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+
+    switch res {
+    case .success(let payload):
+      let idle = try XCTUnwrap(payload["idleSeconds"] as? Int)
+      XCTAssertGreaterThanOrEqual(idle, 0)
+      XCTAssertTrue(payload["screenLocked"] is Bool)
+      XCTAssertTrue(payload["mediaPlaying"] is Bool)
+      if let bat = payload["batteryPercent"] as? Int {
+        XCTAssertTrue((0...100).contains(bat))
+        XCTAssertTrue(payload["isCharging"] is Bool)
+      }
+      if let fg = payload["foregroundAppId"] as? String {
+        XCTAssertFalse(fg.isEmpty)
+        XCTAssertLessThanOrEqual(fg.count, 64)
+      }
+      XCTAssertLessThan(
+        elapsedMs,
+        50.0,
+        "Expected non-blocking presenceProbe; took \(elapsedMs) ms"
+      )
+    case .failure(let error):
+      XCTFail("presenceProbe failed unexpectedly with WindowServer present: \(error.message)")
+    }
+  }
+
+  func testBuildPresenceProbePayloadAndHardDeniedAppFilter() {
+    let plugin = XunaHostPlugin()
+    let payloadResult = plugin.buildPresenceProbePayload()
+    switch payloadResult {
+    case .success(let payload):
+      XCTAssertNotNil(payload["idleSeconds"] as? Int)
+      XCTAssertNotNil(payload["screenLocked"] as? Bool)
+      XCTAssertNotNil(payload["mediaPlaying"] as? Bool)
+      if let fg = payload["foregroundAppId"] as? String {
+        XCTAssertFalse(XunaHostPlugin.isHardDeniedApp(fg, bundleId: nil))
+      }
+    case .failure(let error):
+      // Headless environments without WindowServer fail closed cleanly without crashing.
+      XCTAssertFalse(error.message.isEmpty)
+    }
+  }
+
+  func testResolveBrowserCandidateSupportsEdgeChromeSafariFrontmostAndAmbiguityRefusal() {
+    let allRunning: Set<String> = [
+      "com.apple.Safari",
+      "com.google.Chrome",
+      "com.microsoft.edgemac",
+    ]
+
+    // Explicit Edge selection resolves com.microsoft.edgemac.
+    switch XunaHostPlugin.resolveBrowserCandidate(
+      requested: "edge",
+      frontmostBundleId: "com.apple.Safari",
+      runningBundleIds: allRunning
+    ) {
+    case .resolved(let candidate):
+      XCTAssertEqual(candidate.id, "edge")
+      XCTAssertEqual(candidate.bundleId, "com.microsoft.edgemac")
+    case .error(let code, let ec, let msg):
+      XCTFail("Expected Edge candidate, got error \(code)/\(ec): \(msg)")
+    }
+
+    // Auto mode prefers frontmost running browser (Chrome over Safari/Edge).
+    switch XunaHostPlugin.resolveBrowserCandidate(
+      requested: "auto",
+      frontmostBundleId: "com.google.Chrome",
+      runningBundleIds: allRunning
+    ) {
+    case .resolved(let candidate):
+      XCTAssertEqual(candidate.id, "chrome")
+    case .error(let code, let ec, let msg):
+      XCTFail("Expected frontmost Chrome, got \(code)/\(ec): \(msg)")
+    }
+
+    // Auto mode with non-browser frontmost and single running browser (Edge) selects Edge.
+    switch XunaHostPlugin.resolveBrowserCandidate(
+      requested: "auto",
+      frontmostBundleId: "com.microsoft.VSCode",
+      runningBundleIds: ["com.microsoft.edgemac"]
+    ) {
+    case .resolved(let candidate):
+      XCTAssertEqual(candidate.id, "edge")
+    case .error(let code, let ec, let msg):
+      XCTFail("Expected single running Edge, got \(code)/\(ec): \(msg)")
+    }
+
+    // Auto mode with multiple running browsers and non-browser frontmost fails closed (browser_ambiguous).
+    switch XunaHostPlugin.resolveBrowserCandidate(
+      requested: "auto",
+      frontmostBundleId: "com.microsoft.VSCode",
+      runningBundleIds: ["com.google.Chrome", "com.microsoft.edgemac"]
+    ) {
+    case .resolved(let candidate):
+      XCTFail("Expected browser_ambiguous error, resolved \(candidate.id)")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "invalid_args")
+      XCTAssertEqual(ec, "browser_ambiguous")
+    }
+
+    // Unknown browser fails closed.
+    switch XunaHostPlugin.resolveBrowserCandidate(
+      requested: "firefox",
+      frontmostBundleId: nil,
+      runningBundleIds: allRunning
+    ) {
+    case .resolved(let candidate):
+      XCTFail("Expected unsupported_browser error, resolved \(candidate.id)")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "invalid_args")
+      XCTAssertEqual(ec, "unsupported_browser")
+    }
+
+    // Requested browser not running fails closed.
+    switch XunaHostPlugin.resolveBrowserCandidate(
+      requested: "safari",
+      frontmostBundleId: nil,
+      runningBundleIds: ["com.microsoft.edgemac"]
+    ) {
+    case .resolved(let candidate):
+      XCTFail("Expected browser_not_running error, resolved \(candidate.id)")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "failed")
+      XCTAssertEqual(ec, "browser_not_running")
+    }
+  }
+
+  func testIsValidPublicHttpsTabUrlRejectsUnsafeUrls() {
+    XCTAssertTrue(XunaHostPlugin.isValidPublicHttpsTabUrl("https://github.com/xthao28/xuna_pet"))
+    XCTAssertTrue(XunaHostPlugin.isValidPublicHttpsTabUrl("HTTPS://docs.example.com/a?b=1"))
+
+    XCTAssertFalse(XunaHostPlugin.isValidPublicHttpsTabUrl("http://github.com/xthao28"))
+    XCTAssertFalse(XunaHostPlugin.isValidPublicHttpsTabUrl("file:///etc/passwd"))
+    XCTAssertFalse(XunaHostPlugin.isValidPublicHttpsTabUrl("https://user:pass@github.com/"))
+    XCTAssertFalse(XunaHostPlugin.isValidPublicHttpsTabUrl("https:///missing-host"))
+    XCTAssertFalse(
+      XunaHostPlugin.isValidPublicHttpsTabUrl("https://github.com/" + String(repeating: "a", count: 2040))
+    )
+  }
+
+  func testClipboardReadAndWriteValidationAndPasteboardRoundTrip() {
+    // Binary pasteboard (no string, items present) fails closed.
+    switch XunaHostPlugin.validateClipboardReadPayload(stringValue: nil, hasPasteboardItems: true) {
+    case .valid:
+      XCTFail("Expected binary pasteboard rejection")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "invalid_args")
+      XCTAssertEqual(ec, "clipboard_binary")
+    }
+
+    // Control byte in clipboard read fails closed.
+    switch XunaHostPlugin.validateClipboardReadPayload(
+      stringValue: "hello\u{0000}world",
+      hasPasteboardItems: true
+    ) {
+    case .valid:
+      XCTFail("Expected NUL byte rejection")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "invalid_args")
+      XCTAssertEqual(ec, "clipboard_binary")
+    }
+
+    // Empty pasteboard (no items) yields empty string.
+    switch XunaHostPlugin.validateClipboardReadPayload(stringValue: nil, hasPasteboardItems: false) {
+    case .valid(let text):
+      XCTAssertEqual(text, "")
+    case .error:
+      XCTFail("Expected empty pasteboard to succeed with empty string")
+    }
+
+    // Write validator allows multiline + UTF-8 <= 4000 UTF-16 code units and rejects control bytes / > 4000 / empty.
+    switch XunaHostPlugin.validateClipboardWritePayload("line1\n\tline2\r\nTiếng Việt") {
+    case .valid(let text):
+      XCTAssertTrue(text.contains("Tiếng Việt"))
+    case .error:
+      XCTFail("Expected valid multiline UTF-8 clipboard write")
+    }
+    switch XunaHostPlugin.validateClipboardWritePayload(String(repeating: "a", count: 4001)) {
+    case .valid:
+      XCTFail("Expected > 4000 char write rejection")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "invalid_args")
+      XCTAssertEqual(ec, "schema_mismatch")
+    }
+    switch XunaHostPlugin.validateClipboardWritePayload(String(repeating: "👨‍👩‍👧‍👦", count: 4000)) {
+    case .valid:
+      XCTFail("Expected > 4000 UTF-16 code units emoji write rejection")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "invalid_args")
+      XCTAssertEqual(ec, "schema_mismatch")
+    }
+    switch XunaHostPlugin.validateClipboardReadPayload(
+      stringValue: String(repeating: "a", count: 2399) + "😀tail",
+      hasPasteboardItems: true
+    ) {
+    case .valid(let text):
+      XCTAssertEqual(text.utf16.count, 2399)
+    case .error:
+      XCTFail("Expected UTF-16 safe truncation for clipboardReadPayload")
+    }
+    switch XunaHostPlugin.validateClipboardWritePayload("bad\u{0007}bell") {
+    case .valid:
+      XCTFail("Expected control byte write rejection")
+    case .error(let code, let ec, _):
+      XCTAssertEqual(code, "invalid_args")
+      XCTAssertEqual(ec, "schema_mismatch")
+    }
+
+    // Live NSPasteboard round-trip via plugin handlers.
+    let plugin = XunaHostPlugin()
+    let prevString = NSPasteboard.general.string(forType: .string)
+    defer {
+      NSPasteboard.general.clearContents()
+      if let prev = prevString {
+        _ = NSPasteboard.general.setString(prev, forType: .string)
+      }
+    }
+
+    let writeExp = expectation(description: "clipboardWriteText")
+    let sample = "XUNA Phase 3 Clipboard\nDòng 2"
+    plugin.handleClipboardWriteText(args: ["text": sample]) { res in
+      if let err = res as? FlutterError {
+        XCTFail("clipboardWriteText failed: \(err.code) \(err.message ?? "")")
+      } else if let map = res as? [String: Any] {
+        XCTAssertEqual(map["written"] as? Bool, true)
+      } else {
+        XCTFail("Unexpected clipboardWriteText result")
+      }
+      writeExp.fulfill()
+    }
+    wait(for: [writeExp], timeout: 2.0)
+
+    let readExp = expectation(description: "clipboardReadText")
+    plugin.handleClipboardReadText { res in
+      if let map = res as? [String: Any] {
+        XCTAssertEqual(map["text"] as? String, sample)
+      } else {
+        XCTFail("Unexpected clipboardReadText result")
+      }
+      readExp.fulfill()
+    }
+    wait(for: [readExp], timeout: 2.0)
+  }
+
+  func testHardDeniedAppLaunchBlocked() throws {
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("Terminal", bundleId: "com.apple.Terminal"))
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("1Password", bundleId: "com.1password.1password"))
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("CleanMyMac", bundleId: "com.macpaw.CleanMyMac4"))
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("cleanmymac", bundleId: nil))
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("System Settings", bundleId: "com.apple.systempreferences"))
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("SystemPreferences", bundleId: nil))
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("Hyper", bundleId: nil))
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedApp("App", bundleId: "co.zeit.hyper"))
+    XCTAssertFalse(XunaHostPlugin.isHardDeniedApp("Hyperlink Reader", bundleId: "com.example.reader"))
+    XCTAssertFalse(XunaHostPlugin.isHardDeniedApp("Visual Studio Code", bundleId: "com.microsoft.VSCode"))
+
+    let plugin = XunaHostPlugin()
+    let exp = expectation(description: "appLaunch hard deny bundle")
+    plugin.handleAppLaunch(args: ["kind": "bundle", "target": "com.apple.Terminal"]) { res in
+      guard let err = res as? FlutterError else {
+        XCTFail("Expected FlutterError for hard-denied app launch")
+        exp.fulfill()
+        return
+      }
+      XCTAssertEqual(err.code, "denied")
+      let details = err.details as? [String: Any]
+      XCTAssertEqual(details?["errorCode"] as? String, "denylisted_target_forbidden")
+      exp.fulfill()
+    }
+    wait(for: [exp], timeout: 2.0)
+
+    let terminalExe = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+    let exeExp = expectation(description: "appLaunch hard deny exe")
+    plugin.handleAppLaunch(args: ["kind": "exe", "target": terminalExe]) { res in
+      guard let err = res as? FlutterError else {
+        XCTFail("Expected FlutterError for hard-denied terminal binary exe launch")
+        exeExp.fulfill()
+        return
+      }
+      XCTAssertEqual(err.code, "denied")
+      let details = err.details as? [String: Any]
+      XCTAssertEqual(details?["errorCode"] as? String, "denylisted_target_forbidden")
+      exeExp.fulfill()
+    }
+    wait(for: [exeExp], timeout: 2.0)
+
+    let tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("xuna_deny_sym_\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmpDir) }
+    let symBin = tmpDir.appendingPathComponent("InnocentHelper")
+    try FileManager.default.createSymbolicLink(atPath: symBin.path, withDestinationPath: terminalExe)
+
+    let symExp = expectation(description: "appLaunch hard deny symlink exe")
+    plugin.handleAppLaunch(args: ["kind": "exe", "target": symBin.path]) { res in
+      guard let err = res as? FlutterError else {
+        XCTFail("Expected FlutterError for symlinked terminal binary launch")
+        symExp.fulfill()
+        return
+      }
+      XCTAssertEqual(err.code, "denied")
+      let details = err.details as? [String: Any]
+      XCTAssertEqual(details?["errorCode"] as? String, "denylisted_target_forbidden")
+      symExp.fulfill()
+    }
+    wait(for: [symExp], timeout: 2.0)
+  }
+
+  func testUnstandardizedPathsTerminateAndBundleModeRejectsShellBinaries() throws {
+    // 1. Unstandardized paths (//, /./, /../, $TMPDIR with //) must terminate immediately.
+    let start = CFAbsoluteTimeGetCurrent()
+    XCTAssertFalse(
+      XunaHostPlugin.isHardDeniedResolvedTarget(
+        url: URL(fileURLWithPath: "/Applications//Safari.app"),
+        kind: "bundle"
+      )
+    )
+    XCTAssertFalse(
+      XunaHostPlugin.isHardDeniedResolvedTarget(
+        url: URL(fileURLWithPath: "/Applications/./Safari.app"),
+        kind: "bundle"
+      )
+    )
+    XCTAssertFalse(
+      XunaHostPlugin.isHardDeniedResolvedTarget(
+        url: URL(fileURLWithPath: "/tmp/../Applications/Safari.app"),
+        kind: "bundle"
+      )
+    )
+    XCTAssertTrue(
+      XunaHostPlugin.isHardDeniedResolvedTarget(
+        url: URL(fileURLWithPath: "/System/Applications/Utilities//Terminal.app"),
+        kind: "bundle"
+      )
+    )
+    XCTAssertTrue(
+      XunaHostPlugin.isHardDeniedResolvedTarget(
+        url: URL(fileURLWithPath: "/System/Applications/Utilities/./Terminal.app/Contents/MacOS/Terminal"),
+        kind: "exe"
+      )
+    )
+
+    let tmpDir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("xuna_unstd_\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+    let terminalExe = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+    let symTerm = tmpDir.appendingPathComponent("TermViaSlash")
+    try FileManager.default.createSymbolicLink(atPath: symTerm.path, withDestinationPath: terminalExe)
+
+    let benignFile = tmpDir.appendingPathComponent("BenignTool")
+    FileManager.default.createFile(atPath: benignFile.path, contents: Data("ok".utf8))
+
+    let doubleSlashTermUrl = URL(fileURLWithPath: "\(tmpDir.path)//TermViaSlash")
+    let doubleSlashBenignUrl = URL(fileURLWithPath: "\(tmpDir.path)//BenignTool")
+    XCTAssertTrue(XunaHostPlugin.isHardDeniedResolvedTarget(url: doubleSlashTermUrl, kind: "exe"))
+    XCTAssertFalse(XunaHostPlugin.isHardDeniedResolvedTarget(url: doubleSlashBenignUrl, kind: "exe"))
+
+    let elapsed = CFAbsoluteTimeGetCurrent() - start
+    XCTAssertLessThan(elapsed, 0.5, "Unstandardized ancestor walk took too long: \(elapsed)s")
+
+    // 2. kind == "bundle" must block bare shell/terminal binaries and symlinks to them.
+    let symZsh = tmpDir.appendingPathComponent("InnocentBundle")
+    try FileManager.default.createSymbolicLink(atPath: symZsh.path, withDestinationPath: "/bin/zsh")
+
+    XCTAssertTrue(
+      XunaHostPlugin.isHardDeniedResolvedTarget(
+        url: URL(fileURLWithPath: "/bin/zsh"),
+        kind: "bundle"
+      )
+    )
+    XCTAssertTrue(
+      XunaHostPlugin.isHardDeniedResolvedTarget(
+        url: symZsh,
+        kind: "bundle"
+      )
+    )
+
+    let plugin = XunaHostPlugin()
+    for (label, target) in [("direct zsh", "/bin/zsh"), ("symlink zsh", symZsh.path)] {
+      let exp = expectation(description: "bundle denies \(label)")
+      plugin.handleAppLaunch(args: ["kind": "bundle", "target": target]) { res in
+        guard let err = res as? FlutterError else {
+          XCTFail("Expected FlutterError when launching \(label) as kind=bundle")
+          exp.fulfill()
+          return
+        }
+        XCTAssertEqual(err.code, "denied")
+        let details = err.details as? [String: Any]
+        XCTAssertEqual(details?["errorCode"] as? String, "denylisted_target_forbidden")
+        exp.fulfill()
+      }
+      wait(for: [exp], timeout: 2.0)
+    }
+
+    // Non-.app binary must also be rejected when kind == "bundle".
+    let nonAppBin = tmpDir.appendingPathComponent("plain_binary")
+    FileManager.default.createFile(atPath: nonAppBin.path, contents: Data("bin".utf8))
+    let nonAppExp = expectation(description: "bundle rejects non-.app binary")
+    plugin.handleAppLaunch(args: ["kind": "bundle", "target": nonAppBin.path]) { res in
+      guard let err = res as? FlutterError else {
+        XCTFail("Expected FlutterError when launching non-.app binary as kind=bundle")
+        nonAppExp.fulfill()
+        return
+      }
+      XCTAssertEqual(err.code, "invalid_args")
+      let details = err.details as? [String: Any]
+      XCTAssertEqual(details?["errorCode"] as? String, "invalid_bundle_target")
+      nonAppExp.fulfill()
+    }
+    wait(for: [nonAppExp], timeout: 2.0)
+  }
+
+  func testMediaPlayPauseResultStateCompliesWithSchemaEnum() {
+    let allowed: Set<String> = ["playing", "paused", "unknown"]
+    for raw in [nil, "", "toggled", "playing", "paused", "stopped", "unexpected"] {
+      let normalized = XunaHostPlugin.normalizeMediaResultState(cmd: "play_pause", reportedState: raw)
+      XCTAssertTrue(allowed.contains(normalized), "Invalid state: \(normalized)")
+      XCTAssertNotEqual(normalized, "toggled")
+    }
+    XCTAssertEqual(
+      XunaHostPlugin.normalizeMediaResultState(cmd: "play_pause", reportedState: "paused"),
+      "paused"
+    )
+    XCTAssertEqual(
+      XunaHostPlugin.normalizeMediaResultState(cmd: "play_pause", reportedState: nil),
+      "unknown"
+    )
+
+    let plugin = XunaHostPlugin()
+    let exp = expectation(description: "media unsupported fails closed")
+    plugin.handleMedia(args: ["cmd": "rewind_invalid"]) { res in
+      guard let err = res as? FlutterError else {
+        XCTFail("Expected FlutterError for unsupported media command")
+        exp.fulfill()
+        return
+      }
+      XCTAssertEqual(err.code, "unsupported")
+      let details = err.details as? [String: Any]
+      XCTAssertEqual(details?["errorCode"] as? String, "platform_unsupported")
+      exp.fulfill()
+    }
+    wait(for: [exp], timeout: 2.0)
   }
 
 }

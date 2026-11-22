@@ -343,10 +343,15 @@ class BrowserCurrentUrlTool extends HostToolHandler {
         errorCode: urlCheck.errorCode ?? 'url_invalid',
       );
     }
-    final resolvedBrowser =
-        const <String>{'edge', 'chrome', 'safari'}.contains(snap.browser)
-        ? snap.browser
-        : 'edge';
+    const allowedBrowsers = <String>{'edge', 'chrome', 'safari'};
+    if (!allowedBrowsers.contains(snap.browser)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'Native browserCurrentUrl returned an unsupported browser.',
+      );
+    }
+    final resolvedBrowser = snap.browser;
     final host = urlCheck.asciiHost!;
     return ToolHandlerOutput(
       text: 'Đã đọc liên kết hiện tại từ $resolvedBrowser ($host).',

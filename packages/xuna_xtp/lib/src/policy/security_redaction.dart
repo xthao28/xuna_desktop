@@ -681,6 +681,7 @@ final List<RegExp> _sensitiveTokenPatterns = <RegExp>[
   RegExp(r'github_pat_[a-zA-Z0-9_]{12,}'),
   RegExp(r'AIza[0-9A-Za-z\-_]{16,}'),
   RegExp(r'xox[baprs]-[a-zA-Z0-9\-]{10,}'),
+  RegExp(r'(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])'),
   RegExp(r'Bearer\s+[a-zA-Z0-9\-._~+/]+=*', caseSensitive: false),
   RegExp(
     r'(?:password|passwd|secret|api_key|apikey|token|access_token)\s*[:=]\s*["\x27]?[^\s"\x27,;]{4,}["\x27]?',
@@ -696,6 +697,32 @@ typedef RedactedSelectionResult = ({
   bool truncated,
   int redactedCount,
 });
+
+/// Returns `true` if [text] contains disallowed ASCII control characters
+/// (`0x00..0x08`, `0x0B`, `0x0C`, `0x0E..0x1F`, `0x7F`; allows `\t`, `\n`, `\r`)
+/// or unpaired UTF-16 surrogates (`0xD800..0xDBFF` without a trailing
+/// `0xDC00..0xDFFF`, or an orphan `0xDC00..0xDFFF`).
+bool hasBinaryOrInvalidSurrogates(String text) {
+  for (var i = 0; i < text.length; i++) {
+    final code = text.codeUnitAt(i);
+    if ((code >= 0x00 && code <= 0x08) ||
+        code == 0x0B ||
+        code == 0x0C ||
+        (code >= 0x0E && code <= 0x1F) ||
+        code == 0x7F) {
+      return true;
+    }
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      if (i + 1 >= text.length) return true;
+      final next = text.codeUnitAt(i + 1);
+      if (next < 0xDC00 || next > 0xDFFF) return true;
+      i++;
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /// Redacts common API keys, Bearer tokens, private keys, and password assignments
 /// from [rawText] and truncates the result to [maxChars] (`80..1600`).
@@ -713,13 +740,62 @@ RedactedSelectionResult redactSensitiveSelectionText(
     });
   }
   final truncated = working.length > clampedMax;
-  final finalString = truncated ? working.substring(0, clampedMax) : working;
+  final finalString = truncated ? clampUtf16Safe(working, clampedMax) : working;
   return (
     text: finalString,
     truncated: truncated,
     redactedCount: count,
   );
 }
+
+/// Redacts common API keys, Bearer tokens, private keys, and password assignments
+/// from [rawText] for `clipboard.write`, supporting up to [maxChars] (`1..4000`)
+/// without silently truncating `1601..4000` characters.
+RedactedSelectionResult redactSensitiveClipboardText(
+  String rawText, {
+  int maxChars = 4000,
+}) {
+  final clampedMax = maxChars < 1 ? 1 : (maxChars > 4000 ? 4000 : maxChars);
+  var working = rawText.trim();
+  var count = 0;
+  for (final pattern in _sensitiveTokenPatterns) {
+    working = working.replaceAllMapped(pattern, (_) {
+      count++;
+      return '[REDACTED]';
+    });
+  }
+  final truncated = working.length > clampedMax;
+  final finalString = truncated ? clampUtf16Safe(working, clampedMax) : working;
+  return (
+    text: finalString,
+    truncated: truncated,
+    redactedCount: count,
+  );
+}
+
+final RegExp _httpUrlSpanRe = RegExp(
+  r'''https?://[^\s"'`<>()\[\]{}]+''',
+  caseSensitive: false,
+);
+
+final RegExp _filesystemPathRe = RegExp(
+  r'''(^|[\s"'`(\[{=:,])((?:(?:/Users|/home|/var|/tmp|/etc|/opt|/Applications|/Volumes|/Library|/System|/usr|/bin|/sbin|/root)/[^\s"'`<>(),;\]]*|\.{1,2}[/\\][^\s"'`<>(),;\]]*|~[/\\][^\s"'`<>(),;\]]*|[Ff][Ii][Ll][Ee]://[^\s"'`<>(),;\]]+|[A-Za-z]:\\[^\s"'`<>(),;\]]*|\\\\[^\s\\/"'`<>(),;\]]+\\[^\s"'`<>(),;\]]*))''',
+);
+
+/// Replaces Unix (`/Users/...`, `/home/...`, `/var/...`, `/tmp/...`,
+/// `/etc/...`, `/opt/...`, `/Applications/...`, `/Volumes/...`, `/Library/...`,
+/// `/System/...`, `/usr/...`, `/bin/...`, `/sbin/...`, `/root/...`), relative/home
+/// (`./...`, `.\...`, `~/...`, `~\...`, `../...`, `..\...`), `file:///...`,
+/// UNC (`\\server\share...`), and Windows (`[A-Za-z]:\...`) filesystem paths
+/// in [text] with `[PATH]` while preserving full `https://` / `http://` URLs.
+String redactFilesystemPaths(String text) => text.splitMapJoin(
+      _httpUrlSpanRe,
+      onMatch: (m) => m.group(0)!,
+      onNonMatch: (segment) => segment.replaceAllMapped(
+        _filesystemPathRe,
+        (m) => '${m.group(1)}[PATH]',
+      ),
+    );
 
 /// Convenience helper returning only the redacted string (`UDC-12` S12.2).
 String redactSensitiveTokens(String rawText, {int maxChars = 1200}) =>
@@ -897,22 +973,12 @@ bool isValidTvDeviceQuery(String? query) {
 
 /// Validates text passed to `clipboard.write` (`UDC-15` S15.1, `UDC-T37`):
 /// accepts `1..4000` UTF-8 characters without ASCII null/control bytes (allows
-/// `\n`, `\r`, `\t` for multiline code snippets).
+/// `\n`, `\r`, `\t` for multiline code snippets) or unpaired UTF-16 surrogates.
 bool isSafeClipboardWriteText(String? text) {
   if (text == null) return false;
   final trimmed = text.trim();
   if (trimmed.isEmpty || text.length > 4000) return false;
-  for (var i = 0; i < text.length; i++) {
-    final code = text.codeUnitAt(i);
-    if ((code >= 0x00 && code <= 0x08) ||
-        code == 0x0B ||
-        code == 0x0C ||
-        (code >= 0x0E && code <= 0x1F) ||
-        code == 0x7F) {
-      return false;
-    }
-  }
-  return true;
+  return !hasBinaryOrInvalidSurrogates(text);
 }
 
 /// Allowed execution runtimes for LLM-synthesized tools (`FORGE-LATM`).

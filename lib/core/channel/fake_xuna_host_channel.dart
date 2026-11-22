@@ -53,6 +53,7 @@ class FakeXunaHostChannel implements XunaHostChannel {
     browser: 'edge',
   );
   String clipboardTextResult = '';
+  String? lastWrittenClipboardText;
   ActiveWindowContextSnapshot
   activeWindowContextResult = const ActiveWindowContextSnapshot(
     appName: 'VS Code',
@@ -210,6 +211,13 @@ class FakeXunaHostChannel implements XunaHostChannel {
   }
 
   @override
+  Future<void> clipboardWriteText(String text) async {
+    invokedMethods.add('clipboardWriteText');
+    lastWrittenClipboardText = text;
+    await _delayAndThrowIfConfigured();
+  }
+
+  @override
   Future<bool> lockScreen() async {
     invokedMethods.add('lockScreen');
     await _delayAndThrowIfConfigured();
@@ -311,6 +319,22 @@ class FakeXunaHostChannel implements XunaHostChannel {
     dataBase64:
         '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB//Z',
   );
+
+  HostPresenceProbeResult presenceProbeResult = const HostPresenceProbeResult(
+    idleSeconds: 12,
+    screenLocked: false,
+    mediaPlaying: true,
+    batteryPercent: 78,
+    isCharging: true,
+    foregroundAppId: 'vscode',
+  );
+
+  @override
+  Future<HostPresenceProbeResult> presenceProbe() async {
+    invokedMethods.add('presenceProbe');
+    await _delayAndThrowIfConfigured();
+    return presenceProbeResult;
+  }
 
   @override
   Future<HostScreenCaptureResult> captureScreen({

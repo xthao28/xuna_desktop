@@ -203,6 +203,25 @@ class HostScreenCaptureResult {
   final String dataBase64;
 }
 
+/// Lightweight live host presence telemetry returned by `presenceProbe` (`M3` Phase 2).
+class HostPresenceProbeResult {
+  const HostPresenceProbeResult({
+    required this.idleSeconds,
+    required this.screenLocked,
+    required this.mediaPlaying,
+    this.batteryPercent,
+    this.isCharging,
+    this.foregroundAppId,
+  });
+
+  final int idleSeconds;
+  final bool screenLocked;
+  final bool mediaPlaying;
+  final int? batteryPercent;
+  final bool? isCharging;
+  final String? foregroundAppId;
+}
+
 /// Result of invoking or setting a value on a window UI control via `invokeWindowUiControl`.
 class WindowUiControlActionResult {
   const WindowUiControlActionResult({
@@ -260,7 +279,7 @@ abstract interface class XunaHostChannel {
   Future<List<InternetAddress>> resolveHostAddresses(String host);
 
   /// Reads the active `https://` tab URL from Edge/Chrome (Windows UIA) or
-  /// Safari/Chrome (macOS AppleScript) (`UDC-9` S9.1).
+  /// Safari/Chrome/Edge (macOS AppleScript) (`UDC-9` S9.1).
   Future<BrowserTabSnapshot> browserCurrentUrl({String browser = 'auto'});
 
   /// Runs an allowlisted workflow (`lnk` or `shortcut`).
@@ -286,6 +305,10 @@ abstract interface class XunaHostChannel {
 
   /// Reads selected or clipboard text from the host OS (`UDC-12` S12.2).
   Future<String> clipboardReadText();
+
+  /// Writes plain UTF-8 text to the host OS clipboard (`UDC-15` S15.1),
+  /// failing closed if the native OS clipboard call fails.
+  Future<void> clipboardWriteText(String text);
 
   /// Locks the host screen or puts the display to sleep (`UDC-12` S12.2).
   Future<bool> lockScreen();
@@ -324,6 +347,10 @@ abstract interface class XunaHostChannel {
     int maxEdge = 1280,
     List<Map<String, Object?>>? somMarks,
   });
+
+  /// Probes live OS idle time, screen lock, media playback, optional battery,
+  /// and normalized non-sensitive foreground app ID (`M3` Phase 2).
+  Future<HostPresenceProbeResult> presenceProbe();
 }
 
 /// MethodChannel implementation of [XunaHostChannel] bound to `'xuna/host'`
@@ -440,12 +467,15 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         message: 'No active browser tab URL found',
       );
     }
-    return BrowserTabSnapshot(
-      url: url,
-      browser: resolvedBrowser is String && resolvedBrowser.isNotEmpty
-          ? resolvedBrowser
-          : (browser == 'auto' ? 'edge' : browser),
-    );
+    if (resolvedBrowser is! String ||
+        !const <String>{'edge', 'chrome', 'safari'}.contains(resolvedBrowser)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'Native browserCurrentUrl returned invalid or missing browser',
+      );
+    }
+    return BrowserTabSnapshot(url: url, browser: resolvedBrowser);
   }
 
   @override
@@ -548,6 +578,11 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     final map = await _invokeMap('clipboardReadText');
     final text = map['text'];
     return text is String ? text : '';
+  }
+
+  @override
+  Future<void> clipboardWriteText(String text) async {
+    await _invokeMap('clipboardWriteText', <String, Object?>{'text': text});
   }
 
   @override
@@ -665,7 +700,7 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       url: url,
       browser: resolvedBrowser is String && resolvedBrowser.isNotEmpty
           ? resolvedBrowser
-          : (browser == 'auto' ? 'edge' : browser),
+          : (browser == 'auto' ? '' : browser),
       title: title is String ? title : '',
       headings: headings,
       actions: actions,
@@ -780,6 +815,84 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
     );
   }
 
+  @override
+  Future<HostPresenceProbeResult> presenceProbe() async {
+    final map = await _invokeMap('presenceProbe');
+    final idle = map['idleSeconds'];
+    final locked = map['screenLocked'];
+    final media = map['mediaPlaying'];
+    if (idle is! int || idle < 0 || locked is! bool || media is! bool) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'presenceProbe returned missing or malformed required fields.',
+      );
+    }
+
+    int? batteryPercent;
+    final rawBattery = map['batteryPercent'];
+    if (rawBattery != null) {
+      if (rawBattery is! int || rawBattery < 0 || rawBattery > 100) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'os_error',
+          message: 'presenceProbe returned invalid batteryPercent.',
+        );
+      }
+      batteryPercent = rawBattery;
+    }
+
+    bool? isCharging;
+    final rawCharging = map['isCharging'];
+    if (rawCharging != null) {
+      if (rawCharging is! bool) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'os_error',
+          message: 'presenceProbe returned invalid isCharging.',
+        );
+      }
+      isCharging = rawCharging;
+    }
+
+    final rawFg = map['foregroundAppId'];
+    final foregroundAppId = rawFg is String
+        ? _normalizeForegroundAppId(rawFg)
+        : null;
+
+    return HostPresenceProbeResult(
+      idleSeconds: idle,
+      screenLocked: locked,
+      mediaPlaying: media,
+      batteryPercent: batteryPercent,
+      isCharging: isCharging,
+      foregroundAppId: foregroundAppId,
+    );
+  }
+
+  static String? _normalizeForegroundAppId(String? raw) {
+    if (raw == null) return null;
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty || isHardDeniedAppOrProcess(trimmed)) return null;
+    if (!RegExp(r'[a-zA-Z0-9]').hasMatch(trimmed)) return null;
+    final lower = trimmed
+        .toLowerCase()
+        .replaceAll(RegExp(r'\.(app|exe|lnk|cmd)$'), '')
+        .replaceAll(RegExp(r'[^a-z0-9_.-]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    if (lower.isEmpty) return null;
+    final capped = lower.length > 64
+        ? lower.substring(0, 64).replaceAll(RegExp(r'_+$'), '')
+        : lower;
+    if (capped.isEmpty ||
+        !isValidShortId(capped) ||
+        isHardDeniedAppOrProcess(capped)) {
+      return null;
+    }
+    return capped;
+  }
+
   Future<Map<String, Object?>> _invokeMap(
     String method, [
     Map<String, Object?>? args,
@@ -819,15 +932,22 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         'timeout' => XtpStatus.timeout,
         _ => XtpStatus.failed,
       };
-      final errorCode = switch (error.code) {
-        'screen_recording' => 'screen_recording',
-        'capture_failed' => 'capture_failed',
-        'hard_denied_window' => 'hard_denied_window',
-        'needs_permission' => 'permission_missing',
-        'unsupported' => 'platform_unsupported',
-        'timeout' => 'deadline_exceeded',
-        _ => 'os_error',
-      };
+      final details = error.details;
+      final detailErrorCode = details is Map ? details['errorCode'] : null;
+      final errorCode =
+          detailErrorCode is String && detailErrorCode.trim().isNotEmpty
+          ? detailErrorCode.trim()
+          : switch (error.code) {
+              'screen_recording' => 'screen_recording',
+              'capture_failed' => 'capture_failed',
+              'hard_denied_window' => 'hard_denied_window',
+              'needs_permission' => 'permission_missing',
+              'unsupported' => 'platform_unsupported',
+              'invalid_args' => 'invalid_args',
+              'denied' => 'policy_blocked',
+              'timeout' => 'deadline_exceeded',
+              _ => 'os_error',
+            };
       throw XunaHostChannelException(
         status: status,
         errorCode: errorCode,
@@ -909,8 +1029,20 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         return const <String, Object?>{};
       case 'urlOpen':
         final url = (args['url'] as String? ?? '').trim();
-        if (url.startsWith('https://')) {
-          await Process.run('xdg-open', <String>[url]);
+        if (!url.toLowerCase().startsWith('https://')) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.invalidArgs,
+            errorCode: 'url_invalid',
+            message: 'Only https:// URLs are permitted.',
+          );
+        }
+        final openRes = await Process.run('xdg-open', <String>[url]);
+        if (openRes.exitCode != 0) {
+          throw XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'os_error',
+            message: 'xdg-open failed with exit code ${openRes.exitCode}.',
+          );
         }
         return const <String, Object?>{};
       case 'showToast':
@@ -927,6 +1059,37 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           'clipboard',
         ]);
         return <String, Object?>{'text': xclip.stdout.toString()};
+      case 'clipboardWriteText':
+        final text = args['text'] as String? ?? '';
+        for (final cmd in const <List<String>>[
+          <String>['wl-copy'],
+          <String>['xclip', '-selection', 'clipboard'],
+          <String>['xsel', '--clipboard', '--input'],
+        ]) {
+          try {
+            final proc = await Process.start(
+              cmd.first,
+              cmd.sublist(1),
+              runInShell: false,
+            );
+            proc.stdin.add(utf8.encode(text));
+            await proc.stdin.close();
+            final code = await proc.exitCode.timeout(
+              const Duration(seconds: 2),
+            );
+            if (code == 0) {
+              return const <String, Object?>{'written': true};
+            }
+          } catch (_) {
+            // Try next clipboard utility before failing closed below.
+          }
+        }
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'clipboard_write_failed',
+          message:
+              'Failed to write clipboard on Linux (wl-copy/xclip/xsel failed).',
+        );
       case 'readActiveWindowContext':
         final winName = await Process.run('xdotool', <String>[
           'getactivewindow',
@@ -952,7 +1115,8 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       case 'invokeWindowUiControl':
         final action = (args['action'] as String? ?? 'invoke_ref')
             .toLowerCase();
-        final refId = (args['refId'] as String? ?? 'ui_1');
+        final rawRefId = args['refId'];
+        final refId = rawRefId is String ? rawRefId.trim() : '';
         final valueText = (args['valueText'] as String? ?? '');
         final reqTitle = (args['windowTitle'] as String? ?? '').trim();
         if (reqTitle.isNotEmpty) {
@@ -970,7 +1134,14 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
         } else if (action == 'shortcut' || refId.startsWith('shortcut:')) {
           final spec = refId.startsWith('shortcut:')
               ? refId.substring(9)
-              : (valueText.isEmpty ? refId : valueText);
+              : valueText;
+          if (spec.trim().isEmpty) {
+            throw const XunaHostChannelException(
+              status: XtpStatus.invalidArgs,
+              errorCode: 'missing_ref',
+              message: 'Shortcut invocation requires a refId or valueText.',
+            );
+          }
           await Process.run('xdotool', <String>[
             'key',
             spec.replaceAll('cmd', 'ctrl'),
@@ -1003,6 +1174,8 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           'windowTitle': reqTitle,
           'nodes': const <Map<String, Object?>>[],
         };
+      case 'presenceProbe':
+        return _linuxPresenceProbeFallback();
       default:
         // Methods without a Linux implementation (lockScreen, displayWake, ...)
         // must not report an empty success.
@@ -1012,5 +1185,106 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
           message: '"$method" is not implemented on Linux.',
         );
     }
+  }
+
+  Future<Map<String, Object?>> _linuxPresenceProbeFallback() async {
+    int? idleSeconds;
+    try {
+      final idleRes = await Process.run('xprintidle', const <String>[]);
+      if (idleRes.exitCode == 0) {
+        final ms = int.tryParse(idleRes.stdout.toString().trim());
+        if (ms != null && ms >= 0) {
+          idleSeconds = ms ~/ 1000;
+        }
+      }
+    } catch (_) {
+      // Tool not installed; handled fail-closed below.
+    }
+
+    bool? screenLocked;
+    try {
+      final sessionId = Platform.environment['XDG_SESSION_ID'];
+      final targetSession = (sessionId != null && sessionId.isNotEmpty)
+          ? sessionId
+          : 'auto';
+      final lockRes = await Process.run('loginctl', <String>[
+        'show-session',
+        targetSession,
+        '-p',
+        'LockedHint',
+        '--value',
+      ]);
+      if (lockRes.exitCode == 0) {
+        final raw = lockRes.stdout.toString().trim().toLowerCase();
+        if (raw == 'yes' || raw == 'true' || raw == '1') {
+          screenLocked = true;
+        } else if (raw == 'no' || raw == 'false' || raw == '0') {
+          screenLocked = false;
+        }
+      }
+    } catch (_) {
+      // Tool unavailable; handled fail-closed below.
+    }
+
+    bool? mediaPlaying;
+    try {
+      final mediaRes = await Process.run('playerctl', const <String>['status']);
+      if (mediaRes.exitCode == 0) {
+        mediaPlaying =
+            mediaRes.stdout.toString().trim().toLowerCase() == 'playing';
+      } else {
+        final err = mediaRes.stderr.toString().toLowerCase();
+        if (err.contains('no players found') ||
+            err.contains('no player could handle')) {
+          mediaPlaying = false;
+        }
+      }
+    } catch (_) {
+      // playerctl unavailable; handled fail-closed below.
+    }
+
+    if (idleSeconds == null || screenLocked == null || mediaPlaying == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'platform_unsupported',
+        message: 'Required Linux presence probes are unavailable.',
+      );
+    }
+
+    final result = <String, Object?>{
+      'idleSeconds': idleSeconds,
+      'screenLocked': screenLocked,
+      'mediaPlaying': mediaPlaying,
+    };
+
+    try {
+      final psDir = Directory('/sys/class/power_supply');
+      if (psDir.existsSync()) {
+        for (final entry in psDir.listSync().whereType<Directory>()) {
+          final name = entry.uri.pathSegments.where((s) => s.isNotEmpty).last;
+          if (!name.startsWith('BAT')) continue;
+          final presentFile = File('${entry.path}/present');
+          if (presentFile.existsSync() &&
+              presentFile.readAsStringSync().trim() == '0') {
+            continue;
+          }
+          final capFile = File('${entry.path}/capacity');
+          if (!capFile.existsSync()) continue;
+          final pct = int.tryParse(capFile.readAsStringSync().trim());
+          if (pct == null) continue;
+          final statusFile = File('${entry.path}/status');
+          final statusStr = statusFile.existsSync()
+              ? statusFile.readAsStringSync().trim().toLowerCase()
+              : '';
+          result['batteryPercent'] = pct.clamp(0, 100);
+          result['isCharging'] = statusStr == 'charging' || statusStr == 'full';
+          break;
+        }
+      }
+    } catch (_) {
+      // Unreadable sysfs battery omitted cleanly (H2).
+    }
+
+    return result;
   }
 }

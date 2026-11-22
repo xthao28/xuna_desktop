@@ -184,42 +184,85 @@ extension XunaHostPlugin {
 
   // MARK: - Media Transport & Volume
 
+  static func normalizeMediaResultState(cmd: String, reportedState: String?) -> String {
+    if let raw = reportedState?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+      if raw == "playing" || raw == "paused" || raw == "unknown" {
+        return raw
+      }
+      if raw == "stopped" {
+        return "paused"
+      }
+    }
+    return cmd == "play_pause" ? "unknown" : "playing"
+  }
+
+  static func hasMediaKeyPostAccess() -> Bool {
+    let check: () -> Bool = {
+      if #available(macOS 10.15, *) {
+        return AXIsProcessTrusted() || CGPreflightPostEventAccess()
+      }
+      return AXIsProcessTrusted()
+    }
+    if Thread.isMainThread {
+      return check()
+    }
+    return DispatchQueue.main.sync(execute: check)
+  }
+
   func handleMedia(args: [String: Any], result: @escaping FlutterResult) {
     guard let cmd = args["cmd"] as? String else {
-      replyError(result, code: "failed", message: "Missing cmd")
+      replyError(result, code: "invalid_args", message: "Missing cmd", errorCode: "schema_mismatch")
       return
     }
 
     let keyType: Int32
-    let stateLabel: String
     switch cmd {
     case "play_pause":
       keyType = 16 // NX_KEYTYPE_PLAY
-      stateLabel = "toggled"
     case "next":
       keyType = 17 // NX_KEYTYPE_NEXT
-      stateLabel = "playing"
     case "previous":
       keyType = 18 // NX_KEYTYPE_PREVIOUS
-      stateLabel = "playing"
     default:
-      replyError(result, code: "unsupported", message: "Unsupported media command")
+      replyError(
+        result,
+        code: "unsupported",
+        message: "Unsupported media command",
+        errorCode: "platform_unsupported"
+      )
       return
     }
 
-    // Try AppleScript media control for running players (Music / Spotify / active browsers)
-    // alongside posting the NX system media key event so media transport works even across
-    // ad-hoc Debug rebuilds where macOS TCC invalidates the previous CDHash.
-    let scriptedOk = triggerAppMediaCommand(cmd: cmd)
-    let posted = postMediaKeyEvent(keyType: keyType)
-    if scriptedOk || posted {
-      replySuccess(result, ["state": stateLabel])
+    // Prefer AppleScript media control for running players (Spotify / Music) so we never
+    // double-toggle playback by also posting NX_KEYTYPE_PLAY when scripted control succeeded.
+    let scripted = triggerAppMediaCommand(cmd: cmd)
+    if scripted.handled {
+      replySuccess(result, [
+        "state": Self.normalizeMediaResultState(cmd: cmd, reportedState: scripted.state),
+      ])
+      return
+    }
+
+    guard Self.hasMediaKeyPostAccess() else {
+      replyError(
+        result,
+        code: "needs_permission",
+        message: "Accessibility or Input Monitoring permission is required for media key events",
+        errorCode: "permission_missing"
+      )
+      return
+    }
+
+    if postMediaKeyEvent(keyType: keyType) {
+      replySuccess(result, [
+        "state": Self.normalizeMediaResultState(cmd: cmd, reportedState: nil),
+      ])
     } else {
-      replyError(result, code: "failed", message: "Failed to post media key event")
+      replyError(result, code: "failed", message: "Failed to post media key event", errorCode: "os_error")
     }
   }
 
-  func triggerAppMediaCommand(cmd: String) -> Bool {
+  func triggerAppMediaCommand(cmd: String) -> (handled: Bool, state: String?) {
     let runningBundles = onMainThread {
       Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
     }
@@ -232,23 +275,34 @@ extension XunaHostPlugin {
     case "previous":
       appleCmd = "previous track"
     default:
-      return false
+      return (false, nil)
     }
 
     if runningBundles.contains("com.spotify.client") {
-      if runAppleScript("tell application \"Spotify\" to \(appleCmd)", timeoutSeconds: 1.5) != nil {
-        return true
+      let res = runAppleScriptWithResult("tell application \"Spotify\" to \(appleCmd)", timeoutSeconds: 1.5)
+      if !res.timedOut && res.exitCode == 0 {
+        let stateOut = cmd == "play_pause"
+          ? runAppleScript("tell application \"Spotify\" to get player state as string", timeoutSeconds: 1.0)
+          : "playing"
+        return (true, stateOut)
       }
     }
     if runningBundles.contains("com.apple.Music") {
-      if runAppleScript("tell application \"Music\" to \(appleCmd)", timeoutSeconds: 1.5) != nil {
-        return true
+      let res = runAppleScriptWithResult("tell application \"Music\" to \(appleCmd)", timeoutSeconds: 1.5)
+      if !res.timedOut && res.exitCode == 0 {
+        let stateOut = cmd == "play_pause"
+          ? runAppleScript("tell application \"Music\" to get player state as string", timeoutSeconds: 1.0)
+          : "playing"
+        return (true, stateOut)
       }
     }
-    return false
+    return (false, nil)
   }
 
   func postMediaKeyEvent(keyType: Int32) -> Bool {
+    guard Self.hasMediaKeyPostAccess() else {
+      return false
+    }
     func postKey(down: Bool) -> Bool {
       let flags = NSEvent.ModifierFlags(rawValue: down ? 0xA00 : 0xB00)
       let data1 = Int((keyType << 16) | ((down ? 0xA : 0xB) << 8))

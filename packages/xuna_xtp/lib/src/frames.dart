@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'crypto.dart';
+import 'policy/security_redaction.dart' show isHardDeniedAppOrProcess;
 import 'schemas.dart';
 
 /// Maximum WebSocket text frame size in UTF-8 bytes (`512 KiB`).
@@ -96,6 +97,9 @@ const Set<String> knownXtpNotificationMethods = <String>{
   'notifications/tools/list_changed',
   'xuna/stop',
   'xuna/lanPeer',
+  'xuna/presence',
+  'xuna/resources',
+  'xuna/focusRequest',
 };
 
 /// Base class for all JSON-RPC 2.0 frames in XTP v1.
@@ -660,6 +664,118 @@ class LanPeerParams extends XtpNotificationParams {
   final String? certFingerprint;
 }
 
+/// Source of an `xuna/focusRequest` notification (`XUNA_XTP_V1_CONTRACT.md` §4.2.12).
+enum FocusRequestSource {
+  hotkey('hotkey'),
+  tray('tray');
+
+  const FocusRequestSource(this.wire);
+  final String wire;
+
+  static FocusRequestSource fromWire(String value) => switch (value) {
+        'hotkey' => FocusRequestSource.hotkey,
+        'tray' => FocusRequestSource.tray,
+        _ => throw FormatException('Unknown FocusRequestSource: $value'),
+      };
+}
+
+/// `xuna/presence` notification params (`XUNA_XTP_V1_CONTRACT.md` §4.2.10).
+class PresenceParams extends XtpNotificationParams {
+  const PresenceParams({
+    this.schemaVersion = 1,
+    required this.idleSeconds,
+    required this.screenLocked,
+    required this.mediaPlaying,
+    this.batteryPercent,
+    this.isCharging,
+    this.subnetHash,
+    this.foregroundAppId,
+    required this.updatedAt,
+  });
+
+  final int schemaVersion;
+  final int idleSeconds;
+  final bool screenLocked;
+  final bool mediaPlaying;
+  final int? batteryPercent;
+  final bool? isCharging;
+  final String? subnetHash;
+  final String? foregroundAppId;
+  final DateTime updatedAt;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'schemaVersion': schemaVersion,
+        'idleSeconds': idleSeconds,
+        'screenLocked': screenLocked,
+        'mediaPlaying': mediaPlaying,
+        if (batteryPercent != null) 'batteryPercent': batteryPercent,
+        if (isCharging != null) 'isCharging': isCharging,
+        if (subnetHash != null) 'subnetHash': subnetHash,
+        if (foregroundAppId != null) 'foregroundAppId': foregroundAppId,
+        'updatedAt': updatedAt.toUtc().toIso8601String(),
+      };
+
+  XtpNotification toNotification() => XtpNotification(
+        method: 'xuna/presence',
+        params: toJson(),
+        typedParams: this,
+      );
+}
+
+/// `xuna/resources` notification params (`XUNA_XTP_V1_CONTRACT.md` §4.2.11).
+class ResourcesParams extends XtpNotificationParams {
+  const ResourcesParams({
+    this.schemaVersion = 1,
+    required this.installedApps,
+    required this.workspaces,
+    this.capabilitiesVersion,
+  });
+
+  final int schemaVersion;
+  final List<String> installedApps;
+  final List<String> workspaces;
+  final String? capabilitiesVersion;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'schemaVersion': schemaVersion,
+        'installedApps': installedApps,
+        'workspaces': workspaces,
+        if (capabilitiesVersion != null)
+          'capabilitiesVersion': capabilitiesVersion,
+      };
+
+  XtpNotification toNotification() => XtpNotification(
+        method: 'xuna/resources',
+        params: toJson(),
+        typedParams: this,
+      );
+}
+
+/// `xuna/focusRequest` notification params (`XUNA_XTP_V1_CONTRACT.md` §4.2.12).
+class FocusRequestParams extends XtpNotificationParams {
+  const FocusRequestParams({
+    this.schemaVersion = 1,
+    required this.source,
+    this.followMe,
+  });
+
+  final int schemaVersion;
+  final FocusRequestSource source;
+  final bool? followMe;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'schemaVersion': schemaVersion,
+        'source': source.wire,
+        if (followMe != null) 'followMe': followMe,
+      };
+
+  XtpNotification toNotification() => XtpNotification(
+        method: 'xuna/focusRequest',
+        params: toJson(),
+        typedParams: this,
+      );
+}
+
 XtpRequestParams _parseRequestParams(
   String method,
   Map<String, Object?> params,
@@ -773,6 +889,13 @@ XtpRequestParams _parseHelloParams(Map<String, Object?> params) {
     final platform = HostPlatform.fromWire(
       _requireStringParam(enroll, 'platform'),
     );
+    if (platform != HostPlatform.windows &&
+        platform != HostPlatform.macos &&
+        platform != HostPlatform.linux) {
+      throw FormatException(
+        'Enrollment platform must be windows, macos, or linux (got ${platform.wire})',
+      );
+    }
     final osVersion = _requireNonEmptyString(enroll, 'osVersion', maxLen: 64);
     final agentVersion = _requireNonEmptyString(
       enroll,
@@ -1074,6 +1197,12 @@ XtpNotificationParams _parseNotificationParams(
             certFingerprint: fp,
           );
         }
+      case 'xuna/presence':
+        return _parsePresenceParams(params);
+      case 'xuna/resources':
+        return _parseResourcesParams(params);
+      case 'xuna/focusRequest':
+        return _parseFocusRequestParams(params);
       default:
         throw const XtpProtocolException(
           jsonRpcCode: JsonRpcErrorCode.methodNotFound,
@@ -1379,6 +1508,257 @@ int _requireIntParam(Map<String, Object?> map, String key) {
     throw FormatException('Expected integer for "$key"');
   }
   return value;
+}
+
+bool _requireBoolParam(Map<String, Object?> map, String key) {
+  final value = map[key];
+  if (value is! bool) {
+    throw FormatException('Expected boolean for "$key"');
+  }
+  return value;
+}
+
+final RegExp _subnetHashPattern = RegExp(r'^[0-9a-f]{16,64}$');
+final RegExp _workspaceAliasPattern = RegExp(r'^[a-zA-Z0-9_.-]{1,64}$');
+final RegExp _capabilitiesVersionPattern = RegExp(r'^[a-zA-Z0-9_.-]{1,32}$');
+final RegExp _isoTimestampTzPattern = RegExp(
+  r'^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:([Zz])|([+-])(\d{2}):?(\d{2}))$',
+);
+
+bool _isLeapYear(int year) =>
+    (year % 4 == 0) && ((year % 100 != 0) || (year % 400 == 0));
+
+int _daysInMonth(int year, int month) {
+  switch (month) {
+    case 1:
+    case 3:
+    case 5:
+    case 7:
+    case 8:
+    case 10:
+    case 12:
+      return 31;
+    case 4:
+    case 6:
+    case 9:
+    case 11:
+      return 30;
+    case 2:
+      return _isLeapYear(year) ? 29 : 28;
+    default:
+      return 0;
+  }
+}
+
+DateTime? _parseStrictIsoTimestampUtc(String raw) {
+  final match = _isoTimestampTzPattern.firstMatch(raw);
+  if (match == null) {
+    return null;
+  }
+  final year = int.parse(match.group(1)!);
+  final month = int.parse(match.group(2)!);
+  final day = int.parse(match.group(3)!);
+  final hour = int.parse(match.group(4)!);
+  final minute = int.parse(match.group(5)!);
+  final second = int.parse(match.group(6)!);
+
+  if (year < 1 || month < 1 || month > 12) {
+    return null;
+  }
+  if (day < 1 || day > _daysInMonth(year, month)) {
+    return null;
+  }
+  if (hour < 0 ||
+      hour > 23 ||
+      minute < 0 ||
+      minute > 59 ||
+      second < 0 ||
+      second > 59) {
+    return null;
+  }
+  if (match.group(7) == null) {
+    final tzHour = int.parse(match.group(9)!);
+    final tzMinute = int.parse(match.group(10)!);
+    if (tzHour < 0 || tzHour > 23 || tzMinute < 0 || tzMinute > 59) {
+      return null;
+    }
+  }
+  return DateTime.tryParse(raw)?.toUtc();
+}
+
+PresenceParams _parsePresenceParams(Map<String, Object?> params) {
+  _requireExactParamsKeys(
+    params,
+    const <String>{
+      'schemaVersion',
+      'idleSeconds',
+      'screenLocked',
+      'mediaPlaying',
+      'updatedAt',
+    },
+    optionalKeys: const <String>{
+      'batteryPercent',
+      'isCharging',
+      'subnetHash',
+      'foregroundAppId',
+    },
+  );
+  final schemaVersion = _requireIntParam(params, 'schemaVersion');
+  if (schemaVersion != 1) {
+    throw FormatException(
+      'Unsupported xuna/presence schemaVersion: $schemaVersion',
+    );
+  }
+  final idleSeconds = _requireIntParam(params, 'idleSeconds');
+  if (idleSeconds < 0) {
+    throw const FormatException('idleSeconds must be >= 0');
+  }
+  final screenLocked = _requireBoolParam(params, 'screenLocked');
+  final mediaPlaying = _requireBoolParam(params, 'mediaPlaying');
+
+  int? batteryPercent;
+  if (params.containsKey('batteryPercent') &&
+      params['batteryPercent'] != null) {
+    batteryPercent = _requireIntParam(params, 'batteryPercent');
+    if (batteryPercent < 0 || batteryPercent > 100) {
+      throw const FormatException('batteryPercent must be in 0..100');
+    }
+  }
+
+  bool? isCharging;
+  if (params.containsKey('isCharging') && params['isCharging'] != null) {
+    isCharging = _requireBoolParam(params, 'isCharging');
+  }
+
+  String? subnetHash;
+  if (params.containsKey('subnetHash') && params['subnetHash'] != null) {
+    subnetHash = _requireStringParam(params, 'subnetHash');
+    if (!_subnetHashPattern.hasMatch(subnetHash)) {
+      throw const FormatException('Invalid subnetHash format');
+    }
+  }
+
+  String? foregroundAppId;
+  if (params.containsKey('foregroundAppId') &&
+      params['foregroundAppId'] != null) {
+    foregroundAppId = _requireStringParam(params, 'foregroundAppId');
+    if (!isValidShortId(foregroundAppId) ||
+        isHardDeniedAppOrProcess(foregroundAppId)) {
+      throw const FormatException('Invalid or hard-denied foregroundAppId');
+    }
+  }
+
+  final updatedAtRaw = _requireStringParam(params, 'updatedAt');
+  final updatedAt = _parseStrictIsoTimestampUtc(updatedAtRaw);
+  if (updatedAt == null) {
+    throw const FormatException('Invalid updatedAt ISO-8601 UTC timestamp');
+  }
+
+  return PresenceParams(
+    schemaVersion: schemaVersion,
+    idleSeconds: idleSeconds,
+    screenLocked: screenLocked,
+    mediaPlaying: mediaPlaying,
+    batteryPercent: batteryPercent,
+    isCharging: isCharging,
+    subnetHash: subnetHash,
+    foregroundAppId: foregroundAppId,
+    updatedAt: updatedAt,
+  );
+}
+
+ResourcesParams _parseResourcesParams(Map<String, Object?> params) {
+  _requireExactParamsKeys(
+    params,
+    const <String>{'schemaVersion', 'installedApps', 'workspaces'},
+    optionalKeys: const <String>{'capabilitiesVersion'},
+  );
+  final schemaVersion = _requireIntParam(params, 'schemaVersion');
+  if (schemaVersion != 1) {
+    throw FormatException(
+      'Unsupported xuna/resources schemaVersion: $schemaVersion',
+    );
+  }
+
+  final rawApps = params['installedApps'];
+  if (rawApps is! List) {
+    throw const FormatException('installedApps must be a list');
+  }
+  if (rawApps.length > 256) {
+    throw const FormatException('installedApps exceeds max 256 items');
+  }
+  final installedApps = <String>[];
+  for (final item in rawApps) {
+    if (item is! String ||
+        !isValidShortId(item) ||
+        isHardDeniedAppOrProcess(item)) {
+      throw const FormatException('Invalid or hard-denied installedApps item');
+    }
+    installedApps.add(item);
+  }
+
+  final rawWorkspaces = params['workspaces'];
+  if (rawWorkspaces is! List) {
+    throw const FormatException('workspaces must be a list');
+  }
+  if (rawWorkspaces.length > 128) {
+    throw const FormatException('workspaces exceeds max 128 items');
+  }
+  final workspaces = <String>[];
+  for (final item in rawWorkspaces) {
+    if (item is! String ||
+        item.contains('/') ||
+        item.contains(r'\') ||
+        item == '.' ||
+        item == '..' ||
+        item.contains('..') ||
+        !_workspaceAliasPattern.hasMatch(item)) {
+      throw const FormatException('Invalid workspaces alias');
+    }
+    workspaces.add(item);
+  }
+
+  String? capabilitiesVersion;
+  if (params.containsKey('capabilitiesVersion') &&
+      params['capabilitiesVersion'] != null) {
+    capabilitiesVersion = _requireStringParam(params, 'capabilitiesVersion');
+    if (!_capabilitiesVersionPattern.hasMatch(capabilitiesVersion)) {
+      throw const FormatException('Invalid capabilitiesVersion format');
+    }
+  }
+
+  return ResourcesParams(
+    schemaVersion: schemaVersion,
+    installedApps: List<String>.unmodifiable(installedApps),
+    workspaces: List<String>.unmodifiable(workspaces),
+    capabilitiesVersion: capabilitiesVersion,
+  );
+}
+
+FocusRequestParams _parseFocusRequestParams(Map<String, Object?> params) {
+  _requireExactParamsKeys(
+    params,
+    const <String>{'schemaVersion', 'source'},
+    optionalKeys: const <String>{'followMe'},
+  );
+  final schemaVersion = _requireIntParam(params, 'schemaVersion');
+  if (schemaVersion != 1) {
+    throw FormatException(
+      'Unsupported xuna/focusRequest schemaVersion: $schemaVersion',
+    );
+  }
+  final source = FocusRequestSource.fromWire(
+    _requireStringParam(params, 'source'),
+  );
+  bool? followMe;
+  if (params.containsKey('followMe') && params['followMe'] != null) {
+    followMe = _requireBoolParam(params, 'followMe');
+  }
+  return FocusRequestParams(
+    schemaVersion: schemaVersion,
+    source: source,
+    followMe: followMe,
+  );
 }
 
 Map<String, Object?> _requireMapParam(Map<String, Object?> map, String key) {

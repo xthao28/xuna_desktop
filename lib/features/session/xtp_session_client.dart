@@ -136,6 +136,30 @@ class XtpSessionClient {
     );
   }
 
+  /// Sends an outbound `xuna/presence` notification (`XUNA_XTP_V1_CONTRACT.md` §4.2.10).
+  /// Strictly gated on [HostSessionPhase.ready].
+  bool sendPresence(PresenceParams params) {
+    if (_phase != HostSessionPhase.ready) return false;
+    _sendNotification(params.toNotification());
+    return true;
+  }
+
+  /// Sends an outbound `xuna/resources` notification (`XUNA_XTP_V1_CONTRACT.md` §4.2.11).
+  /// Strictly gated on [HostSessionPhase.ready].
+  bool sendResources(ResourcesParams params) {
+    if (_phase != HostSessionPhase.ready) return false;
+    _sendNotification(params.toNotification());
+    return true;
+  }
+
+  /// Sends an outbound `xuna/focusRequest` notification (`XUNA_XTP_V1_CONTRACT.md` §4.2.12).
+  /// Strictly gated on [HostSessionPhase.ready].
+  bool sendFocusRequest(FocusRequestParams params) {
+    if (_phase != HostSessionPhase.ready) return false;
+    _sendNotification(params.toNotification());
+    return true;
+  }
+
   final Uri wsUri;
   final XunaHostChannel channel;
   final EnrollmentStateStore enrollmentStore;
@@ -349,6 +373,9 @@ class XtpSessionClient {
         }
       case ProgressParams():
       case ToolsListChangedParams():
+      case PresenceParams():
+      case ResourcesParams():
+      case FocusRequestParams():
         break;
     }
   }

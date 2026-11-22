@@ -21,20 +21,44 @@ class WorkspacePocketService {
   }) {
     _capsuleSeq++;
     final ts = (nowUtc ?? DateTime.now()).toUtc();
-    final safeProject = project.trim().isEmpty ? 'workspace' : project.trim();
-    final slug = safeProject
+    final safeProjectRaw = redactFilesystemPaths(project.trim());
+    final safeProject = clampUtf16Safe(
+      safeProjectRaw.isEmpty ? 'workspace' : safeProjectRaw,
+      80,
+    );
+    var slug = safeProject
         .toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9_-]'), '-')
-        .replaceAll(RegExp(r'-+'), '-');
-    final capsuleId = 'cap-$slug-$_capsuleSeq';
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    if (slug.isEmpty) {
+      slug = 'ws';
+    }
+    final suffix = '-$_capsuleSeq';
+    final maxSlugLen = 64 - 4 - suffix.length;
+    if (maxSlugLen <= 0) {
+      slug = 'w';
+    } else if (slug.length > maxSlugLen) {
+      slug = slug.substring(0, maxSlugLen).replaceAll(RegExp(r'-+$'), '');
+      if (slug.isEmpty) {
+        slug = 'ws';
+      }
+    }
+    final capsuleId = clampUtf16Safe('cap-$slug$suffix', 64);
+    final rawBranch = branch.trim().isEmpty ? 'unknown' : branch.trim();
+    final safeBranch = clampUtf16Safe(rawBranch, 80);
     final rawHint = (nextStepHint == null || nextStepHint.trim().isEmpty)
-        ? 'Tiếp tục kiểm tra nhánh $branch ($dirtyCount tệp đang sửa)'
+        ? 'Tiếp tục kiểm tra nhánh $safeBranch ($dirtyCount tệp đang sửa)'
         : nextStepHint.trim();
-    final cleanHint = redactSensitiveSelectionText(rawHint, maxChars: 240).text;
+    final scrubbedHint = redactFilesystemPaths(rawHint);
+    final cleanHint = redactSensitiveSelectionText(
+      scrubbedHint,
+      maxChars: 240,
+    ).text;
     final entry = WorkspaceCapsuleEntry(
       capsuleId: capsuleId,
       project: safeProject,
-      branch: branch.trim().isEmpty ? 'main' : branch.trim(),
+      branch: safeBranch,
       dirtyCount: dirtyCount < 0 ? 0 : dirtyCount,
       nextStepHint: cleanHint,
       createdAt: ts.toIso8601String(),
@@ -53,25 +77,38 @@ class WorkspacePocketService {
   }
 
   /// Finds a saved Time-Travel Workspace Capsule by [capsuleId] or [project] (`SYM-1` S1.1).
+  ///
+  /// Fails closed (returns `null`) when an explicit [capsuleId] or concrete
+  /// [project] does not match any stored capsule (H3). Only returns the latest
+  /// capsule when neither [capsuleId] nor [project] is provided.
   WorkspaceCapsuleEntry? findWorkspaceCapsule({
     String? capsuleId,
     String? project,
   }) {
-    if (capsuleId != null && capsuleId.trim().isNotEmpty) {
+    final hasCapsuleId = capsuleId != null && capsuleId.trim().isNotEmpty;
+    if (hasCapsuleId) {
       final targetId = capsuleId.trim().toLowerCase();
       for (final cap in _capsules) {
         if (cap.capsuleId.toLowerCase() == targetId) {
           return cap;
         }
       }
+      return null;
     }
-    if (project != null && project.trim().isNotEmpty) {
+    final hasProject = project != null && project.trim().isNotEmpty;
+    if (hasProject) {
       final targetProj = project.trim().toLowerCase();
+      for (final cap in _capsules) {
+        if (cap.project.toLowerCase() == targetProj) {
+          return cap;
+        }
+      }
       for (final cap in _capsules) {
         if (cap.project.toLowerCase().contains(targetProj)) {
           return cap;
         }
       }
+      return null;
     }
     return _capsules.isNotEmpty ? _capsules.first : null;
   }
@@ -308,4 +345,3 @@ class WorkspacePocketService {
     return '$kind: $snippet';
   }
 }
-
