@@ -84,9 +84,7 @@ class LanOfflineServer {
       await _startMdnsResponder();
     }
 
-    logger.info('lan.server_started', <String, Object?>{
-      'port': server.port,
-    });
+    logger.info('lan.server_started', <String, Object?>{'port': server.port});
   }
 
   /// Stops the LAN server and closes all active LAN WebSocket sessions.
@@ -190,10 +188,7 @@ class LanOfflineServer {
     unawaited(_serveLanSocket(ws, enrolled));
   }
 
-  Future<void> _serveLanSocket(
-    WebSocket ws,
-    EnrolledHostState enrolled,
-  ) async {
+  Future<void> _serveLanSocket(WebSocket ws, EnrolledHostState enrolled) async {
     final serverNonce = Uint8List.fromList(
       List<int>.generate(hostProofNonceSize, (_) => _random.nextInt(256)),
     );
@@ -351,6 +346,8 @@ class LanOfflineServer {
               case HelloReconnectParams():
               case GetPolicyParams():
               case SetPolicyParams():
+              case WatchRegisterParams():
+              case WatchCancelParams():
                 sendFrame(
                   XtpErrorResponse(
                     id: frame.id,

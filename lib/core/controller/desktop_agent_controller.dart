@@ -9,6 +9,7 @@ import 'package:xuna_desktop/core/controller/desktop_skill_runner.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/presentation/controllers/base_getx_controller.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
+import 'package:xuna_desktop/features/browser_bridge/cdp_browser_engine_provider.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
@@ -19,6 +20,10 @@ import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
+import 'package:xuna_desktop/features/watch/cdp_watch_signal_driver.dart';
+import 'package:xuna_desktop/features/watch/local_watch_sentinel.dart';
+import 'package:xuna_desktop/features/watch/native_watch_signal_driver.dart';
+import 'package:xuna_desktop/features/watch/watch_signal_driver.dart';
 import 'package:xuna_desktop/shared/themes/xuna_color_themes.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -39,10 +44,38 @@ class DesktopAgentController extends BaseGetxController {
     this.computerUseManager,
     this.symbioticService,
     this.presenceCoordinator,
+    LocalWatchSentinel? watchSentinel,
+    CdpBrowserEngineProvider? cdpBrowserProvider,
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
   }) : _appScanner = appScanner ?? AutoAppScanner(),
        _workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer() {
+    if (watchSentinel != null) {
+      _watchSentinel = watchSentinel;
+      _ownsWatchSentinel = false;
+      sessionClient.attachWatchSentinel(watchSentinel);
+    } else if (sessionClient.watchSentinel != null) {
+      _watchSentinel = sessionClient.watchSentinel!;
+      _ownsWatchSentinel = false;
+    } else {
+      _watchSentinel = LocalWatchSentinel(
+        stopController: stopController,
+        logger: logger,
+        drivers: <WatchSignalDriver>[
+          NativeWatchSignalDriver(
+            channel: channel,
+            workspaceIndexer: _workspaceIndexer,
+            logger: logger,
+          ),
+          CdpWatchSignalDriver(
+            cdpProvider: cdpBrowserProvider ?? CdpBrowserEngineProvider(),
+            logger: logger,
+          ),
+        ],
+      );
+      _ownsWatchSentinel = true;
+      sessionClient.attachWatchSentinel(_watchSentinel);
+    }
     _appAutomationRunner = DesktopAppAutomationRunner(
       channel: channel,
       appScanner: _appScanner,
@@ -77,6 +110,10 @@ class DesktopAgentController extends BaseGetxController {
   final ComputerUseSessionManager? computerUseManager;
   final AutoSymbioticService? symbioticService;
   final PresenceCoordinator? presenceCoordinator;
+  late final LocalWatchSentinel _watchSentinel;
+  late final bool _ownsWatchSentinel;
+
+  LocalWatchSentinel get watchSentinel => _watchSentinel;
 
   final activeTab = AgentWindowTab.enrollment.obs;
   final sessionPhase = HostSessionPhase.disconnected.obs;
@@ -89,6 +126,7 @@ class DesktopAgentController extends BaseGetxController {
   final followMeEnabled = false.obs;
   final lanModeEnabled = false.obs;
   final activeCuSession = Rxn<ComputerUseSessionState>();
+  final activeWatchCount = 0.obs;
   final permissionsSnapshot = const HostPermissionSnapshot().obs;
   final recentAuditRecords = <AuditLogRecord>[].obs;
   final workspaceCapsules = <WorkspaceCapsuleEntry>[].obs;
@@ -179,6 +217,11 @@ class DesktopAgentController extends BaseGetxController {
         }),
       );
     }
+    _subs.add(
+      _watchSentinel.activeCountChanges.listen((count) {
+        activeWatchCount.value = count;
+      }),
+    );
   }
 
   void _syncFromStores() {
@@ -190,6 +233,7 @@ class DesktopAgentController extends BaseGetxController {
     policyBanner.value = policyStore.trayBanner;
     activePolicy.value = policyStore.evaluator.policy;
     isStopped.value = stopController.isStopped;
+    activeWatchCount.value = _watchSentinel.activeWatchCount;
   }
 
   Future<void> initializeAgent() async {
@@ -930,6 +974,9 @@ class DesktopAgentController extends BaseGetxController {
       unawaited(sub.cancel());
     }
     _subs.clear();
+    if (_ownsWatchSentinel) {
+      unawaited(_watchSentinel.dispose());
+    }
     super.onClose();
   }
 }

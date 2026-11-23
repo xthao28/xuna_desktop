@@ -239,6 +239,63 @@ class WindowUiControlActionResult {
   final List<Map<String, Object?>> nodes;
 }
 
+/// Result of starting a bounded unary native OS watch (`watchStart`).
+class HostWatchStartResult {
+  const HostWatchStartResult({
+    required this.watchId,
+    required this.signal,
+    this.accepted = true,
+    this.eventDriven = true,
+    this.fallbackUsed = false,
+  });
+
+  final String watchId;
+  final String signal;
+  final bool accepted;
+  final bool eventDriven;
+  final bool fallbackUsed;
+}
+
+/// Result of polling a native OS watch (`watchPoll`).
+class HostWatchPollResult {
+  const HostWatchPollResult({
+    required this.watchId,
+    required this.signal,
+    required this.state,
+    this.changeCount = 0,
+    this.digestChangeCount = 0,
+    this.digestChanged = false,
+    this.eventDriven = true,
+    this.fallbackUsed = false,
+    this.errorCode,
+  });
+
+  final String watchId;
+  final String signal;
+  final String state; // 'active' | 'idle' | 'changed' | 'lost' | 'error'
+  final int changeCount;
+  final int digestChangeCount;
+  final bool digestChanged;
+  final bool eventDriven;
+  final bool fallbackUsed;
+  final String? errorCode;
+}
+
+/// Result of stopping one or more native OS watches (`watchStop`).
+class HostWatchStopResult {
+  const HostWatchStopResult({
+    required this.watchId,
+    this.signal,
+    this.stopped = true,
+    this.cancelledCount = 0,
+  });
+
+  final String watchId;
+  final String? signal;
+  final bool stopped;
+  final int cancelledCount;
+}
+
 /// Abstract interface for the native `xuna/host` MethodChannel (`UDC-3` §5.6.3).
 ///
 /// Every call has a 10 s native timeout. Unit and integration tests use
@@ -351,6 +408,30 @@ abstract interface class XunaHostChannel {
   /// Probes live OS idle time, screen lock, media playback, optional battery,
   /// and normalized non-sensitive foreground app ID (`M3` Phase 2).
   Future<HostPresenceProbeResult> presenceProbe();
+
+  /// Starts a bounded native OS watch for `(watchId, signal)` (`AW-M4`).
+  Future<HostWatchStartResult> watchStart({
+    required String watchId,
+    required String signal,
+    bool releaseFocus = true,
+    int? pid,
+    int? windowId,
+    String? appId,
+    String? workspacePath,
+  });
+
+  /// Polls the current content-free state of `(watchId, signal)` (`AW-M4`).
+  Future<HostWatchPollResult> watchPoll({
+    required String watchId,
+    required String signal,
+  });
+
+  /// Stops an active native OS watch for `(watchId, signal)` or all signals for
+  /// [watchId] when [signal] is omitted (`AW-M4`).
+  Future<HostWatchStopResult> watchStop({
+    required String watchId,
+    String? signal,
+  });
 }
 
 /// MethodChannel implementation of [XunaHostChannel] bound to `'xuna/host'`
@@ -867,6 +948,134 @@ class MethodChannelXunaHostChannel implements XunaHostChannel {
       batteryPercent: batteryPercent,
       isCharging: isCharging,
       foregroundAppId: foregroundAppId,
+    );
+  }
+
+  static const Set<String> _validWatchPollStates = <String>{
+    'active',
+    'idle',
+    'changed',
+    'lost',
+    'error',
+  };
+
+  @override
+  Future<HostWatchStartResult> watchStart({
+    required String watchId,
+    required String signal,
+    bool releaseFocus = true,
+    int? pid,
+    int? windowId,
+    String? appId,
+    String? workspacePath,
+  }) async {
+    final map = await _invokeMap('watchStart', <String, Object?>{
+      'watchId': watchId,
+      'signal': signal,
+      'releaseFocus': releaseFocus,
+      if (pid != null) 'pid': pid,
+      if (windowId != null) 'windowId': windowId,
+      if (appId != null) 'appId': appId,
+      if (workspacePath != null) 'workspacePath': workspacePath,
+    });
+    if (map['accepted'] != true) {
+      final errCode = map['errorCode'];
+      throw XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: errCode is String && errCode.trim().isNotEmpty
+            ? errCode.trim()
+            : 'watch_unsupported',
+        message: 'Native watchStart did not accept watch.',
+      );
+    }
+    final eventDriven = map['eventDriven'];
+    final fallbackUsed = map['fallbackUsed'];
+    if (eventDriven is! bool || fallbackUsed is! bool) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'watchStart returned missing eventDriven/fallbackUsed.',
+      );
+    }
+    return HostWatchStartResult(
+      watchId: map['watchId'] is String ? map['watchId'] as String : watchId,
+      signal: map['signal'] is String ? map['signal'] as String : signal,
+      accepted: true,
+      eventDriven: eventDriven,
+      fallbackUsed: fallbackUsed,
+    );
+  }
+
+  @override
+  Future<HostWatchPollResult> watchPoll({
+    required String watchId,
+    required String signal,
+  }) async {
+    final map = await _invokeMap('watchPoll', <String, Object?>{
+      'watchId': watchId,
+      'signal': signal,
+    });
+    final state = map['state'];
+    final changeCount = map['changeCount'];
+    if (state is! String ||
+        !_validWatchPollStates.contains(state) ||
+        changeCount is! int ||
+        changeCount < 0) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'os_error',
+        message: 'watchPoll returned missing or malformed state/changeCount.',
+      );
+    }
+    final rawDigestCount = map['digestChangeCount'];
+    final digestChangeCount = rawDigestCount is int && rawDigestCount >= 0
+        ? rawDigestCount
+        : 0;
+    final digestChanged = map['digestChanged'] is bool
+        ? map['digestChanged'] as bool
+        : false;
+    final eventDriven = map['eventDriven'] is bool
+        ? map['eventDriven'] as bool
+        : true;
+    final fallbackUsed = map['fallbackUsed'] is bool
+        ? map['fallbackUsed'] as bool
+        : false;
+    final rawErr = map['errorCode'];
+    final errorCode = rawErr is String && rawErr.trim().isNotEmpty
+        ? rawErr.trim()
+        : null;
+    return HostWatchPollResult(
+      watchId: map['watchId'] is String ? map['watchId'] as String : watchId,
+      signal: map['signal'] is String ? map['signal'] as String : signal,
+      state: state,
+      changeCount: changeCount,
+      digestChangeCount: digestChangeCount,
+      digestChanged: digestChanged,
+      eventDriven: eventDriven,
+      fallbackUsed: fallbackUsed,
+      errorCode: errorCode,
+    );
+  }
+
+  @override
+  Future<HostWatchStopResult> watchStop({
+    required String watchId,
+    String? signal,
+  }) async {
+    final map = await _invokeMap('watchStop', <String, Object?>{
+      'watchId': watchId,
+      if (signal != null) 'signal': signal,
+    });
+    final stopped = map['stopped'] is bool ? map['stopped'] as bool : true;
+    final rawCancelled = map['cancelledCount'];
+    final cancelledCount = rawCancelled is int && rawCancelled >= 0
+        ? rawCancelled
+        : 0;
+    return HostWatchStopResult(
+      watchId: watchId,
+      signal: signal,
+      stopped: stopped,
+      cancelledCount: cancelledCount,
     );
   }
 

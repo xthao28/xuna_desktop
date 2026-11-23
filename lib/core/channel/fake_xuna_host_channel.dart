@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -381,6 +382,128 @@ class FakeXunaHostChannel implements XunaHostChannel {
   Future<void> showToast({required String title, required String body}) async {
     invokedMethods.add('showToast');
     toasts.add((title: title, body: body));
+  }
+
+  Future<HostWatchStartResult> Function({
+    required String watchId,
+    required String signal,
+    required bool releaseFocus,
+    int? pid,
+    int? windowId,
+    String? appId,
+    String? workspacePath,
+  })?
+  onWatchStart;
+
+  Future<HostWatchPollResult> Function({
+    required String watchId,
+    required String signal,
+  })?
+  onWatchPoll;
+
+  Future<HostWatchStopResult> Function({
+    required String watchId,
+    String? signal,
+  })?
+  onWatchStop;
+
+  final Map<String, Queue<HostWatchPollResult>> scriptedWatchPolls =
+      <String, Queue<HostWatchPollResult>>{};
+
+  final List<Map<String, Object?>> recordedWatchStarts =
+      <Map<String, Object?>>[];
+  final List<Map<String, Object?>> recordedWatchStops =
+      <Map<String, Object?>>[];
+
+  @override
+  Future<HostWatchStartResult> watchStart({
+    required String watchId,
+    required String signal,
+    bool releaseFocus = true,
+    int? pid,
+    int? windowId,
+    String? appId,
+    String? workspacePath,
+  }) async {
+    invokedMethods.add('watchStart:$signal');
+    recordedWatchStarts.add(<String, Object?>{
+      'watchId': watchId,
+      'signal': signal,
+      'releaseFocus': releaseFocus,
+      if (pid != null) 'pid': pid,
+      if (windowId != null) 'windowId': windowId,
+      if (appId != null) 'appId': appId,
+      if (workspacePath != null) 'workspacePath': workspacePath,
+    });
+    await _delayAndThrowIfConfigured();
+    final handler = onWatchStart;
+    if (handler != null) {
+      return handler(
+        watchId: watchId,
+        signal: signal,
+        releaseFocus: releaseFocus,
+        pid: pid,
+        windowId: windowId,
+        appId: appId,
+        workspacePath: workspacePath,
+      );
+    }
+    throw const XunaHostChannelException(
+      status: XtpStatus.unsupported,
+      errorCode: 'watch_unsupported',
+      message: 'FakeXunaHostChannel watchStart is unconfigured (fail closed).',
+    );
+  }
+
+  @override
+  Future<HostWatchPollResult> watchPoll({
+    required String watchId,
+    required String signal,
+  }) async {
+    invokedMethods.add('watchPoll:$signal');
+    await _delayAndThrowIfConfigured();
+    final handler = onWatchPoll;
+    if (handler != null) {
+      return handler(watchId: watchId, signal: signal);
+    }
+    final key = '$watchId:$signal';
+    final queue = scriptedWatchPolls[key];
+    if (queue != null && queue.isNotEmpty) {
+      return queue.length > 1 ? queue.removeFirst() : queue.first;
+    }
+    throw const XunaHostChannelException(
+      status: XtpStatus.unsupported,
+      errorCode: 'watch_unsupported',
+      message: 'FakeXunaHostChannel watchPoll is unconfigured (fail closed).',
+    );
+  }
+
+  @override
+  Future<HostWatchStopResult> watchStop({
+    required String watchId,
+    String? signal,
+  }) async {
+    invokedMethods.add('watchStop:${signal ?? 'all'}');
+    recordedWatchStops.add(<String, Object?>{
+      'watchId': watchId,
+      if (signal != null) 'signal': signal,
+    });
+    await _delayAndThrowIfConfigured();
+    final handler = onWatchStop;
+    if (handler != null) {
+      return handler(watchId: watchId, signal: signal);
+    }
+    if (signal != null) {
+      scriptedWatchPolls.remove('$watchId:$signal');
+    } else {
+      scriptedWatchPolls.removeWhere((k, _) => k.startsWith('$watchId:'));
+    }
+    return HostWatchStopResult(
+      watchId: watchId,
+      signal: signal,
+      stopped: true,
+      cancelledCount: 1,
+    );
   }
 
   Future<void> _delayAndThrowIfConfigured() async {

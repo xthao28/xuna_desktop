@@ -10,6 +10,7 @@ import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
+import 'package:xuna_desktop/features/watch/local_watch_sentinel.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Lifecycle phase of the Desktop Agent's XTP v1 WebSocket session.
@@ -65,6 +66,7 @@ class XtpSessionClient {
     WebSocketConnector? connector,
     Random? random,
     this.enableAutoReconnect = true,
+    LocalWatchSentinel? watchSentinel,
   }) : _connector =
            connector ??
            ((Uri uri) => WebSocketChannel.connect(
@@ -77,6 +79,9 @@ class XtpSessionClient {
       (_) => _notifyToolsListChanged(),
     );
     stopController.addCancelListener(_onLocalEmergencyStop);
+    if (watchSentinel != null) {
+      attachWatchSentinel(watchSentinel);
+    }
   }
 
   void _notifyToolsListChanged() {
@@ -160,6 +165,25 @@ class XtpSessionClient {
     return true;
   }
 
+  /// Sends an outbound content-free `xuna/watchEvent` notification
+  /// (`XUNA_XTP_V1_CONTRACT.md` §4.2.16). Strictly gated on [HostSessionPhase.ready].
+  bool sendWatchEvent(WatchEventParams params) {
+    if (_phase != HostSessionPhase.ready) return false;
+    _sendNotification(params.toNotification());
+    return true;
+  }
+
+  /// Attaches a [LocalWatchSentinel] to handle `xuna/watchRegister` and
+  /// `xuna/watchCancel` and emit `xuna/watchEvent` notifications.
+  void attachWatchSentinel(LocalWatchSentinel sentinel) {
+    if (identical(_watchSentinel, sentinel)) return;
+    unawaited(_watchEventsSub?.cancel());
+    _watchSentinel = sentinel;
+    _watchEventsSub = sentinel.events.listen(sendWatchEvent);
+  }
+
+  LocalWatchSentinel? get watchSentinel => _watchSentinel;
+
   final Uri wsUri;
   final XunaHostChannel channel;
   final EnrollmentStateStore enrollmentStore;
@@ -177,6 +201,8 @@ class XtpSessionClient {
   final StreamController<PendingEnrollmentDisplay?> _enrollmentDisplayChanges =
       StreamController<PendingEnrollmentDisplay?>.broadcast();
 
+  LocalWatchSentinel? _watchSentinel;
+  StreamSubscription<WatchEventParams>? _watchEventsSub;
   StreamSubscription<HostPolicyEvaluator>? _policySub;
   StreamSubscription<void>? _toolsListSub;
   StreamSubscription<Object?>? _socketSub;
@@ -347,6 +373,7 @@ class XtpSessionClient {
       case StopParams():
         if (typed.reason == StopReason.revoked) {
           dispatcher.cancelAllInFlight('revoked');
+          await _watchSentinel?.cancelAll(reason: 'revoked');
           await enrollmentStore.clear();
           _activeHostId = null;
           await _closeCurrentSocket();
@@ -376,6 +403,7 @@ class XtpSessionClient {
       case PresenceParams():
       case ResourcesParams():
       case FocusRequestParams():
+      case WatchEventParams():
         break;
     }
   }
@@ -512,6 +540,51 @@ class XtpSessionClient {
           _sendFrame(
             await dispatcher.setPolicy(requestId: request.id, params: typed),
           );
+        case WatchRegisterParams():
+          if (_phase != HostSessionPhase.ready) {
+            _sendFrame(
+              XtpErrorResponse(
+                id: request.id,
+                code: JsonRpcErrorCode.invalidRequest,
+                message: 'Session not ready',
+              ),
+            );
+            return;
+          }
+          final sentinel = _watchSentinel;
+          if (sentinel == null) {
+            _sendFrame(
+              XtpResponse.watchRegisterRejected(
+                id: request.id,
+                watchId: typed.watchId,
+                errorCode: WatchRejectErrorCode.watchUnsupported,
+              ),
+            );
+          } else {
+            final outcome = await sentinel.registerWatch(typed);
+            _sendFrame(outcome.toXtpResponse(request.id));
+          }
+        case WatchCancelParams():
+          if (_phase != HostSessionPhase.ready) {
+            _sendFrame(
+              XtpErrorResponse(
+                id: request.id,
+                code: JsonRpcErrorCode.invalidRequest,
+                message: 'Session not ready',
+              ),
+            );
+            return;
+          }
+          final sentinel = _watchSentinel;
+          final cancelled = sentinel == null
+              ? 0
+              : await sentinel.cancelWatches(typed);
+          _sendFrame(
+            XtpResponse.watchCancelResult(
+              id: request.id,
+              cancelledCount: cancelled,
+            ),
+          );
         case HelloEnrollParams():
         case HelloReconnectParams():
         case ProofParams():
@@ -563,6 +636,7 @@ class XtpSessionClient {
     if (closeCode == XtpCloseCode.policyViolation &&
         (closeReason == 'unauthorized' || closeReason == 'revoked')) {
       dispatcher.cancelAllInFlight('revoked');
+      unawaited(_watchSentinel?.cancelAll(reason: 'revoked'));
       unawaited(enrollmentStore.clear());
       _activeHostId = null;
     }
@@ -651,6 +725,7 @@ class XtpSessionClient {
     stopController.removeCancelListener(_onLocalEmergencyStop);
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
+    await _watchEventsSub?.cancel();
     await _policySub?.cancel();
     await _toolsListSub?.cancel();
     await _closeCurrentSocket();

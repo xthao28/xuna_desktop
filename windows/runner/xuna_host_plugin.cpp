@@ -5,6 +5,7 @@
 #include "xuna_win_crypto_media.h"
 #include "xuna_win_presence.h"
 #include "xuna_win_uia_engine.h"
+#include "xuna_win_watch.h"
 
 namespace {
 
@@ -656,6 +657,45 @@ void HandleMethodCallOnWorker(
     if (!QueryWindowsPresence(&out, &error_msg)) {
       result->Error("failed",
                     error_msg.empty() ? "presenceProbe failed" : error_msg);
+      return;
+    }
+    result->Success(flutter::EncodableValue(out));
+    return;
+  }
+
+  if (method == "watchStart") {
+    flutter::EncodableMap out;
+    WatchError err;
+    if (!WatchManager::Instance().WatchStart(args, &out, &err)) {
+      result->Error(err.flutter_code.empty() ? "failed" : err.flutter_code,
+                    err.message.empty() ? "watchStart failed" : err.message,
+                    MakeErrorDetails(err.error_code));
+      return;
+    }
+    result->Success(flutter::EncodableValue(out));
+    return;
+  }
+
+  if (method == "watchPoll") {
+    flutter::EncodableMap out;
+    WatchError err;
+    if (!WatchManager::Instance().WatchPoll(args, &out, &err)) {
+      result->Error(err.flutter_code.empty() ? "failed" : err.flutter_code,
+                    err.message.empty() ? "watchPoll failed" : err.message,
+                    MakeErrorDetails(err.error_code));
+      return;
+    }
+    result->Success(flutter::EncodableValue(out));
+    return;
+  }
+
+  if (method == "watchStop") {
+    flutter::EncodableMap out;
+    WatchError err;
+    if (!WatchManager::Instance().WatchStop(args, &out, &err)) {
+      result->Error(err.flutter_code.empty() ? "failed" : err.flutter_code,
+                    err.message.empty() ? "watchStop failed" : err.message,
+                    MakeErrorDetails(err.error_code));
       return;
     }
     result->Success(flutter::EncodableValue(out));

@@ -10,6 +10,25 @@ import 'browser_engine_provider.dart';
 typedef CdpBrowserLauncher =
     Future<Process?> Function(int port, String profileDir);
 
+/// Event notification pushed by Chrome DevTools Protocol on an open page tab.
+class CdpPageEvent {
+  const CdpPageEvent({required this.method, required this.params});
+
+  final String method;
+  final Map<String, Object?> params;
+}
+
+/// Active CDP WebSocket event subscription scoped to a single browser tab.
+class CdpTabWatchSession {
+  CdpTabWatchSession._(this._client);
+
+  final _CdpPageClient _client;
+
+  Stream<CdpPageEvent> get events => _client.events;
+  Future<void> get closed => _client.closed;
+  Future<void> close() => _client.close();
+}
+
 /// Chrome DevTools Protocol (CDP) browser provider (`UDC-18` §Wave B).
 ///
 /// Connects to a local loopback Chromium CDP endpoint (`http://127.0.0.1:9222`).
@@ -614,6 +633,99 @@ class CdpBrowserEngineProvider implements BrowserEngineProvider {
     return lower == '127.0.0.1' || lower == 'localhost' || lower == '::1';
   }
 
+  /// Opens a passive CDP event session bound strictly to [tabId].
+  ///
+  /// Never launches a browser, never opens `/json/new`, and never falls back to
+  /// the first available tab (Rules H1/H3).
+  Future<CdpTabWatchSession> openTabWatchSession({
+    required String tabId,
+  }) async {
+    final cleanTabId = tabId.trim();
+    if (cleanTabId.isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'target_not_found',
+        message: 'CDP tabId is empty.',
+      );
+    }
+    final baseUri = _validatedBaseUri();
+    final wsUrl = await _fetchWsUrlForExactTabId(baseUri, cleanTabId);
+
+    WebSocket socket;
+    try {
+      socket = await WebSocket.connect(wsUrl).timeout(connectTimeout);
+    } catch (_) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'browser_engine_not_available',
+        message: 'Failed to connect to Chrome CDP tab WebSocket.',
+      );
+    }
+
+    final client = _CdpPageClient(socket);
+    try {
+      await client.send('DOM.enable');
+      await client.send('Network.enable');
+      return CdpTabWatchSession._(client);
+    } catch (_) {
+      await client.close();
+      rethrow;
+    }
+  }
+
+  Future<String> _fetchWsUrlForExactTabId(Uri baseUri, String tabId) async {
+    final client = HttpClient()..connectionTimeout = connectTimeout;
+    try {
+      final listUri = baseUri.replace(path: '/json/list', query: null);
+      final req = await client.getUrl(listUri).timeout(connectTimeout);
+      final res = await req.close().timeout(connectTimeout);
+      if (res.statusCode != 200) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'browser_engine_not_available',
+          message: 'Chrome CDP /json/list returned non-200 status.',
+        );
+      }
+      final body = await utf8.decoder.bind(res).join().timeout(connectTimeout);
+      final decoded = jsonDecode(body);
+      if (decoded is! List) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'browser_engine_not_available',
+          message: 'Chrome CDP /json/list returned malformed payload.',
+        );
+      }
+      for (final entry in decoded) {
+        if (entry is Map && entry['type'] == 'page' && entry['id'] == tabId) {
+          final ws = entry['webSocketDebuggerUrl'];
+          if (ws is String && ws.isNotEmpty) {
+            final wsUri = Uri.tryParse(ws);
+            if (wsUri != null &&
+                (wsUri.scheme == 'ws' || wsUri.scheme == 'wss') &&
+                _isLoopbackHost(wsUri.host)) {
+              return ws;
+            }
+          }
+        }
+      }
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'target_not_found',
+        message: 'Requested CDP page tabId was not found.',
+      );
+    } on XunaHostChannelException {
+      rethrow;
+    } catch (_) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'browser_engine_not_available',
+        message: 'Chrome CDP endpoint is not reachable.',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   Future<T> _withCdpSession<T>(
     Future<T> Function(_CdpPageClient client) action, {
     bool allowAutoLaunch = false,
@@ -814,7 +926,8 @@ class _CdpPageClient {
         if (raw is! String) return;
         try {
           final decoded = jsonDecode(raw);
-          if (decoded is Map && decoded['id'] is int) {
+          if (decoded is! Map) return;
+          if (decoded['id'] is int) {
             final id = decoded['id'] as int;
             final completer = _pending.remove(id);
             if (completer != null && !completer.isCompleted) {
@@ -836,13 +949,24 @@ class _CdpPageClient {
                 );
               }
             }
+          } else if (decoded['method'] is String && decoded['id'] == null) {
+            final method = decoded['method'] as String;
+            final rawParams = decoded['params'];
+            final params = rawParams is Map
+                ? rawParams.map((k, v) => MapEntry(k.toString(), v))
+                : const <String, Object?>{};
+            if (!_eventsController.isClosed) {
+              _eventsController.add(
+                CdpPageEvent(method: method, params: params),
+              );
+            }
           }
         } catch (_) {
           // Ignore malformed event frames.
         }
       },
-      onDone: _failAllPending,
-      onError: (_) => _failAllPending(),
+      onDone: _handleClosed,
+      onError: (_) => _handleClosed(),
     );
   }
 
@@ -850,7 +974,23 @@ class _CdpPageClient {
   late final StreamSubscription<dynamic> _sub;
   final Map<int, Completer<Map<String, Object?>>> _pending =
       <int, Completer<Map<String, Object?>>>{};
+  final StreamController<CdpPageEvent> _eventsController =
+      StreamController<CdpPageEvent>.broadcast();
+  final Completer<void> _closedCompleter = Completer<void>();
   int _nextId = 1;
+
+  Stream<CdpPageEvent> get events => _eventsController.stream;
+  Future<void> get closed => _closedCompleter.future;
+
+  void _handleClosed() {
+    _failAllPending();
+    if (!_closedCompleter.isCompleted) {
+      _closedCompleter.complete();
+    }
+    if (!_eventsController.isClosed) {
+      unawaited(_eventsController.close());
+    }
+  }
 
   void _failAllPending() {
     for (final c in _pending.values) {
@@ -917,7 +1057,7 @@ class _CdpPageClient {
 
   Future<void> close() async {
     await _sub.cancel();
-    _failAllPending();
+    _handleClosed();
     try {
       await _socket.close();
     } catch (_) {}

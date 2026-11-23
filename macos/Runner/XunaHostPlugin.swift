@@ -11,6 +11,7 @@ import Security
 /// - `XunaHostPlugin+AppsAndContext.swift`: App launch, URL open, Shortcuts, permissions, and active window/browser context.
 /// - `XunaHostPlugin+UiTreeScanner.swift`: App discovery, AXUIElement UI tree inspection, and pointer/scroll primitives.
 /// - `XunaHostPlugin+UiActionExecutor.swift`: Universal AXUIElement/DOM/AppleEvents/CGEvent UI control execution.
+/// - `XunaHostPlugin+Watch.swift`: Bounded-unary native OS watchers (`AXObserver`, `libproc`, `FSEvents`).
 final class XunaHostPlugin: NSObject, FlutterPlugin {
   static let channelName = "xuna/host"
   static let keyTag = "ai.xuna.desktop.host.signing.v1"
@@ -29,13 +30,29 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     label: "ai.xuna.desktop.host.capture",
     qos: .userInitiated
   )
+  static let watchQueueSpecificKey = DispatchSpecificKey<UInt8>()
+  let watchQueue: DispatchQueue = {
+    let q = DispatchQueue(
+      label: "ai.xuna.desktop.host.watch",
+      qos: .userInitiated
+    )
+    q.setSpecific(key: watchQueueSpecificKey, value: 1)
+    return q
+  }()
   let uiCacheLock = NSLock()
   let keyCacheLock = NSLock()
+  let watchLock = NSLock()
   var cachedKey: (SecKey, String)?
   var cachedUiElements: [String: AXUIElement] = [:]
   var cachedUiCenters: [String: CGPoint] = [:]
   var cachedUiDescriptors: [String: (role: String, label: String)] = [:]
   var cachedUiPid: pid_t = 0
+  var activeWatchEntries: [String: NativeWatchEntry] = [:]
+  var watchHomeRootOverride: String?
+
+  deinit {
+    stopAllWatchEntries()
+  }
 
   static func register(with registrar: FlutterPluginRegistrar) {
     register(messenger: registrar.messenger)
@@ -251,6 +268,12 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
       uiActionQueue.async { self.handleInvokeWindowUiControl(args: args, result: result) }
     case "captureScreen":
       captureQueue.async { self.handleCaptureScreen(args: args, result: result) }
+    case "watchStart":
+      watchQueue.async { self.handleWatchStart(args: args, result: result) }
+    case "watchPoll":
+      watchQueue.async { self.handleWatchPoll(args: args, result: result) }
+    case "watchStop":
+      watchQueue.async { self.handleWatchStop(args: args, result: result) }
     default:
       DispatchQueue.main.async {
         result(FlutterMethodNotImplemented)

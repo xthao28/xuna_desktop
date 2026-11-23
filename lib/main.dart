@@ -43,6 +43,12 @@ Future<void> main() async {
   final guard = _processGuard ?? SingleInstanceGuard(lockFile: paths.lockFile);
   final acquired = await guard.tryAcquire();
   if (!acquired) {
+    final isXcTest =
+        Platform.environment.containsKey('XCTestConfigurationFilePath') ||
+        Platform.environment.containsKey('XCTestBundlePath');
+    if (isXcTest) {
+      return;
+    }
     exit(0);
   }
   _processGuard = guard;
@@ -69,6 +75,11 @@ Future<void> main() async {
     appScanner: appScanner,
   );
 
+  final cdpBrowserProvider = CdpBrowserEngineProvider(
+    autoLaunchBrowser: true,
+    userDataDirPath: '${paths.rootDir.path}/cdp-browser-profile',
+  );
+
   final dispatcher = HostToolDispatcher(
     policyStore: policyStore,
     channel: channel,
@@ -78,10 +89,7 @@ Future<void> main() async {
     enrollmentStore: enrollmentStore,
     computerUseManager: computerUseManager,
     appScanner: appScanner,
-    browserEngineProvider: CdpBrowserEngineProvider(
-      autoLaunchBrowser: true,
-      userDataDirPath: '${paths.rootDir.path}/cdp-browser-profile',
-    ),
+    browserEngineProvider: cdpBrowserProvider,
   );
 
   final lanServer = LanOfflineServer(
@@ -127,6 +135,7 @@ Future<void> main() async {
       computerUseManager: computerUseManager,
       symbioticService: dispatcher.symbioticService,
       presenceCoordinator: presenceCoordinator,
+      cdpBrowserProvider: cdpBrowserProvider,
       appScanner: appScanner,
       workspaceIndexer: workspaceIndexer,
       logger: logger,

@@ -85,6 +85,8 @@ const Set<String> knownXtpRequestMethods = <String>{
   'ping',
   'xuna/get_policy',
   'xuna/set_policy',
+  'xuna/watchRegister',
+  'xuna/watchCancel',
 };
 
 const Set<String> knownXtpNotificationMethods = <String>{
@@ -100,6 +102,7 @@ const Set<String> knownXtpNotificationMethods = <String>{
   'xuna/presence',
   'xuna/resources',
   'xuna/focusRequest',
+  'xuna/watchEvent',
 };
 
 /// Base class for all JSON-RPC 2.0 frames in XTP v1.
@@ -320,6 +323,14 @@ class XtpRequest extends XtpFrame {
     required this.typedParams,
   });
 
+  /// Builds an `xuna/watchRegister` request frame (`§4.2.14`).
+  factory XtpRequest.watchRegister(Object id, WatchRegisterParams params) =>
+      params.toRequest(id);
+
+  /// Builds an `xuna/watchCancel` request frame (`§4.2.15`).
+  factory XtpRequest.watchCancel(Object id, WatchCancelParams params) =>
+      params.toRequest(id);
+
   final Object id;
   final String method;
   final Map<String, Object?> params;
@@ -341,6 +352,10 @@ class XtpNotification extends XtpFrame {
     required this.params,
     required this.typedParams,
   });
+
+  /// Builds an `xuna/watchEvent` notification frame (`§4.2.16`).
+  factory XtpNotification.watchEvent(WatchEventParams params) =>
+      params.toNotification();
 
   final String method;
   final Map<String, Object?> params;
@@ -428,6 +443,105 @@ class XtpResponse extends XtpFrame {
       result: <String, Object?>{'preflight': preflight},
     );
   }
+
+  /// Builds an `xuna/watchRegister` response frame (`XUNA_XTP_V1_CONTRACT.md` §4.2.14).
+  factory XtpResponse.watchRegisterResult({
+    required Object id,
+    required bool accepted,
+    required String watchId,
+    List<WatchSignal>? activeSignals,
+    bool? eventDriven,
+    bool? fallbackUsed,
+    WatchRejectErrorCode? errorCode,
+  }) {
+    if (accepted) {
+      if (activeSignals == null ||
+          eventDriven == null ||
+          fallbackUsed == null ||
+          errorCode != null) {
+        throw XtpProtocolException(
+          jsonRpcCode: JsonRpcErrorCode.invalidParams,
+          message:
+              'Accepted watchRegister result requires activeSignals, eventDriven, fallbackUsed and forbids errorCode',
+          requestId: id,
+        );
+      }
+      return XtpResponse(
+        id: id,
+        result: <String, Object?>{
+          'schemaVersion': 1,
+          'accepted': true,
+          'watchId': watchId,
+          'activeSignals': activeSignals.map((s) => s.wire).toList(),
+          'eventDriven': eventDriven,
+          'fallbackUsed': fallbackUsed,
+        },
+      );
+    }
+    if (errorCode == null ||
+        activeSignals != null ||
+        eventDriven != null ||
+        fallbackUsed != null) {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message:
+            'Rejected watchRegister result requires errorCode and forbids activeSignals/eventDriven/fallbackUsed',
+        requestId: id,
+      );
+    }
+    return XtpResponse(
+      id: id,
+      result: <String, Object?>{
+        'schemaVersion': 1,
+        'accepted': false,
+        'watchId': watchId,
+        'errorCode': errorCode.wire,
+      },
+    );
+  }
+
+  /// Builds an accepted `xuna/watchRegister` response frame (`§4.2.14`).
+  factory XtpResponse.watchRegisterAccepted({
+    required Object id,
+    required String watchId,
+    required List<WatchSignal> activeSignals,
+    required bool eventDriven,
+    required bool fallbackUsed,
+  }) =>
+      XtpResponse.watchRegisterResult(
+        id: id,
+        accepted: true,
+        watchId: watchId,
+        activeSignals: activeSignals,
+        eventDriven: eventDriven,
+        fallbackUsed: fallbackUsed,
+      );
+
+  /// Builds a rejected `xuna/watchRegister` response frame (`§4.2.14`).
+  factory XtpResponse.watchRegisterRejected({
+    required Object id,
+    required String watchId,
+    required WatchRejectErrorCode errorCode,
+  }) =>
+      XtpResponse.watchRegisterResult(
+        id: id,
+        accepted: false,
+        watchId: watchId,
+        errorCode: errorCode,
+      );
+
+  /// Builds an `xuna/watchCancel` response frame (`XUNA_XTP_V1_CONTRACT.md` §4.2.15).
+  factory XtpResponse.watchCancelResult({
+    required Object id,
+    required int cancelledCount,
+  }) =>
+      XtpResponse(
+        id: id,
+        result: <String, Object?>{
+          'schemaVersion': 1,
+          'cancelledCount': cancelledCount,
+        },
+      );
 
   final Object id;
   final Map<String, Object?> result;
@@ -576,6 +690,435 @@ class SetPolicyParams extends XtpRequestParams {
   final List<String> denyApps;
   final List<String> allowDomains;
   final List<String> denyDomains;
+}
+
+/// Observation mode for `xuna/watchRegister` (`XUNA_XTP_V1_CONTRACT.md` §4.2.14).
+enum WatchMode {
+  uiQuiescence('ui_quiescence'),
+  uiChange('ui_change'),
+  processIdle('process_idle'),
+  fsQuiescence('fs_quiescence'),
+  cdpIdle('cdp_idle'),
+  composite('composite'),
+  timer('timer'),
+  protocolAsync('protocol_async');
+
+  const WatchMode(this.wire);
+  final String wire;
+
+  static WatchMode fromWire(String value) => switch (value) {
+        'ui_quiescence' => WatchMode.uiQuiescence,
+        'ui_change' => WatchMode.uiChange,
+        'process_idle' => WatchMode.processIdle,
+        'fs_quiescence' => WatchMode.fsQuiescence,
+        'cdp_idle' => WatchMode.cdpIdle,
+        'composite' => WatchMode.composite,
+        'timer' => WatchMode.timer,
+        'protocol_async' => WatchMode.protocolAsync,
+        _ => throw FormatException('Unknown WatchMode: $value'),
+      };
+}
+
+/// Primitive signal kind used in `WatchRegisterParams.signals`,
+/// `activeSignals`, and `observedSignals` (`§4.2.14`, `§4.2.16`).
+enum WatchSignal {
+  uiQuiescence('ui_quiescence'),
+  uiChange('ui_change'),
+  processIdle('process_idle'),
+  fsQuiescence('fs_quiescence'),
+  cdpIdle('cdp_idle'),
+  timer('timer'),
+  protocolAsync('protocol_async');
+
+  const WatchSignal(this.wire);
+  final String wire;
+
+  /// Subset of [WatchSignal] permitted inside `composite` watches.
+  static const Set<WatchSignal> allowedCompositeSignals = <WatchSignal>{
+    WatchSignal.uiQuiescence,
+    WatchSignal.processIdle,
+    WatchSignal.fsQuiescence,
+    WatchSignal.cdpIdle,
+  };
+
+  static WatchSignal fromWire(String value) => switch (value) {
+        'ui_quiescence' => WatchSignal.uiQuiescence,
+        'ui_change' => WatchSignal.uiChange,
+        'process_idle' => WatchSignal.processIdle,
+        'fs_quiescence' => WatchSignal.fsQuiescence,
+        'cdp_idle' => WatchSignal.cdpIdle,
+        'timer' => WatchSignal.timer,
+        'protocol_async' => WatchSignal.protocolAsync,
+        _ => throw FormatException('Unknown WatchSignal: $value'),
+      };
+}
+
+/// Alias for callers referencing [WatchSignal] as `WatchSignalKind`.
+typedef WatchSignalKind = WatchSignal;
+
+/// Rejection error codes for `xuna/watchRegister` results (`§4.2.14`).
+enum WatchRejectErrorCode {
+  watchUnsupported('watch_unsupported'),
+  targetNotFound('target_not_found'),
+  workspaceNotFound('workspace_not_found'),
+  watchLimitReached('watch_limit_reached'),
+  needsPermission('needs_permission'),
+  policyBlocked('policy_blocked'),
+  stopped('stopped'),
+  invalidArgs('invalid_args');
+
+  const WatchRejectErrorCode(this.wire);
+  final String wire;
+
+  static WatchRejectErrorCode fromWire(String value) => switch (value) {
+        'watch_unsupported' => WatchRejectErrorCode.watchUnsupported,
+        'target_not_found' => WatchRejectErrorCode.targetNotFound,
+        'workspace_not_found' => WatchRejectErrorCode.workspaceNotFound,
+        'watch_limit_reached' => WatchRejectErrorCode.watchLimitReached,
+        'needs_permission' => WatchRejectErrorCode.needsPermission,
+        'policy_blocked' => WatchRejectErrorCode.policyBlocked,
+        'stopped' => WatchRejectErrorCode.stopped,
+        'invalid_args' => WatchRejectErrorCode.invalidArgs,
+        _ => throw FormatException('Unknown WatchRejectErrorCode: $value'),
+      };
+}
+
+/// Cancellation reason for `xuna/watchCancel` (`§4.2.15`).
+enum WatchCancelReason {
+  ownerCancel('owner_cancel'),
+  estop('estop'),
+  jobEnded('job_ended'),
+  replaced('replaced'),
+  expired('expired');
+
+  const WatchCancelReason(this.wire);
+  final String wire;
+
+  static WatchCancelReason fromWire(String value) => switch (value) {
+        'owner_cancel' => WatchCancelReason.ownerCancel,
+        'estop' => WatchCancelReason.estop,
+        'job_ended' => WatchCancelReason.jobEnded,
+        'replaced' => WatchCancelReason.replaced,
+        'expired' => WatchCancelReason.expired,
+        _ => throw FormatException('Unknown WatchCancelReason: $value'),
+      };
+}
+
+/// Terminal or progress event kind for `xuna/watchEvent` (`§4.2.16`).
+enum WatchEventKind {
+  settled('settled'),
+  changed('changed'),
+  timeout('timeout'),
+  targetLost('target_lost'),
+  error('error');
+
+  const WatchEventKind(this.wire);
+  final String wire;
+
+  static WatchEventKind fromWire(String value) => switch (value) {
+        'settled' => WatchEventKind.settled,
+        'changed' => WatchEventKind.changed,
+        'timeout' => WatchEventKind.timeout,
+        'target_lost' => WatchEventKind.targetLost,
+        'error' => WatchEventKind.error,
+        _ => throw FormatException('Unknown WatchEventKind: $value'),
+      };
+}
+
+/// Returns `true` when [value] is a canonical non-zero UUID string.
+bool isValidNonZeroUuid(String value) =>
+    isValidUuid(value) && value != '00000000-0000-0000-0000-000000000000';
+
+final RegExp _asciiControlCharPattern = RegExp(r'[\x00-\x1f\x7f]');
+
+/// Target descriptor for `xuna/watchRegister` (`§4.2.14`, `additionalProperties: false`).
+class WatchTarget {
+  const WatchTarget({
+    this.pid,
+    this.windowId,
+    this.appId,
+    this.workspaceAlias,
+    this.tabId,
+    this.mcpServerId,
+    this.protocolTaskId,
+  });
+
+  factory WatchTarget.fromJson(Map<String, Object?> json) {
+    _requireExactParamsKeys(
+      json,
+      const <String>{},
+      optionalKeys: const <String>{
+        'pid',
+        'windowId',
+        'appId',
+        'workspaceAlias',
+        'tabId',
+        'mcpServerId',
+        'protocolTaskId',
+      },
+    );
+    int? pid;
+    if (json.containsKey('pid') && json['pid'] != null) {
+      pid = _requireIntParam(json, 'pid');
+    }
+    int? windowId;
+    if (json.containsKey('windowId') && json['windowId'] != null) {
+      windowId = _requireIntParam(json, 'windowId');
+    }
+    String? appId;
+    if (json.containsKey('appId') && json['appId'] != null) {
+      appId = _requireStringParam(json, 'appId');
+    }
+    String? workspaceAlias;
+    if (json.containsKey('workspaceAlias') && json['workspaceAlias'] != null) {
+      workspaceAlias = _requireStringParam(json, 'workspaceAlias');
+    }
+    String? tabId;
+    if (json.containsKey('tabId') && json['tabId'] != null) {
+      tabId = _requireStringParam(json, 'tabId');
+    }
+    String? mcpServerId;
+    if (json.containsKey('mcpServerId') && json['mcpServerId'] != null) {
+      mcpServerId = _requireStringParam(json, 'mcpServerId');
+    }
+    String? protocolTaskId;
+    if (json.containsKey('protocolTaskId') && json['protocolTaskId'] != null) {
+      protocolTaskId = _requireStringParam(json, 'protocolTaskId');
+    }
+    final target = WatchTarget(
+      pid: pid,
+      windowId: windowId,
+      appId: appId,
+      workspaceAlias: workspaceAlias,
+      tabId: tabId,
+      mcpServerId: mcpServerId,
+      protocolTaskId: protocolTaskId,
+    );
+    target.validate();
+    return target;
+  }
+
+  final int? pid;
+  final int? windowId;
+  final String? appId;
+  final String? workspaceAlias;
+  final String? tabId;
+  final String? mcpServerId;
+  final String? protocolTaskId;
+
+  void validate() {
+    final p = pid;
+    if (p != null && (p < 1 || p > 2147483647)) {
+      throw const FormatException('target.pid must be in 1..2147483647');
+    }
+    final w = windowId;
+    if (w != null && (w < 0 || w > 2147483647)) {
+      throw const FormatException('target.windowId must be in 0..2147483647');
+    }
+    final app = appId;
+    if (app != null &&
+        (app.contains('\n') || app.contains('\r') || !isValidShortId(app))) {
+      throw const FormatException('Invalid target.appId');
+    }
+    final alias = workspaceAlias;
+    if (alias != null &&
+        (alias.contains('/') ||
+            alias.contains(r'\') ||
+            alias == '.' ||
+            alias == '..' ||
+            alias.contains('..') ||
+            alias.contains('\n') ||
+            alias.contains('\r') ||
+            !_workspaceAliasPattern.hasMatch(alias))) {
+      throw const FormatException('Invalid target.workspaceAlias');
+    }
+    final tab = tabId;
+    if (tab != null &&
+        (tab.isEmpty ||
+            tab.length > 128 ||
+            _asciiControlCharPattern.hasMatch(tab))) {
+      throw const FormatException('Invalid target.tabId');
+    }
+    final mcp = mcpServerId;
+    if (mcp != null &&
+        (mcp.contains('\n') || mcp.contains('\r') || !isValidShortId(mcp))) {
+      throw const FormatException('Invalid target.mcpServerId');
+    }
+    final task = protocolTaskId;
+    if (task != null &&
+        (task.isEmpty ||
+            task.length > 128 ||
+            _asciiControlCharPattern.hasMatch(task))) {
+      throw const FormatException('Invalid target.protocolTaskId');
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    validate();
+    return <String, Object?>{
+      if (pid != null) 'pid': pid,
+      if (windowId != null) 'windowId': windowId,
+      if (appId != null) 'appId': appId,
+      if (workspaceAlias != null) 'workspaceAlias': workspaceAlias,
+      if (tabId != null) 'tabId': tabId,
+      if (mcpServerId != null) 'mcpServerId': mcpServerId,
+      if (protocolTaskId != null) 'protocolTaskId': protocolTaskId,
+    };
+  }
+}
+
+/// `xuna/watchRegister` request params (`XUNA_XTP_V1_CONTRACT.md` §4.2.14).
+class WatchRegisterParams extends XtpRequestParams {
+  const WatchRegisterParams({
+    this.schemaVersion = 1,
+    required this.watchId,
+    required this.jobId,
+    required this.mode,
+    this.signals,
+    required this.target,
+    required this.quiescenceSeconds,
+    required this.minWaitSeconds,
+    required this.maxWaitSeconds,
+    required this.requireInitialChange,
+    required this.releaseFocus,
+  });
+
+  final int schemaVersion;
+  final String watchId;
+  final String jobId;
+  final WatchMode mode;
+  final List<WatchSignal>? signals;
+  final WatchTarget target;
+  final int quiescenceSeconds;
+  final int minWaitSeconds;
+  final int maxWaitSeconds;
+  final bool requireInitialChange;
+  final bool releaseFocus;
+
+  void validate() {
+    if (schemaVersion != 1) {
+      throw FormatException(
+        'Unsupported xuna/watchRegister schemaVersion: $schemaVersion',
+      );
+    }
+    if (!isValidNonZeroUuid(watchId)) {
+      throw const FormatException('watchId must be a canonical non-zero UUID');
+    }
+    if (!isValidNonZeroUuid(jobId)) {
+      throw const FormatException('jobId must be a canonical non-zero UUID');
+    }
+    if (mode == WatchMode.composite) {
+      final sigs = signals;
+      if (sigs == null || sigs.length < 2 || sigs.length > 3) {
+        throw const FormatException(
+          'composite mode requires 2..3 distinct signals',
+        );
+      }
+      final seen = <WatchSignal>{};
+      for (final s in sigs) {
+        if (!WatchSignal.allowedCompositeSignals.contains(s)) {
+          throw FormatException('Signal ${s.wire} not allowed in composite');
+        }
+        if (!seen.add(s)) {
+          throw const FormatException('composite signals must be distinct');
+        }
+      }
+    } else if (signals != null) {
+      throw const FormatException(
+        'signals is forbidden unless mode is composite',
+      );
+    }
+    target.validate();
+    if (quiescenceSeconds < 2 || quiescenceSeconds > 120) {
+      throw const FormatException('quiescenceSeconds must be in 2..120');
+    }
+    if (minWaitSeconds < 0 || minWaitSeconds > 60) {
+      throw const FormatException('minWaitSeconds must be in 0..60');
+    }
+    if (maxWaitSeconds < 5 || maxWaitSeconds > 900) {
+      throw const FormatException('maxWaitSeconds must be in 5..900');
+    }
+    if (minWaitSeconds > maxWaitSeconds) {
+      throw const FormatException(
+        'minWaitSeconds must be <= maxWaitSeconds',
+      );
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    validate();
+    return <String, Object?>{
+      'schemaVersion': schemaVersion,
+      'watchId': watchId,
+      'jobId': jobId,
+      'mode': mode.wire,
+      if (signals != null) 'signals': signals!.map((s) => s.wire).toList(),
+      'target': target.toJson(),
+      'quiescenceSeconds': quiescenceSeconds,
+      'minWaitSeconds': minWaitSeconds,
+      'maxWaitSeconds': maxWaitSeconds,
+      'requireInitialChange': requireInitialChange,
+      'releaseFocus': releaseFocus,
+    };
+  }
+
+  XtpRequest toRequest(Object id) => XtpRequest(
+        id: id,
+        method: 'xuna/watchRegister',
+        params: toJson(),
+        typedParams: this,
+      );
+}
+
+/// `xuna/watchCancel` request params (`XUNA_XTP_V1_CONTRACT.md` §4.2.15).
+class WatchCancelParams extends XtpRequestParams {
+  const WatchCancelParams({
+    this.schemaVersion = 1,
+    this.watchId,
+    this.jobId,
+    required this.reason,
+  });
+
+  final int schemaVersion;
+  final String? watchId;
+  final String? jobId;
+  final WatchCancelReason reason;
+
+  void validate() {
+    if (schemaVersion != 1) {
+      throw FormatException(
+        'Unsupported xuna/watchCancel schemaVersion: $schemaVersion',
+      );
+    }
+    if (watchId != null && !isValidNonZeroUuid(watchId!)) {
+      throw const FormatException('watchId must be a canonical non-zero UUID');
+    }
+    if (jobId != null && !isValidNonZeroUuid(jobId!)) {
+      throw const FormatException('jobId must be a canonical non-zero UUID');
+    }
+    if (reason != WatchCancelReason.estop && watchId == null && jobId == null) {
+      throw const FormatException(
+        'watchId or jobId is required unless reason is estop',
+      );
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    validate();
+    return <String, Object?>{
+      'schemaVersion': schemaVersion,
+      if (watchId != null) 'watchId': watchId,
+      if (jobId != null) 'jobId': jobId,
+      'reason': reason.wire,
+    };
+  }
+
+  XtpRequest toRequest(Object id) => XtpRequest(
+        id: id,
+        method: 'xuna/watchCancel',
+        params: toJson(),
+        typedParams: this,
+      );
 }
 
 /// Base class for typed notification parameters.
@@ -776,6 +1319,105 @@ class FocusRequestParams extends XtpNotificationParams {
       );
 }
 
+/// `xuna/watchEvent` notification params (`XUNA_XTP_V1_CONTRACT.md` §4.2.16).
+class WatchEventParams extends XtpNotificationParams {
+  const WatchEventParams({
+    this.schemaVersion = 1,
+    required this.watchId,
+    required this.jobId,
+    required this.kind,
+    required this.observedSignals,
+    required this.elapsedSeconds,
+    required this.changeCount,
+    required this.digestChanged,
+    required this.occurredAt,
+    this.errorCode,
+  });
+
+  final int schemaVersion;
+  final String watchId;
+  final String jobId;
+  final WatchEventKind kind;
+  final List<WatchSignal> observedSignals;
+  final int elapsedSeconds;
+  final int changeCount;
+  final bool digestChanged;
+  final DateTime occurredAt;
+  final String? errorCode;
+
+  void validate() {
+    if (schemaVersion != 1) {
+      throw FormatException(
+        'Unsupported xuna/watchEvent schemaVersion: $schemaVersion',
+      );
+    }
+    if (!isValidNonZeroUuid(watchId)) {
+      throw const FormatException('watchId must be a canonical non-zero UUID');
+    }
+    if (!isValidNonZeroUuid(jobId)) {
+      throw const FormatException('jobId must be a canonical non-zero UUID');
+    }
+    if (observedSignals.length > 3) {
+      throw const FormatException('observedSignals must have at most 3 items');
+    }
+    final seen = <WatchSignal>{};
+    for (final s in observedSignals) {
+      if (!seen.add(s)) {
+        throw const FormatException('observedSignals items must be distinct');
+      }
+    }
+    if ((kind == WatchEventKind.settled || kind == WatchEventKind.changed) &&
+        observedSignals.isEmpty) {
+      throw const FormatException(
+        'observedSignals must be non-empty for settled or changed events',
+      );
+    }
+    if (elapsedSeconds < 0) {
+      throw const FormatException('elapsedSeconds must be >= 0');
+    }
+    if (changeCount < 0) {
+      throw const FormatException('changeCount must be >= 0');
+    }
+    if (kind == WatchEventKind.error) {
+      final code = errorCode;
+      if (code == null ||
+          code.contains('\n') ||
+          code.contains('\r') ||
+          !isValidShortId(code)) {
+        throw const FormatException(
+          'errorCode is required and must be a valid short ID when kind is error',
+        );
+      }
+    } else if (errorCode != null) {
+      throw const FormatException(
+        'errorCode is forbidden unless kind is error',
+      );
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    validate();
+    return <String, Object?>{
+      'schemaVersion': schemaVersion,
+      'watchId': watchId,
+      'jobId': jobId,
+      'kind': kind.wire,
+      'observedSignals': observedSignals.map((s) => s.wire).toList(),
+      'elapsedSeconds': elapsedSeconds,
+      'changeCount': changeCount,
+      'digestChanged': digestChanged,
+      'occurredAt': occurredAt.toUtc().toIso8601String(),
+      if (errorCode != null) 'errorCode': errorCode,
+    };
+  }
+
+  XtpNotification toNotification() => XtpNotification(
+        method: 'xuna/watchEvent',
+        params: toJson(),
+        typedParams: this,
+      );
+}
+
 XtpRequestParams _parseRequestParams(
   String method,
   Map<String, Object?> params,
@@ -817,6 +1459,10 @@ XtpRequestParams _parseRequestParams(
         return const GetPolicyParams();
       case 'xuna/set_policy':
         return _parseSetPolicyParams(params);
+      case 'xuna/watchRegister':
+        return _parseWatchRegisterParams(params);
+      case 'xuna/watchCancel':
+        return _parseWatchCancelParams(params);
       default:
         throw XtpProtocolException(
           jsonRpcCode: JsonRpcErrorCode.methodNotFound,
@@ -1203,6 +1849,8 @@ XtpNotificationParams _parseNotificationParams(
         return _parseResourcesParams(params);
       case 'xuna/focusRequest':
         return _parseFocusRequestParams(params);
+      case 'xuna/watchEvent':
+        return _parseWatchEventParams(params);
       default:
         throw const XtpProtocolException(
           jsonRpcCode: JsonRpcErrorCode.methodNotFound,
@@ -1375,6 +2023,98 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
           'denyDomains',
         },
       );
+    } on FormatException catch (error) {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message: error.message,
+        requestId: requestId,
+      );
+    }
+    return;
+  }
+  if (result.containsKey('cancelledCount')) {
+    try {
+      _requireExactParamsKeys(
+        result,
+        const <String>{'schemaVersion', 'cancelledCount'},
+      );
+      final schemaVersion = _requireIntParam(result, 'schemaVersion');
+      if (schemaVersion != 1) {
+        throw FormatException(
+          'Unsupported xuna/watchCancel result schemaVersion: $schemaVersion',
+        );
+      }
+      final cancelledCount = _requireIntParam(result, 'cancelledCount');
+      if (cancelledCount < 0) {
+        throw const FormatException('cancelledCount must be >= 0');
+      }
+    } on FormatException catch (error) {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message: error.message,
+        requestId: requestId,
+      );
+    }
+    return;
+  }
+  if (result.containsKey('accepted') || result.containsKey('watchId')) {
+    try {
+      final schemaVersion = _requireIntParam(result, 'schemaVersion');
+      if (schemaVersion != 1) {
+        throw FormatException(
+          'Unsupported xuna/watchRegister result schemaVersion: $schemaVersion',
+        );
+      }
+      final accepted = _requireBoolParam(result, 'accepted');
+      final watchId = _requireStringParam(result, 'watchId');
+      if (!isValidNonZeroUuid(watchId)) {
+        throw const FormatException(
+            'watchId must be a canonical non-zero UUID');
+      }
+      if (accepted) {
+        _requireExactParamsKeys(
+          result,
+          const <String>{
+            'schemaVersion',
+            'accepted',
+            'watchId',
+            'activeSignals',
+            'eventDriven',
+            'fallbackUsed',
+          },
+        );
+        final rawSignals = result['activeSignals'];
+        if (rawSignals is! List ||
+            rawSignals.isEmpty ||
+            rawSignals.length > 3) {
+          throw const FormatException(
+            'activeSignals must be a list of 1..3 distinct signals',
+          );
+        }
+        final seen = <WatchSignal>{};
+        for (final item in rawSignals) {
+          if (item is! String) {
+            throw const FormatException('activeSignals items must be strings');
+          }
+          final sig = WatchSignal.fromWire(item);
+          if (!seen.add(sig)) {
+            throw const FormatException('activeSignals must be distinct');
+          }
+        }
+        _requireBoolParam(result, 'eventDriven');
+        _requireBoolParam(result, 'fallbackUsed');
+      } else {
+        _requireExactParamsKeys(
+          result,
+          const <String>{
+            'schemaVersion',
+            'accepted',
+            'watchId',
+            'errorCode',
+          },
+        );
+        WatchRejectErrorCode.fromWire(_requireStringParam(result, 'errorCode'));
+      }
     } on FormatException catch (error) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,
@@ -1774,4 +2514,173 @@ Map<String, Object?> _requireMapParam(Map<String, Object?> map, String key) {
     out[entry.key as String] = entry.value;
   }
   return out;
+}
+
+WatchRegisterParams _parseWatchRegisterParams(Map<String, Object?> params) {
+  _requireExactParamsKeys(
+    params,
+    const <String>{
+      'schemaVersion',
+      'watchId',
+      'jobId',
+      'mode',
+      'target',
+      'quiescenceSeconds',
+      'minWaitSeconds',
+      'maxWaitSeconds',
+      'requireInitialChange',
+      'releaseFocus',
+    },
+    optionalKeys: const <String>{'signals'},
+  );
+  final schemaVersion = _requireIntParam(params, 'schemaVersion');
+  final watchId = _requireStringParam(params, 'watchId');
+  final jobId = _requireStringParam(params, 'jobId');
+  final mode = WatchMode.fromWire(_requireStringParam(params, 'mode'));
+
+  List<WatchSignal>? signals;
+  if (mode == WatchMode.composite) {
+    if (!params.containsKey('signals')) {
+      throw const FormatException('composite mode requires signals');
+    }
+    final rawSignals = params['signals'];
+    if (rawSignals is! List) {
+      throw const FormatException('signals must be a list');
+    }
+    final parsed = <WatchSignal>[];
+    for (final item in rawSignals) {
+      if (item is! String) {
+        throw const FormatException('signals items must be strings');
+      }
+      parsed.add(WatchSignal.fromWire(item));
+    }
+    signals = List<WatchSignal>.unmodifiable(parsed);
+  } else if (params.containsKey('signals')) {
+    throw const FormatException(
+        'signals is forbidden unless mode is composite');
+  }
+
+  final target = WatchTarget.fromJson(_requireMapParam(params, 'target'));
+  final quiescenceSeconds = _requireIntParam(params, 'quiescenceSeconds');
+  final minWaitSeconds = _requireIntParam(params, 'minWaitSeconds');
+  final maxWaitSeconds = _requireIntParam(params, 'maxWaitSeconds');
+  final requireInitialChange = _requireBoolParam(
+    params,
+    'requireInitialChange',
+  );
+  final releaseFocus = _requireBoolParam(params, 'releaseFocus');
+
+  final result = WatchRegisterParams(
+    schemaVersion: schemaVersion,
+    watchId: watchId,
+    jobId: jobId,
+    mode: mode,
+    signals: signals,
+    target: target,
+    quiescenceSeconds: quiescenceSeconds,
+    minWaitSeconds: minWaitSeconds,
+    maxWaitSeconds: maxWaitSeconds,
+    requireInitialChange: requireInitialChange,
+    releaseFocus: releaseFocus,
+  );
+  result.validate();
+  return result;
+}
+
+WatchCancelParams _parseWatchCancelParams(Map<String, Object?> params) {
+  _requireExactParamsKeys(
+    params,
+    const <String>{'schemaVersion', 'reason'},
+    optionalKeys: const <String>{'watchId', 'jobId'},
+  );
+  final schemaVersion = _requireIntParam(params, 'schemaVersion');
+  String? watchId;
+  if (params.containsKey('watchId') && params['watchId'] != null) {
+    watchId = _requireStringParam(params, 'watchId');
+  }
+  String? jobId;
+  if (params.containsKey('jobId') && params['jobId'] != null) {
+    jobId = _requireStringParam(params, 'jobId');
+  }
+  final reason = WatchCancelReason.fromWire(
+    _requireStringParam(params, 'reason'),
+  );
+  final result = WatchCancelParams(
+    schemaVersion: schemaVersion,
+    watchId: watchId,
+    jobId: jobId,
+    reason: reason,
+  );
+  result.validate();
+  return result;
+}
+
+WatchEventParams _parseWatchEventParams(Map<String, Object?> params) {
+  _requireExactParamsKeys(
+    params,
+    const <String>{
+      'schemaVersion',
+      'watchId',
+      'jobId',
+      'kind',
+      'observedSignals',
+      'elapsedSeconds',
+      'changeCount',
+      'digestChanged',
+      'occurredAt',
+    },
+    optionalKeys: const <String>{'errorCode'},
+  );
+  final schemaVersion = _requireIntParam(params, 'schemaVersion');
+  final watchId = _requireStringParam(params, 'watchId');
+  final jobId = _requireStringParam(params, 'jobId');
+  final kind = WatchEventKind.fromWire(_requireStringParam(params, 'kind'));
+
+  final rawSignals = params['observedSignals'];
+  if (rawSignals is! List) {
+    throw const FormatException('observedSignals must be a list');
+  }
+  final observedSignals = <WatchSignal>[];
+  for (final item in rawSignals) {
+    if (item is! String) {
+      throw const FormatException('observedSignals items must be strings');
+    }
+    observedSignals.add(WatchSignal.fromWire(item));
+  }
+
+  final elapsedSeconds = _requireIntParam(params, 'elapsedSeconds');
+  final changeCount = _requireIntParam(params, 'changeCount');
+  final digestChanged = _requireBoolParam(params, 'digestChanged');
+  final occurredAtRaw = _requireStringParam(params, 'occurredAt');
+  final occurredAt = _parseStrictIsoTimestampUtc(occurredAtRaw);
+  if (occurredAt == null) {
+    throw const FormatException(
+      'Invalid occurredAt ISO-8601 UTC timestamp',
+    );
+  }
+
+  String? errorCode;
+  if (kind == WatchEventKind.error) {
+    if (!params.containsKey('errorCode') || params['errorCode'] == null) {
+      throw const FormatException('errorCode is required when kind is error');
+    }
+    errorCode = _requireStringParam(params, 'errorCode');
+  } else if (params.containsKey('errorCode')) {
+    throw const FormatException('errorCode is forbidden unless kind is error');
+  }
+
+  final result = WatchEventParams(
+    schemaVersion: schemaVersion,
+    watchId: watchId,
+    jobId: jobId,
+    kind: kind,
+    observedSignals: List<WatchSignal>.unmodifiable(observedSignals),
+    elapsedSeconds: elapsedSeconds,
+    changeCount: changeCount,
+    digestChanged: digestChanged,
+    occurredAt: occurredAt,
+    errorCode: errorCode,
+  );
+  result.validate();
+  return result;
 }
