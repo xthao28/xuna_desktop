@@ -45,9 +45,9 @@ void main() {
   });
 
   group('Golden valid frames round-trip', () {
-    test('parses and re-encodes all 24 valid frames identically', () {
+    test('parses and re-encodes all 27 valid frames identically', () {
       final frames = watchFixture['frames'] as Map<String, Object?>;
-      expect(frames.length, equals(24));
+      expect(frames.length, equals(27));
 
       for (final entry in frames.entries) {
         final rawMap = entry.value as Map<String, Object?>;
@@ -106,6 +106,36 @@ void main() {
       expect(protoParams.mode, equals(WatchMode.protocolAsync));
       expect(protoParams.target.mcpServerId, equals('build_mcp'));
       expect(protoParams.target.protocolTaskId, equals('task_01'));
+      expect(protoParams.requireInitialChange, isFalse);
+
+      final protoAccepted = XtpResponse.watchRegisterAccepted(
+        id: 706,
+        watchId: 'f1111111-1111-4111-8111-111111111116',
+        activeSignals: const <WatchSignal>[WatchSignal.protocolAsync],
+        eventDriven: true,
+        fallbackUsed: false,
+      );
+      expect(
+        jsonDecode(protoAccepted.encode()),
+        equals(frames['watchRegisterProtocolAsyncAcceptedResponse']),
+      );
+
+      final protoSettled = XtpFrame.parse(
+        jsonEncode(frames['watchEventProtocolAsyncSettledNotification']),
+      ) as XtpNotification;
+      final protoSettledParams = protoSettled.typedParams as WatchEventParams;
+      expect(protoSettledParams.kind, equals(WatchEventKind.settled));
+      expect(
+        protoSettledParams.observedSignals,
+        equals(const <WatchSignal>[WatchSignal.protocolAsync]),
+      );
+
+      final protoLost = XtpFrame.parse(
+        jsonEncode(frames['watchEventProtocolAsyncTargetLostNotification']),
+      ) as XtpNotification;
+      final protoLostParams = protoLost.typedParams as WatchEventParams;
+      expect(protoLostParams.kind, equals(WatchEventKind.targetLost));
+      expect(protoLostParams.observedSignals, isEmpty);
 
       final acceptedResp = XtpResponse.watchRegisterAccepted(
         id: 701,
@@ -172,10 +202,10 @@ void main() {
   });
 
   group('Golden invalidFrames rejected', () {
-    test('rejects all 12 invalidFrames with expectedJsonRpcCode', () {
+    test('rejects all 14 invalidFrames with expectedJsonRpcCode', () {
       final invalidFrames =
           watchFixture['invalidFrames'] as Map<String, Object?>;
-      expect(invalidFrames.length, equals(12));
+      expect(invalidFrames.length, equals(14));
 
       for (final entry in invalidFrames.entries) {
         final spec = entry.value as Map<String, Object?>;

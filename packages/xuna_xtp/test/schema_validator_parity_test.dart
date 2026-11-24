@@ -459,7 +459,7 @@ void main() {
 
   final allTools = <ToolDescriptor>[...staticCatalog, dynamicCustomTool];
 
-  group('Schema-Validator Parity Invariants (89 static + 1 dynamic)', () {
+  group('Schema-Validator Parity Invariants (91 static + 1 dynamic)', () {
     late HostPolicyEvaluator evaluator;
     final now = DateTime.utc(2026, 11, 19, 12, 0);
 
@@ -467,11 +467,11 @@ void main() {
       evaluator = HostPolicyEvaluator.healthy(_buildPermissiveParityPolicy());
     });
 
-    test('catalog has 89 unique static tools + valid metadata & strict schemas',
+    test('catalog has 91 unique static tools + valid metadata & strict schemas',
         () {
-      expect(staticCatalog.length, equals(89));
+      expect(staticCatalog.length, equals(91));
       final names = staticCatalog.map((t) => t.name).toSet();
-      expect(names.length, equals(89));
+      expect(names.length, equals(91));
 
       for (final tool in allTools) {
         expect(
@@ -553,7 +553,7 @@ void main() {
       }
     });
 
-    test('additionalProperties: false rejects undeclared keys on all 90 tools',
+    test('additionalProperties: false rejects undeclared keys on all 92 tools',
         () {
       for (final tool in allTools) {
         final badArgs = _synthesizeArgs(tool, full: false)

@@ -23,6 +23,8 @@ import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/watch/cdp_watch_signal_driver.dart';
 import 'package:xuna_desktop/features/watch/local_watch_sentinel.dart';
 import 'package:xuna_desktop/features/watch/native_watch_signal_driver.dart';
+import 'package:xuna_desktop/features/watch/protocol_async_watch_driver.dart';
+import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_desktop/features/watch/watch_signal_driver.dart';
 import 'package:xuna_desktop/shared/themes/xuna_color_themes.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -45,6 +47,7 @@ class DesktopAgentController extends BaseGetxController {
     this.symbioticService,
     this.presenceCoordinator,
     LocalWatchSentinel? watchSentinel,
+    ProtocolTaskRegistry? protocolTaskRegistry,
     CdpBrowserEngineProvider? cdpBrowserProvider,
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
@@ -71,6 +74,11 @@ class DesktopAgentController extends BaseGetxController {
             cdpProvider: cdpBrowserProvider ?? CdpBrowserEngineProvider(),
             logger: logger,
           ),
+          if (protocolTaskRegistry != null)
+            ProtocolAsyncWatchDriver(
+              taskRegistry: protocolTaskRegistry,
+              logger: logger,
+            ),
         ],
       );
       _ownsWatchSentinel = true;
@@ -802,14 +810,7 @@ class DesktopAgentController extends BaseGetxController {
           ..[family] = allow
               ? FamilyPolicyDecision.allow
               : FamilyPolicyDecision.block;
-    final updated = HostPolicy(
-      schemaVersion: current.schemaVersion,
-      families: nextFamilies,
-      apps: current.apps,
-      urlDomains: current.urlDomains,
-      workflows: current.workflows,
-      players: current.players,
-    );
+    final updated = current.copyWith(families: nextFamilies);
     await policyStore.savePolicy(updated);
   }
 
@@ -856,14 +857,7 @@ class DesktopAgentController extends BaseGetxController {
         ...current.apps.where((a) => a.id != validId),
         entry,
       ];
-      final updated = HostPolicy(
-        schemaVersion: current.schemaVersion,
-        families: current.families,
-        apps: nextApps,
-        urlDomains: current.urlDomains,
-        workflows: current.workflows,
-        players: current.players,
-      );
+      final updated = current.copyWith(apps: nextApps);
       await policyStore.savePolicy(updated);
       return true;
     } catch (_) {
@@ -875,14 +869,7 @@ class DesktopAgentController extends BaseGetxController {
     final current = activePolicy.value;
     if (current == null) return;
     final nextApps = current.apps.where((a) => a.id != appId).toList();
-    final updated = HostPolicy(
-      schemaVersion: current.schemaVersion,
-      families: current.families,
-      apps: nextApps,
-      urlDomains: current.urlDomains,
-      workflows: current.workflows,
-      players: current.players,
-    );
+    final updated = current.copyWith(apps: nextApps);
     await policyStore.savePolicy(updated);
   }
 
@@ -898,14 +885,7 @@ class DesktopAgentController extends BaseGetxController {
     if (clean.isEmpty || current.urlDomains.contains(clean)) return false;
     try {
       final nextDomains = <String>[...current.urlDomains, clean];
-      final updated = HostPolicy(
-        schemaVersion: current.schemaVersion,
-        families: current.families,
-        apps: current.apps,
-        urlDomains: nextDomains,
-        workflows: current.workflows,
-        players: current.players,
-      );
+      final updated = current.copyWith(urlDomains: nextDomains);
       await policyStore.savePolicy(updated);
       return true;
     } catch (_) {
@@ -917,14 +897,7 @@ class DesktopAgentController extends BaseGetxController {
     final current = activePolicy.value;
     if (current == null) return;
     final nextDomains = current.urlDomains.where((d) => d != domain).toList();
-    final updated = HostPolicy(
-      schemaVersion: current.schemaVersion,
-      families: current.families,
-      apps: current.apps,
-      urlDomains: nextDomains,
-      workflows: current.workflows,
-      players: current.players,
-    );
+    final updated = current.copyWith(urlDomains: nextDomains);
     await policyStore.savePolicy(updated);
   }
 

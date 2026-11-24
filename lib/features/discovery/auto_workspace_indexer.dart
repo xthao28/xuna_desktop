@@ -23,6 +23,10 @@ class DiscoveredWorkspace {
 }
 
 /// Content-free Git status summary for a workspace (`UDC-11` S11.2).
+///
+/// [changedFiles] contains bounded, sanitized repository-relative filenames
+/// (never absolute host paths or file contents) so post-wake verification
+/// can check concrete deliverables honestly under Rule H1.
 class GitSummarySnapshot {
   const GitSummarySnapshot({
     required this.workspace,
@@ -30,6 +34,7 @@ class GitSummarySnapshot {
     required this.clean,
     required this.modifiedCount,
     required this.untrackedCount,
+    this.changedFiles = const <String>[],
   });
 
   final String workspace;
@@ -37,6 +42,7 @@ class GitSummarySnapshot {
   final bool clean;
   final int modifiedCount;
   final int untrackedCount;
+  final List<String> changedFiles;
 
   Map<String, Object?> toStructuredContent() => <String, Object?>{
     'workspace': workspace,
@@ -44,6 +50,7 @@ class GitSummarySnapshot {
     'clean': clean,
     'modifiedCount': modifiedCount,
     'untrackedCount': untrackedCount,
+    if (changedFiles.isNotEmpty) 'changedFiles': changedFiles,
   };
 }
 
@@ -116,7 +123,8 @@ class AutoWorkspaceIndexer {
        _customIdeStoragePaths = customIdeStoragePaths ?? const <String>[],
        _scanDefaultLocations = scanDefaultLocations,
        _gitRunner = gitRunner ?? _defaultGitRunner,
-       _agentLauncher = agentLauncher ?? _defaultAgentLauncher;
+       _agentLauncher = agentLauncher ?? _defaultAgentLauncher,
+       _usesDefaultLauncher = agentLauncher == null;
 
   final List<DiscoveredWorkspace> _seedWorkspaces;
   final List<String> _customScanRoots;
@@ -125,6 +133,10 @@ class AutoWorkspaceIndexer {
   final bool _scanDefaultLocations;
   final GitProcessRunner _gitRunner;
   final AgentProcessLauncher _agentLauncher;
+  final bool _usesDefaultLauncher;
+
+  /// True when using the production OS launcher rather than an injected test fake.
+  bool get usesDefaultLauncher => _usesDefaultLauncher;
 
   List<DiscoveredWorkspace>? _cachedWorkspaces;
 
@@ -247,12 +259,7 @@ end tell
 
     // 2. IDE Agents (`antigravity`, `cursor`, `vscode`, or any discovered IDE):
     // Step A: Open the exact workspace folder in the target IDE.
-    final ideDisplayNames = <String, String>{
-      'antigravity': 'Antigravity',
-      'cursor': 'Cursor',
-      'vscode': 'Visual Studio Code',
-    };
-    final ideLabel = ideDisplayNames[plan.agent] ?? plan.agent;
+    final ideLabel = resolveMacIdeAppName(plan.agent, plan.executable);
     if (Platform.isMacOS) {
       var opened = false;
       if (plan.executable.endsWith('.app')) {
@@ -264,9 +271,10 @@ end tell
         opened = res.exitCode == 0;
       } else {
         try {
+          final cliArgs = _macIdeCliArguments(plan.executable, plan.arguments);
           final res = await Process.run(
             plan.executable,
-            plan.arguments,
+            cliArgs,
             workingDirectory: plan.workingDirectory,
             environment: cleanEnv,
           ).timeout(const Duration(seconds: 4));
@@ -554,14 +562,71 @@ end tell
     }
   }
 
+  /// Resolves the macOS application display name for an IDE launcher, preferring
+  /// `'Antigravity IDE'` whenever [executable] targets `Antigravity IDE.app` or
+  /// its `antigravity-ide` CLI instead of the standalone `Antigravity.app`.
+  static String resolveMacIdeAppName(String agent, String executable) {
+    final lowerExe = executable.trim().toLowerCase();
+    if (agent == 'antigravity') {
+      if (lowerExe.contains('antigravity ide.app') ||
+          lowerExe.endsWith('/antigravity-ide') ||
+          lowerExe == 'antigravity-ide') {
+        return 'Antigravity IDE';
+      }
+      return 'Antigravity';
+    }
+    const ideDisplayNames = <String, String>{
+      'cursor': 'Cursor',
+      'vscode': 'Visual Studio Code',
+    };
+    return ideDisplayNames[agent] ?? agent;
+  }
+
+  static List<String> _macIdeCliArguments(
+    String executable,
+    List<String> baseArgs,
+  ) {
+    // Pass workspace folder directly so Electron IDEs reuse an existing window
+    // already open on that folder and open a new window when it is not yet open.
+    return baseArgs;
+  }
+
+  static String? _sanitizeRelativeGitPath(String rawPath) {
+    var path = rawPath.trim();
+    if (path.isEmpty) return null;
+    // Handle rename entries `old -> new` by keeping the destination path.
+    final arrowIdx = path.indexOf(' -> ');
+    if (arrowIdx >= 0) {
+      path = path.substring(arrowIdx + 4).trim();
+    }
+    if (path.length >= 2 && path.startsWith('"') && path.endsWith('"')) {
+      path = path.substring(1, path.length - 1);
+    }
+    path = path.replaceAll(r'\', '/').trim();
+    if (path.isEmpty ||
+        path.startsWith('/') ||
+        path.startsWith('~') ||
+        RegExp(r'^[a-zA-Z]:').hasMatch(path)) {
+      return null;
+    }
+    final segments = path.split('/');
+    if (segments.any((s) => s == '..')) {
+      return null;
+    }
+    final redacted = redactSensitiveSelectionText(path, maxChars: 120).text;
+    return redacted.isEmpty ? null : redacted;
+  }
+
   /// Parses `git status --porcelain -b` output into a content-free [GitSummarySnapshot].
   static GitSummarySnapshot parseGitPorcelainStatus(
     String workspaceAlias,
     String rawOutput,
   ) {
+    const maxChangedFiles = 25;
     var branch = 'HEAD';
     var modified = 0;
     var untracked = 0;
+    final changedFiles = <String>[];
     final lines = const LineSplitter().convert(rawOutput);
     for (final line in lines) {
       if (line.startsWith('## ')) {
@@ -577,8 +642,16 @@ end tell
         }
       } else if (line.startsWith('?? ')) {
         untracked++;
+        if (changedFiles.length < maxChangedFiles) {
+          final rel = _sanitizeRelativeGitPath(line.substring(3));
+          if (rel != null) changedFiles.add(rel);
+        }
       } else if (line.trim().isNotEmpty) {
         modified++;
+        if (changedFiles.length < maxChangedFiles && line.length > 3) {
+          final rel = _sanitizeRelativeGitPath(line.substring(3));
+          if (rel != null) changedFiles.add(rel);
+        }
       }
     }
     return GitSummarySnapshot(
@@ -587,6 +660,7 @@ end tell
       clean: modified == 0 && untracked == 0,
       modifiedCount: modified,
       untrackedCount: untracked,
+      changedFiles: List<String>.unmodifiable(changedFiles),
     );
   }
 
@@ -643,6 +717,7 @@ end tell
     required String executable,
     bool resumeLast = true,
     String? prompt,
+    bool deliverPromptInLauncher = true,
   }) async {
     final cleanPrompt = (prompt ?? '').trim();
     if (!isSafeAgentPrompt(cleanPrompt)) {
@@ -667,7 +742,7 @@ end tell
       arguments: args,
       workingDirectory: workspace.path,
       resumed: resumeLast,
-      promptSent: hasPrompt,
+      promptSent: hasPrompt && deliverPromptInLauncher,
       promptText: cleanPrompt,
     );
     await _agentLauncher(plan);

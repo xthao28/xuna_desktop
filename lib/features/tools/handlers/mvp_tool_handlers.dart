@@ -220,7 +220,10 @@ class AppLaunchTool extends HostToolHandler {
         ? await context.workspaceIndexer.resolveHomeOpenTarget(rawOpenTarget)
         : null;
 
-    final configured = context.evaluation.app;
+    final requestedId = context.arguments['id'] as String? ?? '';
+    final configured =
+        context.evaluation.app ??
+        context.policy?.findConfiguredAppFuzzy(requestedId);
     if (configured != null) {
       final launchRes = await context.channel.appLaunch(
         kind: configured.kind,
@@ -248,7 +251,6 @@ class AppLaunchTool extends HostToolHandler {
       );
     }
 
-    final requestedId = context.arguments['id'] as String? ?? '';
     final discovered = context.appScanner.findApp(requestedId);
     if (discovered == null) {
       throw const XunaHostChannelException(

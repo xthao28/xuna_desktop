@@ -512,7 +512,7 @@ List<ToolDescriptor> buildDevWorkspaceTools({
     ToolDescriptor(
       name: 'workspace.git_summary',
       description:
-          'Read branch name and uncommitted file counts for a local Git workspace (content-free).',
+          'Read branch name, uncommitted file counts, and bounded relative changed filenames for a local Git workspace (zero host paths or file contents).',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -538,6 +538,11 @@ List<ToolDescriptor> buildDevWorkspaceTools({
           'untrackedCount': <String, Object?>{
             'type': 'integer',
             'minimum': 0,
+          },
+          'changedFiles': <String, Object?>{
+            'type': 'array',
+            'maxItems': 25,
+            'items': <String, Object?>{'type': 'string', 'maxLength': 120},
           },
         },
         'required': <String>[
@@ -608,12 +613,14 @@ List<ToolDescriptor> buildDevWorkspaceTools({
   ];
 }
 
-/// Builds the 5 `UDC-12` Desk Co-Pilot tool descriptors (`S12.2` & `S12.3`):
+/// Builds the 7 `UDC-12` / Wave 2 Desk Co-Pilot tool descriptors (`S12.2`, `S12.3`, `AW2-M1`):
 /// - `selection.read` (`R1`, `observes: true`, family `app`)
 /// - `host.lock_screen` (`R1`, family `host`)
 /// - `workspace.watch_task` (`R1`, `observes: true`, family `app`)
 /// - `mcp.list_servers` (`R1`, family `app`)
 /// - `mcp.call` (`R2`, family `app`)
+/// - `mcp.task_result` (`R1`, `observes: true`, `reversible: true`, family `app`)
+/// - `mcp.task_cancel` (`R1`, `observes: false`, `reversible: true`, family `app`)
 List<ToolDescriptor> buildDeskCopilotTools({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
 }) {
@@ -718,7 +725,7 @@ List<ToolDescriptor> buildDeskCopilotTools({
     ToolDescriptor(
       name: 'mcp.list_servers',
       description:
-          'List locally configured MCP servers (names and transports only; never secrets or env vars).',
+          'List locally configured MCP and ACP protocol servers (names and transports only; never secrets or env vars).',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{},
@@ -738,12 +745,13 @@ List<ToolDescriptor> buildDeskCopilotTools({
                 },
                 'transport': <String, Object?>{
                   'type': 'string',
-                  'enum': <String>['stdio', 'http'],
+                  'enum': <String>['stdio', 'http', 'acp_stdio'],
                 },
                 'source': <String, Object?>{
                   'type': 'string',
                   'maxLength': 32,
                 },
+                'supportsAsync': <String, Object?>{'type': 'boolean'},
               },
               'required': <String>['id', 'transport', 'source'],
               'additionalProperties': false,
@@ -764,7 +772,7 @@ List<ToolDescriptor> buildDeskCopilotTools({
     ToolDescriptor(
       name: 'mcp.call',
       description:
-          'Invoke a tool on a locally discovered MCP server with owner R2 approval.',
+          'Invoke a tool on a locally discovered MCP server or protocol harness (R2 floor, R3 if configured on harness).',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{
@@ -780,6 +788,12 @@ List<ToolDescriptor> buildDeskCopilotTools({
             'type': 'string',
             'maxLength': 1000,
           },
+          'asyncMode': <String, Object?>{'type': 'boolean'},
+          'yieldMs': <String, Object?>{
+            'type': 'integer',
+            'minimum': 500,
+            'maximum': 15000,
+          },
         },
         'required': <String>['server', 'tool'],
         'additionalProperties': false,
@@ -789,7 +803,19 @@ List<ToolDescriptor> buildDeskCopilotTools({
         'properties': <String, Object?>{
           'server': <String, Object?>{'type': 'string', 'maxLength': 64},
           'tool': <String, Object?>{'type': 'string', 'maxLength': 64},
-          'summary': <String, Object?>{'type': 'string', 'maxLength': 400},
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 6144},
+          'status': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['completed', 'running'],
+          },
+          'mcpServerId': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-z0-9_.-]{1,64}$',
+          },
+          'protocolTaskId': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-zA-Z0-9_.-]{1,128}$',
+          },
         },
         'required': <String>['server', 'tool', 'summary'],
         'additionalProperties': false,
@@ -799,6 +825,96 @@ List<ToolDescriptor> buildDeskCopilotTools({
         risk: RiskTier.r2,
         observes: false,
         reversible: false,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'mcp.task_result',
+      description:
+          'Read the bounded, redacted status or completion summary of a detached MCP or ACP protocol task.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'server': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-z0-9_.-]{1,64}$',
+          },
+          'protocolTaskId': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-zA-Z0-9_.-]{1,128}$',
+          },
+        },
+        'required': <String>['server', 'protocolTaskId'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'server': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'protocolTaskId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 128,
+          },
+          'status': <String, Object?>{
+            'type': 'string',
+            'enum': <String>['running', 'completed', 'failed', 'cancelled'],
+          },
+          'progressPercent': <String, Object?>{
+            'type': 'integer',
+            'minimum': 0,
+            'maximum': 100,
+          },
+          'summary': <String, Object?>{'type': 'string', 'maxLength': 6144},
+          'errorCode': <String, Object?>{'type': 'string', 'maxLength': 64},
+        },
+        'required': <String>['server', 'protocolTaskId', 'status', 'summary'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'mcp.task_cancel',
+      description:
+          'Cancel an active detached MCP or ACP protocol task and terminate its child session.',
+      inputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'server': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-z0-9_.-]{1,64}$',
+          },
+          'protocolTaskId': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-zA-Z0-9_.-]{1,128}$',
+          },
+        },
+        'required': <String>['server', 'protocolTaskId'],
+        'additionalProperties': false,
+      },
+      outputSchema: const <String, Object?>{
+        'type': 'object',
+        'properties': <String, Object?>{
+          'server': <String, Object?>{'type': 'string', 'maxLength': 64},
+          'protocolTaskId': <String, Object?>{
+            'type': 'string',
+            'maxLength': 128,
+          },
+          'cancelled': <String, Object?>{'type': 'boolean'},
+        },
+        'required': <String>['server', 'protocolTaskId', 'cancelled'],
+        'additionalProperties': false,
+      },
+      policy: ToolPolicyMeta(
+        family: ToolFamily.app,
+        risk: RiskTier.r1,
+        observes: false,
+        reversible: true,
         permission: defaultPermission,
       ),
     ),

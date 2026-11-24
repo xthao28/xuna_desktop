@@ -1,4 +1,5 @@
 import '../schemas.dart';
+import 'security_redaction.dart';
 import 'url_domain_validator.dart';
 
 /// Family-level policy decision in `host-policy.json` (`allow` | `block`).
@@ -157,6 +158,142 @@ class WorkflowConfig {
       };
 }
 
+/// Transport protocol for an opt-in local protocol harness (`AW2-M1`).
+enum ProtocolHarnessProtocol {
+  mcpStdio('mcp_stdio'),
+  acpStdio('acp_stdio');
+
+  const ProtocolHarnessProtocol(this.wire);
+  final String wire;
+
+  static ProtocolHarnessProtocol fromWire(String value) => switch (value) {
+        'mcp_stdio' => ProtocolHarnessProtocol.mcpStdio,
+        'acp_stdio' => ProtocolHarnessProtocol.acpStdio,
+        _ => throw FormatException('Unknown ProtocolHarnessProtocol: $value'),
+      };
+}
+
+/// Local-only allowlisted MCP/ACP stdio harness entry in `host-policy.json`
+/// (`AW2-M1`). Never serialized to remote wire (`xuna/get_policy` /
+/// `mcp.list_servers`) with `executable` or `args`, and never writable remotely
+/// via `xuna/set_policy`.
+class ProtocolHarnessConfig {
+  ProtocolHarnessConfig({
+    required this.id,
+    required this.name,
+    required this.protocol,
+    required this.executable,
+    List<String> args = const <String>[],
+    this.risk = RiskTier.r2,
+  }) : args = List<String>.unmodifiable(args) {
+    if (!isValidShortId(id)) {
+      throw FormatException('Invalid protocol harness id: $id');
+    }
+    if (name.trim().isEmpty || name.length > 80) {
+      throw const FormatException(
+        'Protocol harness name must be 1..80 characters',
+      );
+    }
+    if (isForbiddenProtocolHarnessExecutable(executable)) {
+      throw FormatException(
+        'Protocol harness executable is forbidden: $executable',
+      );
+    }
+    if (this.args.length > 16) {
+      throw const FormatException(
+        'Protocol harness args must have 0..16 items',
+      );
+    }
+    for (final arg in this.args) {
+      if (arg.isEmpty ||
+          arg.length > 256 ||
+          hasBinaryOrInvalidSurrogates(arg) ||
+          arg.contains('\n') ||
+          arg.contains('\r')) {
+        throw const FormatException(
+          'Protocol harness args items must be 1..256 chars without control characters',
+        );
+      }
+    }
+    if (hasForbiddenHarnessInlineEvalArg(executable, this.args)) {
+      throw const FormatException(
+        'Protocol harness inline eval args are forbidden',
+      );
+    }
+    if (risk != RiskTier.r2 && risk != RiskTier.r3) {
+      throw const FormatException(
+        'Protocol harness risk in host-policy.json must be R2 or R3',
+      );
+    }
+  }
+
+  factory ProtocolHarnessConfig.fromJson(Map<String, Object?> json) {
+    _requireExactKeys(
+      json,
+      const <String>{'id', 'name', 'protocol', 'executable', 'risk'},
+      optionalKeys: const <String>{'args'},
+      context: 'ProtocolHarnessConfig',
+    );
+    final rawArgs = json['args'];
+    final parsedArgs = <String>[];
+    if (rawArgs != null) {
+      if (rawArgs is! List) {
+        throw const FormatException(
+          'Protocol harness "args" must be a list of strings',
+        );
+      }
+      for (final item in rawArgs) {
+        if (item is! String) {
+          throw const FormatException(
+            'Protocol harness "args" items must be strings',
+          );
+        }
+        parsedArgs.add(item);
+      }
+    }
+    return ProtocolHarnessConfig(
+      id: _requireString(json, 'id'),
+      name: _requireString(json, 'name'),
+      protocol: ProtocolHarnessProtocol.fromWire(
+        _requireString(json, 'protocol'),
+      ),
+      executable: _requireString(json, 'executable'),
+      args: parsedArgs,
+      risk: RiskTier.fromWire(_requireString(json, 'risk')),
+    );
+  }
+
+  final String id;
+  final String name;
+  final ProtocolHarnessProtocol protocol;
+  final String executable;
+  final List<String> args;
+  final RiskTier risk;
+
+  String get mcpListTransport => switch (protocol) {
+        ProtocolHarnessProtocol.mcpStdio => 'stdio',
+        ProtocolHarnessProtocol.acpStdio => 'acp_stdio',
+      };
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'id': id,
+        'name': name,
+        'protocol': protocol.wire,
+        'executable': executable,
+        'args': args,
+        'risk': risk.wire,
+      };
+
+  /// Sanitized wire projection omitting `executable`, `args`, `workingDir`, and
+  /// `env`.
+  Map<String, Object?> toSanitizedWireJson() => <String, Object?>{
+        'id': id,
+        'name': name,
+        'protocol': protocol.wire,
+        'risk': risk.wire,
+      };
+}
+
 /// Trust preset governing autonomous desktop behavior (Wave A R3 / Feature F8).
 enum TrustPreset {
   strict('strict'),
@@ -186,9 +323,21 @@ class HostPolicy {
     required this.players,
     this.denyApps = const <String>[],
     this.denyDomains = const <String>[],
-  }) {
+    List<ProtocolHarnessConfig> protocolHarnesses =
+        const <ProtocolHarnessConfig>[],
+  }) : protocolHarnesses = List<ProtocolHarnessConfig>.unmodifiable(
+          protocolHarnesses,
+        ) {
     if (schemaVersion != 1) {
       throw FormatException('Unsupported policy schemaVersion: $schemaVersion');
+    }
+    final seenHarnesses = <String>{};
+    for (final harness in this.protocolHarnesses) {
+      if (!seenHarnesses.add(harness.id)) {
+        throw FormatException(
+          'Duplicate protocol harness id in policy: ${harness.id}',
+        );
+      }
     }
   }
 
@@ -203,7 +352,12 @@ class HostPolicy {
         'workflows',
         'players',
       },
-      optionalKeys: const <String>{'trustPreset', 'denyApps', 'denyDomains'},
+      optionalKeys: const <String>{
+        'trustPreset',
+        'denyApps',
+        'denyDomains',
+        'protocolHarnesses',
+      },
       context: 'HostPolicy',
     );
     if (json['schemaVersion'] != 1) {
@@ -254,7 +408,8 @@ class HostPolicy {
     final seenWorkflows = <String>{};
     final workflows = <WorkflowConfig>[];
     for (final item in workflowsRaw) {
-      final wf = WorkflowConfig.fromJson(castPolicyObjectMap(item, 'workflows'));
+      final wf =
+          WorkflowConfig.fromJson(castPolicyObjectMap(item, 'workflows'));
       if (!seenWorkflows.add(wf.id)) {
         throw FormatException('Duplicate workflow id in policy: ${wf.id}');
       }
@@ -273,9 +428,13 @@ class HostPolicy {
     final denyAppsRaw = json['denyApps'];
     final denyApps = <String>[];
     if (denyAppsRaw != null) {
-      if (denyAppsRaw is! List) throw const FormatException('denyApps must be a list');
+      if (denyAppsRaw is! List) {
+        throw const FormatException('denyApps must be a list');
+      }
       for (final item in denyAppsRaw) {
-        if (item is! String) throw const FormatException('denyApps items must be strings');
+        if (item is! String) {
+          throw const FormatException('denyApps items must be strings');
+        }
         denyApps.add(item);
       }
     }
@@ -294,6 +453,26 @@ class HostPolicy {
       }
     }
 
+    final harnessesRaw = json['protocolHarnesses'];
+    final seenHarnesses = <String>{};
+    final protocolHarnesses = <ProtocolHarnessConfig>[];
+    if (harnessesRaw != null) {
+      if (harnessesRaw is! List) {
+        throw const FormatException('protocolHarnesses must be a list');
+      }
+      for (final item in harnessesRaw) {
+        final harness = ProtocolHarnessConfig.fromJson(
+          castPolicyObjectMap(item, 'protocolHarnesses'),
+        );
+        if (!seenHarnesses.add(harness.id)) {
+          throw FormatException(
+            'Duplicate protocol harness id in policy: ${harness.id}',
+          );
+        }
+        protocolHarnesses.add(harness);
+      }
+    }
+
     return HostPolicy(
       schemaVersion: 1,
       trustPreset: trustPreset,
@@ -304,6 +483,7 @@ class HostPolicy {
       players: List.unmodifiable(players),
       denyApps: List.unmodifiable(denyApps),
       denyDomains: List.unmodifiable(denyDomains),
+      protocolHarnesses: List.unmodifiable(protocolHarnesses),
     );
   }
 
@@ -316,6 +496,7 @@ class HostPolicy {
   final List<String> players;
   final List<String> denyApps;
   final List<String> denyDomains;
+  final List<ProtocolHarnessConfig> protocolHarnesses;
 
   bool isFamilyAllowed(ToolFamily family) {
     if (family == ToolFamily.host) {
@@ -329,6 +510,44 @@ class HostPolicy {
       if (app.id == id) return app;
     }
     return null;
+  }
+
+  /// Resolves an owner-allowlisted app by exact ID/name or unique token-prefix
+  /// match (e.g. `"antigravity"` -> allowlisted `"antigravity_ide"`). Returns
+  /// `null` when ambiguous (`>= 2` matches, Rule H3) so zero-config discovery
+  /// does not override an explicitly configured app with a different bundle.
+  AllowedAppConfig? findConfiguredAppFuzzy(String query) {
+    final clean = query.trim().toLowerCase();
+    if (clean.isEmpty) return null;
+    final norm = clean
+        .replaceAll(RegExp(r'\.(app|exe|lnk|cmd)$'), '')
+        .replaceAll(RegExp(r'[^a-z0-9_.-]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    if (norm.isEmpty) return null;
+
+    for (final app in apps) {
+      if (app.id.toLowerCase() == norm ||
+          app.name.trim().toLowerCase() == clean) {
+        return app;
+      }
+    }
+
+    final prefixMatches = <AllowedAppConfig>[];
+    for (final app in apps) {
+      final idLower = app.id.toLowerCase();
+      final nameLower = app.name.trim().toLowerCase();
+      final idBoundary = idLower.startsWith('${norm}_') ||
+          idLower.startsWith('$norm-') ||
+          idLower.startsWith('$norm.');
+      final nameBoundary = nameLower.startsWith('$clean ') ||
+          nameLower.startsWith('$clean-') ||
+          nameLower.startsWith('${clean}_');
+      if (idBoundary || nameBoundary) {
+        prefixMatches.add(app);
+      }
+    }
+    return prefixMatches.length == 1 ? prefixMatches.first : null;
   }
 
   /// Returns `true` when [candidate] matches any owner-configured [denyApps]
@@ -399,6 +618,38 @@ class HostPolicy {
     return null;
   }
 
+  ProtocolHarnessConfig? findProtocolHarness(String id) {
+    for (final harness in protocolHarnesses) {
+      if (harness.id == id) return harness;
+    }
+    return null;
+  }
+
+  HostPolicy copyWith({
+    int? schemaVersion,
+    TrustPreset? trustPreset,
+    Map<ToolFamily, FamilyPolicyDecision>? families,
+    List<AllowedAppConfig>? apps,
+    List<String>? urlDomains,
+    List<WorkflowConfig>? workflows,
+    List<String>? players,
+    List<String>? denyApps,
+    List<String>? denyDomains,
+    List<ProtocolHarnessConfig>? protocolHarnesses,
+  }) =>
+      HostPolicy(
+        schemaVersion: schemaVersion ?? this.schemaVersion,
+        trustPreset: trustPreset ?? this.trustPreset,
+        families: families ?? this.families,
+        apps: apps ?? this.apps,
+        urlDomains: urlDomains ?? this.urlDomains,
+        workflows: workflows ?? this.workflows,
+        players: players ?? this.players,
+        denyApps: denyApps ?? this.denyApps,
+        denyDomains: denyDomains ?? this.denyDomains,
+        protocolHarnesses: protocolHarnesses ?? this.protocolHarnesses,
+      );
+
   Map<String, Object?> toJson() => <String, Object?>{
         'schemaVersion': schemaVersion,
         'trustPreset': trustPreset.value,
@@ -412,6 +663,7 @@ class HostPolicy {
         'players': players,
         'denyApps': denyApps,
         'denyDomains': denyDomains,
+        'protocolHarnesses': protocolHarnesses.map((h) => h.toJson()).toList(),
       };
 }
 

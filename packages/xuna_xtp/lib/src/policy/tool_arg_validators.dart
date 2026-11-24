@@ -591,7 +591,15 @@ PolicyEvaluationResult validateToolArguments({
       final server = arguments['server'];
       final tool = arguments['tool'];
       final payloadJson = arguments['payloadJson'];
-      const allowedMcpKeys = <String>{'server', 'tool', 'payloadJson'};
+      final asyncMode = arguments['asyncMode'];
+      final yieldMs = arguments['yieldMs'];
+      const allowedMcpKeys = <String>{
+        'server',
+        'tool',
+        'payloadJson',
+        'asyncMode',
+        'yieldMs',
+      };
       if (server is! String ||
           !isValidShortId(server) ||
           tool is! String ||
@@ -600,7 +608,10 @@ PolicyEvaluationResult validateToolArguments({
           (payloadJson != null &&
               (payloadJson is! String ||
                   payloadJson.length > 1000 ||
-                  !isSafeClipboardWriteText(payloadJson)))) {
+                  !isSafeClipboardWriteText(payloadJson))) ||
+          (arguments.containsKey('asyncMode') && asyncMode is! bool) ||
+          (arguments.containsKey('yieldMs') &&
+              (yieldMs is! int || yieldMs < 500 || yieldMs > 15000))) {
         return const PolicyEvaluationResult(
           allowed: false,
           status: XtpStatus.invalidArgs,
@@ -608,7 +619,28 @@ PolicyEvaluationResult validateToolArguments({
           errorCode: 'schema_mismatch',
         );
       }
-      effectiveRisk = RiskTier.r2;
+      final harness = activePolicy.findProtocolHarness(server);
+      effectiveRisk = harness != null && harness.risk > RiskTier.r2
+          ? harness.risk
+          : RiskTier.r2;
+    case 'mcp.task_result':
+    case 'mcp.task_cancel':
+      final server = arguments['server'];
+      final protocolTaskId = arguments['protocolTaskId'];
+      const allowedTaskKeys = <String>{'server', 'protocolTaskId'};
+      if (arguments.keys.any((k) => !allowedTaskKeys.contains(k)) ||
+          server is! String ||
+          !isValidShortId(server) ||
+          protocolTaskId is! String ||
+          !RegExp(r'^[a-zA-Z0-9_.-]{1,128}$').hasMatch(protocolTaskId)) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
     case 'workspace.open':
       final proj = arguments['project'];
       final ide = arguments['ide'];

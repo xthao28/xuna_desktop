@@ -3,7 +3,10 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
+import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
+import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
+import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 class DisplayWakeTool extends HostToolHandler {
@@ -81,9 +84,13 @@ class WorkspaceGitSummaryTool extends HostToolHandler {
       );
     }
     final summary = await context.workspaceIndexer.readGitSummary(ws);
+    final preview = summary.changedFiles.take(5).join(', ');
+    final filesNote = preview.isEmpty
+        ? ''
+        : ' [$preview${summary.changedFiles.length > 5 ? ', …' : ''}]';
     return ToolHandlerOutput(
       text:
-          'Dự án ${summary.workspace} (nhánh ${summary.branch}, ${summary.modifiedCount + summary.untrackedCount} tệp thay đổi).',
+          'Dự án ${summary.workspace} (nhánh ${summary.branch}, ${summary.modifiedCount + summary.untrackedCount} tệp thay đổi$filesNote).',
       structuredContent: summary.toStructuredContent(),
     );
   }
@@ -94,6 +101,248 @@ class WorkspaceCodingAgentTool extends HostToolHandler {
 
   @override
   String get name => 'workspace.coding_agent';
+
+  /// Delivers [prompt] into the focused macOS IDE Agent chat composer using
+  /// native CGEvent/Accessibility calls (zero AppleScript `System Events`
+  /// Automation dependency) and verifies window title match before every input
+  /// action so keystrokes never land in a different workspace window (Rule H1/H3).
+  static Future<bool> deliverMacIdePromptNative({
+    required XunaHostChannel channel,
+    required String workspaceAlias,
+    required String ideLabel,
+    required String prompt,
+    Duration stepDelay = const Duration(milliseconds: 350),
+  }) async {
+    final aliasLower = workspaceAlias.trim().toLowerCase();
+    final ideToken = ideLabel.trim().toLowerCase().split(' ').first;
+
+    bool matchesTargetWindow(ActiveWindowContextSnapshot ctx) {
+      final appLower = ctx.appName.toLowerCase();
+      final titleLower = ctx.windowTitle.toLowerCase();
+      final appOk =
+          appLower.contains(ideToken) ||
+          (ideToken == 'visual' && appLower.contains('code'));
+      return appOk && titleLower.contains(aliasLower);
+    }
+
+    Future<bool> isTargetStillFocused() async {
+      try {
+        final ctx = await channel.readActiveWindowContext(maxChars: 120);
+        return matchesTargetWindow(ctx);
+      } catch (_) {
+        return false;
+      }
+    }
+
+    Future<void> pause([int multiplier = 1]) async {
+      if (stepDelay <= Duration.zero) return;
+      await Future<void>.delayed(stepDelay * multiplier);
+    }
+
+    var matched = false;
+    for (var i = 0; i < 12; i++) {
+      await pause();
+      if (await isTargetStillFocused()) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      return false;
+    }
+
+    // Allow Electron/IDE renderer to finish restoring focus.
+    await pause();
+
+    try {
+      await channel.clipboardWriteText(prompt);
+    } catch (_) {
+      return false;
+    }
+
+    String nodeLabel(Map<String, Object?> node) =>
+        (node['label'] ?? node['name'] ?? '').toString().toLowerCase();
+
+    String nodeRefId(Map<String, Object?> node) =>
+        (node['refId'] ?? node['id'] ?? '').toString().trim();
+
+    bool isChatComposerNode(Map<String, Object?> node) {
+      if (node['editable'] != true) return false;
+      final label = nodeLabel(node);
+      // Never match bare code-editor textareas; require an explicit chat/prompt
+      // input label so pasted prompts cannot overwrite source files (Rule H1/H3).
+      return label.contains('message input') ||
+          label.contains('chat input') ||
+          label.contains('ask anything') ||
+          label.contains('prompt');
+    }
+
+    bool isToggleAgentControl(Map<String, Object?> node) {
+      final label = nodeLabel(node);
+      return label.contains('toggle agent') ||
+          label.contains('toggle secondary side bar') ||
+          label.contains('open chat');
+    }
+
+    Future<WindowUiTreeSnapshot?> readTree() async {
+      try {
+        return await channel.inspectWindowUiTree(maxNodes: 120);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    Map<String, Object?>? findComposerIn(WindowUiTreeSnapshot? tree) {
+      if (tree == null) return null;
+      for (final node in tree.nodes) {
+        if (isChatComposerNode(node)) return node;
+      }
+      return null;
+    }
+
+    Future<bool> clickPointLogical(double px, double py) async {
+      final res = await channel.invokeWindowUiControl(
+        action: 'click_point',
+        refId: 'coord',
+        valueText: '${px.toStringAsFixed(1)},${py.toStringAsFixed(1)}',
+        submit: false,
+      );
+      return res.ok;
+    }
+
+    Future<bool> clickNodeCenterOrInvoke(
+      Map<String, Object?> node,
+      WindowUiTreeSnapshot tree, {
+      bool preferInvokeRef = false,
+    }) async {
+      final refId = nodeRefId(node);
+      if (preferInvokeRef && refId.isNotEmpty) {
+        final res = await channel.invokeWindowUiControl(
+          action: 'invoke_ref',
+          refId: refId,
+          submit: false,
+        );
+        if (res.ok) return true;
+      }
+      final rawBounds = node['bounds'];
+      if (rawBounds is Map) {
+        final x = rawBounds['x'];
+        final y = rawBounds['y'];
+        final w = rawBounds['width'] ?? rawBounds['w'];
+        final h = rawBounds['height'] ?? rawBounds['h'];
+        if (x is num && y is num && w is num && h is num && w > 0 && h > 0) {
+          // Native Swift/C++ node bounds are relative to (windowX, windowY);
+          // translate to screen-absolute logical coordinates for CGEvent clicks.
+          return clickPointLogical(
+            tree.windowX + x.toDouble() + w.toDouble() / 2.0,
+            tree.windowY + y.toDouble() + h.toDouble() / 2.0,
+          );
+        }
+      }
+      if (refId.isEmpty) return false;
+      final res = await channel.invokeWindowUiControl(
+        action: 'invoke_ref',
+        refId: refId,
+        submit: false,
+      );
+      return res.ok;
+    }
+
+    var tree = await readTree();
+    var composer = findComposerIn(tree);
+
+    // 1. If the Agent composer is not yet visible in AX, click the right-hand
+    // composer region first (in case the Agent panel is already open and the
+    // Electron webview only exposes AX nodes after pointer focus), then toggle
+    // the Agent panel if still absent.
+    if (composer == null && tree != null) {
+      if (!await isTargetStillFocused()) return false;
+      await clickPointLogical(
+        tree.windowX + tree.windowWidth * 0.88,
+        tree.windowY + tree.windowHeight * 0.89,
+      );
+      await pause();
+      tree = await readTree();
+      composer = findComposerIn(tree);
+
+      if (composer == null && tree != null) {
+        if (!await isTargetStillFocused()) return false;
+        Map<String, Object?>? toggleNode;
+        for (final node in tree.nodes) {
+          if (isToggleAgentControl(node)) {
+            toggleNode = node;
+            break;
+          }
+        }
+        if (toggleNode != null) {
+          await clickNodeCenterOrInvoke(
+            toggleNode,
+            tree,
+            preferInvokeRef: true,
+          );
+          await pause(3);
+        } else {
+          final fallbackShortcut = ideToken == 'antigravity'
+              ? 'Alt+Cmd+B'
+              : 'Cmd+L';
+          await channel.invokeWindowUiControl(
+            action: 'shortcut',
+            refId: 'shortcut:$fallbackShortcut',
+            valueText: fallbackShortcut,
+            submit: false,
+          );
+          await pause(2);
+        }
+        tree = await readTree();
+        composer = findComposerIn(tree);
+        if (composer == null && tree != null) {
+          if (!await isTargetStillFocused()) return false;
+          await clickPointLogical(
+            tree.windowX + tree.windowWidth * 0.88,
+            tree.windowY + tree.windowHeight * 0.89,
+          );
+          await pause();
+          tree = await readTree();
+          composer = findComposerIn(tree);
+        }
+      }
+    }
+
+    // Rule H1/H3 safety gate: refuse to paste unless an explicit chat composer
+    // textarea is verified inside the still-focused target workspace window.
+    if (composer == null || tree == null || !await isTargetStillFocused()) {
+      return false;
+    }
+
+    await clickNodeCenterOrInvoke(composer, tree);
+    await pause();
+    if (!await isTargetStillFocused()) {
+      return false;
+    }
+
+    // 2. Paste UTF-8 prompt via native CGEvent Cmd+V and submit via Enter.
+    final pasteRes = await channel.invokeWindowUiControl(
+      action: 'shortcut',
+      refId: 'shortcut:Cmd+V',
+      valueText: 'Cmd+V',
+      submit: false,
+    );
+    if (!pasteRes.ok) {
+      return false;
+    }
+    await pause();
+    if (!await isTargetStillFocused()) {
+      return false;
+    }
+
+    final enterRes = await channel.invokeWindowUiControl(
+      action: 'shortcut',
+      refId: 'shortcut:Enter',
+      valueText: 'Enter',
+      submit: false,
+    );
+    return enterRes.ok;
+  }
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
@@ -115,21 +364,50 @@ class WorkspaceCodingAgentTool extends HostToolHandler {
         errorCode: 'coding_agent_not_found',
       );
     }
+    final cleanPrompt = (prompt ?? '').trim();
+    final isCliAgent =
+        resolvedAgent.agent == 'claude_code' || resolvedAgent.agent == 'codex';
+    final useNativeMacDelivery =
+        Platform.isMacOS &&
+        cleanPrompt.isNotEmpty &&
+        !isCliAgent &&
+        context.workspaceIndexer.usesDefaultLauncher;
+
     final plan = await context.workspaceIndexer.launchCodingAgent(
       workspace: ws,
       agent: resolvedAgent.agent,
       executable: resolvedAgent.executable,
       resumeLast: resumeLast,
       prompt: prompt,
+      deliverPromptInLauncher: !useNativeMacDelivery,
     );
+
+    var promptSent = plan.promptSent;
+    if (useNativeMacDelivery) {
+      final ideLabel = AutoWorkspaceIndexer.resolveMacIdeAppName(
+        resolvedAgent.agent,
+        resolvedAgent.executable,
+      );
+      promptSent = await deliverMacIdePromptNative(
+        channel: context.channel,
+        workspaceAlias: ws.alias,
+        ideLabel: ideLabel,
+        prompt: cleanPrompt,
+      );
+    }
+
+    final text = cleanPrompt.isEmpty
+        ? 'Đã mở ${plan.agent} tại dự án ${plan.workspace}.'
+        : promptSent
+        ? 'Đã mở ${plan.agent} tại dự án ${plan.workspace} và gửi yêu cầu tiếp tục công việc.'
+        : 'Đã mở ${plan.agent} tại dự án ${plan.workspace} nhưng chưa gửi được prompt tự động (cửa sổ đích chưa ở tiền cảnh hoặc chưa sẵn sàng nhận phím).';
     return ToolHandlerOutput(
-      text:
-          'Đã mở ${plan.agent} tại dự án ${plan.workspace} và gửi yêu cầu tiếp tục công việc.',
+      text: text,
       structuredContent: <String, Object?>{
         'workspace': plan.workspace,
         'agent': plan.agent,
         'resumed': plan.resumed,
-        'promptSent': plan.promptSent,
+        'promptSent': promptSent,
       },
       toastBody: 'đã mở ${plan.agent} (${plan.workspace})',
     );
@@ -217,10 +495,20 @@ class McpListServersTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final servers = context.mcpBridge
-        .discoverServers()
-        .map((s) => s.toWireJson())
-        .toList();
+    final byId = <String, Map<String, Object?>>{
+      for (final s in context.mcpBridge.discoverServers()) s.id: s.toWireJson(),
+    };
+    final harnesses =
+        context.policy?.protocolHarnesses ?? const <ProtocolHarnessConfig>[];
+    for (final harness in harnesses) {
+      byId[harness.id] = <String, Object?>{
+        'id': harness.id,
+        'transport': harness.mcpListTransport,
+        'source': 'host_policy',
+        'supportsAsync': true,
+      };
+    }
+    final servers = byId.values.toList();
     return ToolHandlerOutput(
       text: 'Có ${servers.length} máy chủ MCP cục bộ khả dụng.',
       structuredContent: <String, Object?>{'servers': servers},
@@ -239,6 +527,76 @@ class McpCallTool extends HostToolHandler {
     final serverId = context.arguments['server'] as String;
     final toolName = context.arguments['tool'] as String;
     final payloadJson = context.arguments['payloadJson'] as String?;
+    final asyncMode = (context.arguments['asyncMode'] as bool?) ?? false;
+    final yieldMs = context.arguments['yieldMs'] as int?;
+
+    final harness = context.policy?.findProtocolHarness(serverId);
+    if (harness != null) {
+      if (isForbiddenProtocolHarnessExecutable(harness.executable) ||
+          hasForbiddenHarnessInlineEvalArg(harness.executable, harness.args)) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'policy_blocked',
+        );
+      }
+      if (harness.protocol == ProtocolHarnessProtocol.acpStdio) {
+        final adapter = context.acpHarnessAdapter;
+        if (adapter == null) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.unsupported,
+            errorCode: 'protocol_harness_disabled',
+          );
+        }
+        try {
+          final outcome = await adapter.runPrompt(
+            harness: harness,
+            toolName: toolName,
+            payloadJson: payloadJson,
+            asyncMode: asyncMode,
+            yieldMs: yieldMs,
+          );
+          return _buildOutcome(
+            serverId: serverId,
+            toolName: toolName,
+            status: outcome.status,
+            summary: outcome.summary,
+            mcpServerId: outcome.mcpServerId,
+            protocolTaskId: outcome.protocolTaskId,
+          );
+        } on FormatException {
+          throw const XunaHostChannelException(
+            status: XtpStatus.invalidArgs,
+            errorCode: 'schema_mismatch',
+          );
+        }
+      }
+
+      final harnessServer = AutoMcpBridge.buildServerFromHarness(harness);
+      try {
+        final outcome = await context.mcpBridge.callToolAsync(
+          server: harnessServer,
+          toolName: toolName,
+          payloadJson: payloadJson,
+          asyncMode: asyncMode,
+          yieldMs: yieldMs,
+          taskRegistry: context.protocolTaskRegistry,
+        );
+        return _buildOutcome(
+          serverId: serverId,
+          toolName: toolName,
+          status: outcome.status,
+          summary: outcome.summary,
+          mcpServerId: outcome.mcpServerId,
+          protocolTaskId: outcome.protocolTaskId,
+        );
+      } on FormatException {
+        throw const XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'schema_mismatch',
+        );
+      }
+    }
+
     final server = context.mcpBridge.findServer(serverId);
     if (server == null) {
       throw const XunaHostChannelException(
@@ -246,12 +604,22 @@ class McpCallTool extends HostToolHandler {
         errorCode: 'mcp_server_not_found',
       );
     }
-    final String summary;
     try {
-      summary = await context.mcpBridge.callTool(
+      final outcome = await context.mcpBridge.callToolAsync(
         server: server,
         toolName: toolName,
         payloadJson: payloadJson,
+        asyncMode: asyncMode,
+        yieldMs: yieldMs,
+        taskRegistry: context.protocolTaskRegistry,
+      );
+      return _buildOutcome(
+        serverId: server.id,
+        toolName: toolName,
+        status: outcome.status,
+        summary: outcome.summary,
+        mcpServerId: outcome.mcpServerId,
+        protocolTaskId: outcome.protocolTaskId,
       );
     } on FormatException {
       throw const XunaHostChannelException(
@@ -259,14 +627,123 @@ class McpCallTool extends HostToolHandler {
         errorCode: 'schema_mismatch',
       );
     }
+  }
+
+  static ToolHandlerOutput _buildOutcome({
+    required String serverId,
+    required String toolName,
+    required String status,
+    required String summary,
+    String? mcpServerId,
+    String? protocolTaskId,
+  }) {
+    if (status == 'running') {
+      return ToolHandlerOutput(
+        text: 'Đang chạy tác vụ $serverId.$toolName ($protocolTaskId).',
+        structuredContent: <String, Object?>{
+          'server': serverId,
+          'tool': toolName,
+          'summary': summary,
+          'status': 'running',
+          'mcpServerId': mcpServerId!,
+          'protocolTaskId': protocolTaskId!,
+        },
+        toastBody: 'đang chạy $serverId.$toolName',
+      );
+    }
     return ToolHandlerOutput(
       text: summary,
       structuredContent: <String, Object?>{
-        'server': server.id,
+        'server': serverId,
         'tool': toolName,
         'summary': summary,
+        'status': 'completed',
       },
-      toastBody: 'đã gọi MCP ${server.id}.$toolName',
+      toastBody: 'đã gọi MCP $serverId.$toolName',
+    );
+  }
+}
+
+class McpTaskResultTool extends HostToolHandler {
+  const McpTaskResultTool();
+
+  @override
+  String get name => 'mcp.task_result';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final serverId = context.arguments['server'] as String;
+    final protocolTaskId = context.arguments['protocolTaskId'] as String;
+    final registry = context.protocolTaskRegistry;
+    if (registry == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'protocol_task_not_found',
+      );
+    }
+    final handle = registry.lookup(serverId, protocolTaskId);
+    if (handle == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'protocol_task_not_found',
+      );
+    }
+    final summary =
+        handle.redactedSummary ??
+        (handle.status == ProtocolTaskStatus.running
+            ? 'Task is running (progress updates: ${handle.progressCount}).'
+            : '');
+    return ToolHandlerOutput(
+      text: summary.isNotEmpty
+          ? summary
+          : 'Trạng thái tác vụ $serverId ($protocolTaskId): ${handle.status.wire}.',
+      structuredContent: <String, Object?>{
+        'server': handle.serverId,
+        'protocolTaskId': handle.taskId,
+        'status': handle.status.wire,
+        if (handle.progressPercent != null)
+          'progressPercent': handle.progressPercent!,
+        'summary': summary,
+        if (handle.errorCode != null) 'errorCode': handle.errorCode!,
+      },
+    );
+  }
+}
+
+class McpTaskCancelTool extends HostToolHandler {
+  const McpTaskCancelTool();
+
+  @override
+  String get name => 'mcp.task_cancel';
+
+  @override
+  Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
+    final serverId = context.arguments['server'] as String;
+    final protocolTaskId = context.arguments['protocolTaskId'] as String;
+    final registry = context.protocolTaskRegistry;
+    if (registry == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'protocol_task_not_found',
+      );
+    }
+    final existing = registry.lookup(serverId, protocolTaskId);
+    if (existing == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'protocol_task_not_found',
+      );
+    }
+    final cancelled = await registry.cancelTask(serverId, protocolTaskId);
+    return ToolHandlerOutput(
+      text: cancelled
+          ? 'Đã hủy tác vụ $serverId ($protocolTaskId).'
+          : 'Tác vụ $serverId ($protocolTaskId) đã kết thúc trước đó.',
+      structuredContent: <String, Object?>{
+        'server': serverId,
+        'protocolTaskId': protocolTaskId,
+        'cancelled': cancelled,
+      },
     );
   }
 }
@@ -542,6 +1019,8 @@ const List<HostToolHandler> defaultWorkspaceCopilotToolHandlers =
       WorkspaceWatchTaskTool(),
       McpListServersTool(),
       McpCallTool(),
+      McpTaskResultTool(),
+      McpTaskCancelTool(),
       WindowActiveContextTool(),
       BrowserReadPageTool(),
       BeamTransferTool(),

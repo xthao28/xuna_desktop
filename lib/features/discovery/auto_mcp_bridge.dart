@@ -3,13 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
+import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Metadata for a locally configured MCP server discovered on the host (`UDC-12` S12.3).
 ///
 /// Security invariant: `command`, `args`, `url`, and `env` secrets are kept strictly
 /// private inside the host process and NEVER serialized to the wire. Only [id],
-/// [transport], and [source] are exposed via `mcp.list_servers`.
+/// [transport], [source], and optional [supportsAsync] are exposed via `mcp.list_servers`.
 class DiscoveredMcpServer {
   const DiscoveredMcpServer({
     required this.id,
@@ -18,27 +19,71 @@ class DiscoveredMcpServer {
     this.command,
     this.args = const <String>[],
     this.url,
+    this.supportsAsync,
   });
 
   final String id;
   final String transport; // 'stdio' | 'http'
-  final String source; // 'claude_code' | 'claude_desktop' | 'cursor' | 'antigravity' | 'seed'
+  final String
+  source; // 'claude_code' | 'claude_desktop' | 'cursor' | 'antigravity' | 'seed' | 'host_policy'
   final String? command;
   final List<String> args;
   final String? url;
+  final bool? supportsAsync;
 
   Map<String, Object?> toWireJson() => <String, Object?>{
-        'id': id,
-        'transport': transport,
-        'source': source,
-      };
+    'id': id,
+    'transport': transport,
+    'source': source,
+    if (supportsAsync != null) 'supportsAsync': supportsAsync,
+  };
 }
 
-typedef McpToolInvoker = Future<String> Function(
-  DiscoveredMcpServer server,
-  String toolName,
-  Map<String, Object?> payload,
-);
+/// Injectable stdio transport for [AutoMcpBridge] unit tests (`AW2-M2`).
+class McpStdioTransport {
+  const McpStdioTransport({
+    required this.stdoutLines,
+    required this.writeStdinLine,
+    required this.exitCode,
+    required this.terminate,
+  });
+
+  final Stream<String> stdoutLines;
+  final void Function(String line) writeStdinLine;
+  final Future<int> exitCode;
+  final Future<void> Function() terminate;
+}
+
+typedef McpStdioTransportFactory =
+    Future<McpStdioTransport> Function(String executable, List<String> args);
+
+/// Outcome returned by [AutoMcpBridge.callToolAsync] (`AW2-M2`).
+class McpCallOutcome {
+  const McpCallOutcome.completed({required this.summary})
+    : status = 'completed',
+      mcpServerId = null,
+      protocolTaskId = null;
+
+  const McpCallOutcome.running({
+    required this.mcpServerId,
+    required this.protocolTaskId,
+    this.summary = 'Task detached and running asynchronously.',
+  }) : status = 'running';
+
+  final String status;
+  final String summary;
+  final String? mcpServerId;
+  final String? protocolTaskId;
+
+  bool get isRunning => status == 'running';
+}
+
+typedef McpToolInvoker =
+    Future<String> Function(
+      DiscoveredMcpServer server,
+      String toolName,
+      Map<String, Object?> payload,
+    );
 
 /// Zero-config Local MCP Server Bridge (`UDC-12` S12.3):
 /// Scans `~/.claude.json`, Claude Desktop `claude_desktop_config.json`, Cursor
@@ -50,15 +95,40 @@ class AutoMcpBridge {
     List<String>? customConfigPaths,
     bool scanDefaultLocations = true,
     McpToolInvoker? invoker,
-  })  : _seedServers = seedServers ?? const <DiscoveredMcpServer>[],
-        _customConfigPaths = customConfigPaths ?? const <String>[],
-        _scanDefaultLocations = scanDefaultLocations,
-        _invoker = invoker;
+    ProtocolTaskRegistry? taskRegistry,
+    McpStdioTransportFactory? stdioTransportFactory,
+    DateTime Function()? clock,
+  }) : _seedServers = seedServers ?? const <DiscoveredMcpServer>[],
+       _customConfigPaths = customConfigPaths ?? const <String>[],
+       _scanDefaultLocations = scanDefaultLocations,
+       _invoker = invoker,
+       _taskRegistry = taskRegistry,
+       _stdioTransportFactory = stdioTransportFactory,
+       _clock = clock ?? _defaultUtcNow;
+
+  static DateTime _defaultUtcNow() => DateTime.now().toUtc();
 
   final List<DiscoveredMcpServer> _seedServers;
   final List<String> _customConfigPaths;
   final bool _scanDefaultLocations;
   final McpToolInvoker? _invoker;
+  final ProtocolTaskRegistry? _taskRegistry;
+  final McpStdioTransportFactory? _stdioTransportFactory;
+  final DateTime Function() _clock;
+  int _taskSeq = 0;
+
+  /// Builds a local-only [DiscoveredMcpServer] from an allowlisted
+  /// [ProtocolHarnessConfig]. Never serialized directly to the wire.
+  static DiscoveredMcpServer buildServerFromHarness(
+    ProtocolHarnessConfig harness,
+  ) => DiscoveredMcpServer(
+    id: harness.id,
+    transport: harness.mcpListTransport,
+    source: 'host_policy',
+    command: harness.executable,
+    args: harness.args,
+    supportsAsync: true,
+  );
 
   List<DiscoveredMcpServer>? _cached;
 
@@ -131,7 +201,10 @@ class AutoMcpBridge {
     if (bytes.length <= maxToolOutputBytes) {
       return raw;
     }
-    return utf8.decode(bytes.sublist(0, maxToolOutputBytes), allowMalformed: true);
+    return utf8.decode(
+      bytes.sublist(0, maxToolOutputBytes),
+      allowMalformed: true,
+    );
   }
 
   /// Calls [toolName] on [server] with [payloadJson] and redacts any sensitive tokens
@@ -158,8 +231,299 @@ class AutoMcpBridge {
     return redactBrowserSnapshot(bounded, maxBytes: maxToolOutputBytes).text;
   }
 
+  /// Calls [toolName] on [server] with optional [asyncMode] / [yieldMs] detach
+  /// into [ProtocolTaskRegistry] (`AW2-M2`).
+  Future<McpCallOutcome> callToolAsync({
+    required DiscoveredMcpServer server,
+    required String toolName,
+    String? payloadJson,
+    bool asyncMode = false,
+    int? yieldMs,
+    ProtocolTaskRegistry? taskRegistry,
+  }) async {
+    if (!asyncMode && yieldMs == null) {
+      final summary = await callTool(
+        server: server,
+        toolName: toolName,
+        payloadJson: payloadJson,
+      );
+      return McpCallOutcome.completed(summary: summary);
+    }
+
+    Map<String, Object?> payload = const <String, Object?>{};
+    if (payloadJson != null && payloadJson.trim().isNotEmpty) {
+      final decoded = jsonDecode(payloadJson);
+      if (decoded is! Map) {
+        throw const FormatException('payloadJson must decode to a JSON object');
+      }
+      payload = decoded.map((k, v) => MapEntry(k.toString(), v));
+    }
+
+    if (server.transport != 'stdio') {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'watch_unsupported',
+      );
+    }
+
+    final command = server.command?.trim();
+    if (command == null || command.isEmpty) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'mcp_server_not_configured',
+      );
+    }
+    if (isHardDeniedAppOrProcess(command) ||
+        isForbiddenProtocolHarnessExecutable(command) ||
+        hasForbiddenHarnessInlineEvalArg(command, server.args)) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.denied,
+        errorCode: 'policy_blocked',
+      );
+    }
+
+    final registry = taskRegistry ?? _taskRegistry;
+    if (registry == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.unsupported,
+        errorCode: 'watch_unsupported',
+      );
+    }
+    if (asyncMode &&
+        registry.activeCount >= ProtocolTaskRegistry.maxConcurrentTasks) {
+      throw const ProtocolTaskLimitException();
+    }
+
+    final _McpStdioSession session;
+    try {
+      session = await _McpStdioSession.start(
+        command,
+        server.args,
+        transportFactory: _stdioTransportFactory,
+      );
+    } catch (_) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_connection_failed',
+      );
+    }
+
+    try {
+      final initResp = await session
+          .request(
+            id: 1,
+            method: 'initialize',
+            params: <String, Object?>{
+              'protocolVersion': '2024-11-05',
+              'capabilities': <String, Object?>{},
+              'clientInfo': <String, Object?>{
+                'name': 'xuna_desktop',
+                'version': '0.1.0',
+              },
+            },
+            timeout: const Duration(seconds: 5),
+          )
+          .catchError((_) {
+            throw const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'mcp_handshake_failed',
+            );
+          });
+      if (initResp.containsKey('error') || initResp['result'] == null) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_handshake_failed',
+        );
+      }
+      session.notify(method: 'notifications/initialized');
+
+      final taskId =
+          'mcp_${++_taskSeq}_${_clock().toUtc().millisecondsSinceEpoch}';
+      var detached = false;
+      session.onNotification = (method, params) {
+        if (method != 'notifications/progress' || !detached) return;
+        final token = params['progressToken'];
+        if (token != null && token != taskId) return;
+        registry.recordProgress(
+          taskId,
+          progressPercent: _extractProgressPercent(params),
+        );
+      };
+
+      final callFuture = session.request(
+        id: 2,
+        method: 'tools/call',
+        params: <String, Object?>{
+          'name': toolName,
+          'arguments': payload,
+          '_meta': <String, Object?>{'progressToken': taskId},
+        },
+        timeout: const Duration(minutes: 15),
+      );
+
+      if (!asyncMode && yieldMs != null) {
+        final early = await Future.any<bool>(<Future<bool>>[
+          callFuture.then((_) => true, onError: (_) => true),
+          Future<void>.delayed(
+            Duration(milliseconds: yieldMs),
+          ).then((_) => false),
+        ]);
+        if (early) {
+          final resp = await callFuture.catchError((Object error) {
+            if (error is XunaHostChannelException) throw error;
+            throw const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'mcp_tool_failed',
+            );
+          });
+          final raw = _extractStdioToolResult(resp);
+          await session.close();
+          return McpCallOutcome.completed(
+            summary: ProtocolTaskRegistry.redactSummary(raw),
+          );
+        }
+      }
+
+      Future<void> cancelAndClose() async {
+        try {
+          session.notify(
+            method: 'notifications/cancelled',
+            params: <String, Object?>{
+              'requestId': 2,
+              'reason': 'cancelled_by_caller',
+            },
+          );
+        } catch (_) {
+        } finally {
+          await session.close();
+        }
+      }
+
+      try {
+        registry.registerTask(
+          taskId: taskId,
+          serverId: server.id,
+          protocol: 'mcp_stdio',
+          cancelCallback: cancelAndClose,
+        );
+      } catch (_) {
+        unawaited(callFuture.catchError((_) => <String, Object?>{}));
+        await cancelAndClose();
+        rethrow;
+      }
+
+      detached = true;
+      unawaited(
+        callFuture.then(
+          (resp) async {
+            if (session.isClosed) return;
+            try {
+              final raw = _extractStdioToolResult(resp);
+              registry.completeTask(taskId, summary: raw);
+            } on XunaHostChannelException catch (err) {
+              registry.failTask(
+                taskId,
+                errorCode: err.errorCode,
+                summary: 'MCP tool returned an error.',
+              );
+            } catch (_) {
+              registry.failTask(
+                taskId,
+                errorCode: 'mcp_tool_failed',
+                summary: 'MCP tool returned an error.',
+              );
+            }
+            await session.close();
+          },
+          onError: (Object error) async {
+            if (session.isClosed) return;
+            if (error is _McpUnexpectedExitException) {
+              registry.markLost(
+                taskId,
+                summary: 'MCP server process exited unexpectedly.',
+              );
+            } else {
+              registry.failTask(
+                taskId,
+                errorCode: 'mcp_tool_failed',
+                summary: 'MCP tool call failed.',
+              );
+            }
+            await session.close();
+          },
+        ),
+      );
+      return McpCallOutcome.running(
+        mcpServerId: server.id,
+        protocolTaskId: taskId,
+      );
+    } on XunaHostChannelException {
+      await session.close();
+      rethrow;
+    } catch (_) {
+      await session.close();
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_tool_failed',
+      );
+    }
+  }
+
+  static int? _extractProgressPercent(Map<String, Object?> params) {
+    final direct = params['progressPercent'];
+    if (direct is num) return direct.round().clamp(0, 100);
+    final progress = params['progress'];
+    final total = params['total'];
+    if (progress is num && total is num && total > 0) {
+      return ((progress / total) * 100).round().clamp(0, 100);
+    }
+    return null;
+  }
+
+  String _extractStdioToolResult(Map<String, Object?> callResp) {
+    if (callResp.containsKey('error')) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.failed,
+        errorCode: 'mcp_tool_failed',
+      );
+    }
+    final result = callResp['result'];
+    if (result is Map) {
+      if (result['isError'] == true) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.failed,
+          errorCode: 'mcp_tool_failed',
+        );
+      }
+      final content = result['content'];
+      if (content is List) {
+        final textSegments = <String>[];
+        for (final c in content) {
+          if (c is Map && c['text'] != null) {
+            textSegments.add(c['text'].toString());
+          }
+        }
+        if (textSegments.isNotEmpty) {
+          return boundToolOutput(textSegments.join('\n'));
+        }
+      }
+      if (result['text'] != null) {
+        return boundToolOutput(result['text'].toString());
+      }
+      return boundToolOutput(jsonEncode(result));
+    } else if (result != null) {
+      return boundToolOutput(result.toString());
+    }
+    throw const XunaHostChannelException(
+      status: XtpStatus.failed,
+      errorCode: 'mcp_tool_failed',
+    );
+  }
+
   /// Lists available tools on [server] via MCP JSON-RPC `tools/list` protocol (`UDC-18` Wave D).
-  Future<List<Map<String, Object?>>> listTools(DiscoveredMcpServer server) async {
+  Future<List<Map<String, Object?>>> listTools(
+    DiscoveredMcpServer server,
+  ) async {
     return _defaultListMcpTools(server);
   }
 
@@ -213,8 +577,9 @@ class AutoMcpBridge {
 
     // Stage 3: Post-DNS lookup check
     try {
-      final addresses = await InternetAddress.lookup(hostLower)
-          .timeout(const Duration(seconds: 3));
+      final addresses = await InternetAddress.lookup(
+        hostLower,
+      ).timeout(const Duration(seconds: 3));
       if (addresses.isEmpty) {
         throw const XunaHostChannelException(
           status: XtpStatus.failed,
@@ -272,7 +637,9 @@ class AutoMcpBridge {
       );
     }
 
-    if (isHardDeniedAppOrProcess(command)) {
+    if (isHardDeniedAppOrProcess(command) ||
+        isForbiddenProtocolHarnessExecutable(command) ||
+        hasForbiddenHarnessInlineEvalArg(command, server.args)) {
       throw const XunaHostChannelException(
         status: XtpStatus.denied,
         errorCode: 'policy_blocked',
@@ -281,7 +648,11 @@ class AutoMcpBridge {
 
     final _McpStdioSession session;
     try {
-      session = await _McpStdioSession.start(command, server.args);
+      session = await _McpStdioSession.start(
+        command,
+        server.args,
+        transportFactory: _stdioTransportFactory,
+      );
     } catch (_) {
       throw const XunaHostChannelException(
         status: XtpStatus.failed,
@@ -291,24 +662,26 @@ class AutoMcpBridge {
 
     try {
       // Step 1: Handshake initialize
-      final initResp = await session.request(
-        id: 1,
-        method: 'initialize',
-        params: <String, Object?>{
-          'protocolVersion': '2024-11-05',
-          'capabilities': <String, Object?>{},
-          'clientInfo': <String, Object?>{
-            'name': 'xuna_desktop',
-            'version': '0.1.0',
-          },
-        },
-        timeout: const Duration(seconds: 5),
-      ).catchError((_) {
-        throw const XunaHostChannelException(
-          status: XtpStatus.failed,
-          errorCode: 'mcp_handshake_failed',
-        );
-      });
+      final initResp = await session
+          .request(
+            id: 1,
+            method: 'initialize',
+            params: <String, Object?>{
+              'protocolVersion': '2024-11-05',
+              'capabilities': <String, Object?>{},
+              'clientInfo': <String, Object?>{
+                'name': 'xuna_desktop',
+                'version': '0.1.0',
+              },
+            },
+            timeout: const Duration(seconds: 5),
+          )
+          .catchError((_) {
+            throw const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'mcp_handshake_failed',
+            );
+          });
 
       if (initResp.containsKey('error') || initResp['result'] == null) {
         throw const XunaHostChannelException(
@@ -321,20 +694,19 @@ class AutoMcpBridge {
       session.notify(method: 'notifications/initialized');
 
       // Step 3: tools/call
-      final callResp = await session.request(
-        id: 2,
-        method: 'tools/call',
-        params: <String, Object?>{
-          'name': toolName,
-          'arguments': payload,
-        },
-        timeout: const Duration(seconds: 10),
-      ).catchError((_) {
-        throw const XunaHostChannelException(
-          status: XtpStatus.failed,
-          errorCode: 'mcp_tool_failed',
-        );
-      });
+      final callResp = await session
+          .request(
+            id: 2,
+            method: 'tools/call',
+            params: <String, Object?>{'name': toolName, 'arguments': payload},
+            timeout: const Duration(seconds: 10),
+          )
+          .catchError((_) {
+            throw const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'mcp_tool_failed',
+            );
+          });
 
       if (callResp.containsKey('error')) {
         throw const XunaHostChannelException(
@@ -412,25 +784,32 @@ class AutoMcpBridge {
         );
       });
       initReq.headers.contentType = ContentType.json;
-      initReq.add(utf8.encode(jsonEncode(<String, Object?>{
-        'jsonrpc': '2.0',
-        'id': 1,
-        'method': 'initialize',
-        'params': <String, Object?>{
-          'protocolVersion': '2024-11-05',
-          'capabilities': <String, Object?>{},
-          'clientInfo': <String, Object?>{
-            'name': 'xuna_desktop',
-            'version': '0.1.0',
-          },
-        },
-      })));
-      final initResp = await initReq.close().timeout(const Duration(seconds: 5)).catchError((_) {
-        throw const XunaHostChannelException(
-          status: XtpStatus.failed,
-          errorCode: 'mcp_handshake_failed',
-        );
-      });
+      initReq.add(
+        utf8.encode(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': 1,
+            'method': 'initialize',
+            'params': <String, Object?>{
+              'protocolVersion': '2024-11-05',
+              'capabilities': <String, Object?>{},
+              'clientInfo': <String, Object?>{
+                'name': 'xuna_desktop',
+                'version': '0.1.0',
+              },
+            },
+          }),
+        ),
+      );
+      final initResp = await initReq
+          .close()
+          .timeout(const Duration(seconds: 5))
+          .catchError((_) {
+            throw const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'mcp_handshake_failed',
+            );
+          });
       if (initResp.statusCode != 200) {
         throw const XunaHostChannelException(
           status: XtpStatus.failed,
@@ -454,21 +833,25 @@ class AutoMcpBridge {
         );
       });
       callReq.headers.contentType = ContentType.json;
-      callReq.add(utf8.encode(jsonEncode(<String, Object?>{
-        'jsonrpc': '2.0',
-        'id': 2,
-        'method': 'tools/call',
-        'params': <String, Object?>{
-          'name': toolName,
-          'arguments': payload,
-        },
-      })));
-      final callResp = await callReq.close().timeout(const Duration(seconds: 10)).catchError((_) {
-        throw const XunaHostChannelException(
-          status: XtpStatus.failed,
-          errorCode: 'mcp_tool_failed',
-        );
-      });
+      callReq.add(
+        utf8.encode(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': 2,
+            'method': 'tools/call',
+            'params': <String, Object?>{'name': toolName, 'arguments': payload},
+          }),
+        ),
+      );
+      final callResp = await callReq
+          .close()
+          .timeout(const Duration(seconds: 10))
+          .catchError((_) {
+            throw const XunaHostChannelException(
+              status: XtpStatus.failed,
+              errorCode: 'mcp_tool_failed',
+            );
+          });
       if (callResp.statusCode != 200) {
         throw const XunaHostChannelException(
           status: XtpStatus.failed,
@@ -531,7 +914,9 @@ class AutoMcpBridge {
           errorCode: 'mcp_server_not_configured',
         );
       }
-      if (isHardDeniedAppOrProcess(command)) {
+      if (isHardDeniedAppOrProcess(command) ||
+          isForbiddenProtocolHarnessExecutable(command) ||
+          hasForbiddenHarnessInlineEvalArg(command, server.args)) {
         throw const XunaHostChannelException(
           status: XtpStatus.denied,
           errorCode: 'policy_blocked',
@@ -540,7 +925,11 @@ class AutoMcpBridge {
 
       final _McpStdioSession session;
       try {
-        session = await _McpStdioSession.start(command, server.args);
+        session = await _McpStdioSession.start(
+          command,
+          server.args,
+          transportFactory: _stdioTransportFactory,
+        );
       } catch (_) {
         throw const XunaHostChannelException(
           status: XtpStatus.failed,
@@ -549,24 +938,26 @@ class AutoMcpBridge {
       }
 
       try {
-        final initResp = await session.request(
-          id: 1,
-          method: 'initialize',
-          params: <String, Object?>{
-            'protocolVersion': '2024-11-05',
-            'capabilities': <String, Object?>{},
-            'clientInfo': <String, Object?>{
-              'name': 'xuna_desktop',
-              'version': '0.1.0',
-            },
-          },
-          timeout: const Duration(seconds: 5),
-        ).catchError((_) {
-          throw const XunaHostChannelException(
-            status: XtpStatus.failed,
-            errorCode: 'mcp_handshake_failed',
-          );
-        });
+        final initResp = await session
+            .request(
+              id: 1,
+              method: 'initialize',
+              params: <String, Object?>{
+                'protocolVersion': '2024-11-05',
+                'capabilities': <String, Object?>{},
+                'clientInfo': <String, Object?>{
+                  'name': 'xuna_desktop',
+                  'version': '0.1.0',
+                },
+              },
+              timeout: const Duration(seconds: 5),
+            )
+            .catchError((_) {
+              throw const XunaHostChannelException(
+                status: XtpStatus.failed,
+                errorCode: 'mcp_handshake_failed',
+              );
+            });
         if (initResp.containsKey('error') || initResp['result'] == null) {
           throw const XunaHostChannelException(
             status: XtpStatus.failed,
@@ -575,17 +966,19 @@ class AutoMcpBridge {
         }
         session.notify(method: 'notifications/initialized');
 
-        final listResp = await session.request(
-          id: 2,
-          method: 'tools/list',
-          params: <String, Object?>{},
-          timeout: const Duration(seconds: 5),
-        ).catchError((_) {
-          throw const XunaHostChannelException(
-            status: XtpStatus.failed,
-            errorCode: 'mcp_tool_failed',
-          );
-        });
+        final listResp = await session
+            .request(
+              id: 2,
+              method: 'tools/list',
+              params: <String, Object?>{},
+              timeout: const Duration(seconds: 5),
+            )
+            .catchError((_) {
+              throw const XunaHostChannelException(
+                status: XtpStatus.failed,
+                errorCode: 'mcp_tool_failed',
+              );
+            });
 
         if (listResp.containsKey('error')) {
           throw const XunaHostChannelException(
@@ -622,7 +1015,8 @@ class AutoMcpBridge {
       }
       await _validateAntiSsrf(uri);
 
-      final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 3);
       try {
         final initReq = await client.postUrl(uri).catchError((_) {
           throw const XunaHostChannelException(
@@ -631,25 +1025,32 @@ class AutoMcpBridge {
           );
         });
         initReq.headers.contentType = ContentType.json;
-        initReq.add(utf8.encode(jsonEncode(<String, Object?>{
-          'jsonrpc': '2.0',
-          'id': 1,
-          'method': 'initialize',
-          'params': <String, Object?>{
-            'protocolVersion': '2024-11-05',
-            'capabilities': <String, Object?>{},
-            'clientInfo': <String, Object?>{
-              'name': 'xuna_desktop',
-              'version': '0.1.0',
-            },
-          },
-        })));
-        final initResp = await initReq.close().timeout(const Duration(seconds: 5)).catchError((_) {
-          throw const XunaHostChannelException(
-            status: XtpStatus.failed,
-            errorCode: 'mcp_handshake_failed',
-          );
-        });
+        initReq.add(
+          utf8.encode(
+            jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': 1,
+              'method': 'initialize',
+              'params': <String, Object?>{
+                'protocolVersion': '2024-11-05',
+                'capabilities': <String, Object?>{},
+                'clientInfo': <String, Object?>{
+                  'name': 'xuna_desktop',
+                  'version': '0.1.0',
+                },
+              },
+            }),
+          ),
+        );
+        final initResp = await initReq
+            .close()
+            .timeout(const Duration(seconds: 5))
+            .catchError((_) {
+              throw const XunaHostChannelException(
+                status: XtpStatus.failed,
+                errorCode: 'mcp_handshake_failed',
+              );
+            });
         if (initResp.statusCode != 200) {
           throw const XunaHostChannelException(
             status: XtpStatus.failed,
@@ -664,18 +1065,25 @@ class AutoMcpBridge {
           );
         });
         listReq.headers.contentType = ContentType.json;
-        listReq.add(utf8.encode(jsonEncode(<String, Object?>{
-          'jsonrpc': '2.0',
-          'id': 2,
-          'method': 'tools/list',
-          'params': <String, Object?>{},
-        })));
-        final listResp = await listReq.close().timeout(const Duration(seconds: 5)).catchError((_) {
-          throw const XunaHostChannelException(
-            status: XtpStatus.failed,
-            errorCode: 'mcp_tool_failed',
-          );
-        });
+        listReq.add(
+          utf8.encode(
+            jsonEncode(<String, Object?>{
+              'jsonrpc': '2.0',
+              'id': 2,
+              'method': 'tools/list',
+              'params': <String, Object?>{},
+            }),
+          ),
+        );
+        final listResp = await listReq
+            .close()
+            .timeout(const Duration(seconds: 5))
+            .catchError((_) {
+              throw const XunaHostChannelException(
+                status: XtpStatus.failed,
+                errorCode: 'mcp_tool_failed',
+              );
+            });
         if (listResp.statusCode != 200) {
           throw const XunaHostChannelException(
             status: XtpStatus.failed,
@@ -763,7 +1171,8 @@ class AutoMcpBridge {
   }
 
   static List<({String path, String source})> _defaultMcpConfigPaths() {
-    final home = Platform.environment['HOME'] ??
+    final home =
+        Platform.environment['HOME'] ??
         Platform.environment['USERPROFILE'] ??
         '';
     final appData = Platform.environment['APPDATA'] ?? '';
@@ -798,36 +1207,66 @@ class AutoMcpBridge {
   }
 }
 
-/// JSON-RPC 2.0 stdio session with line-delimited communication and ID dispatch (`UDC-18` Wave D).
-class _McpStdioSession {
-  _McpStdioSession._(this._process, this._stdoutLines);
+class _McpUnexpectedExitException implements Exception {
+  const _McpUnexpectedExitException();
+}
 
-  final Process _process;
-  final Stream<String> _stdoutLines;
+/// JSON-RPC 2.0 stdio session with line-delimited communication, notification
+/// forwarding, and SIGTERM -> 2s -> SIGKILL teardown (`UDC-18` Wave D, `AW2-M2`).
+class _McpStdioSession {
+  _McpStdioSession._(this._transport);
+
+  final McpStdioTransport _transport;
   late final StreamSubscription<String> _sub;
   final Map<int, Completer<Map<String, Object?>>> _pendingRequests =
       <int, Completer<Map<String, Object?>>>{};
+  void Function(String method, Map<String, Object?> params)? onNotification;
+  Timer? _exitGraceTimer;
   bool _closed = false;
+
+  bool get isClosed => _closed;
 
   static Future<_McpStdioSession> start(
     String command,
-    List<String> args,
-  ) async {
-    final process = await Process.start(
-      command,
-      args,
-      runInShell: false,
-    );
-    final stdoutLines = process.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter());
-    final session = _McpStdioSession._(process, stdoutLines);
+    List<String> args, {
+    McpStdioTransportFactory? transportFactory,
+  }) async {
+    final McpStdioTransport transport;
+    if (transportFactory != null) {
+      transport = await transportFactory(command, args);
+    } else {
+      final process = await Process.start(command, args, runInShell: false);
+      final stdoutLines = process.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter());
+      transport = McpStdioTransport(
+        stdoutLines: stdoutLines,
+        writeStdinLine: (line) => process.stdin.writeln(line),
+        exitCode: process.exitCode,
+        terminate: () async {
+          try {
+            await process.stdin.close();
+          } catch (_) {}
+          try {
+            process.kill(ProcessSignal.sigterm);
+          } catch (_) {}
+          try {
+            await process.exitCode.timeout(const Duration(seconds: 2));
+          } catch (_) {
+            try {
+              process.kill(ProcessSignal.sigkill);
+            } catch (_) {}
+          }
+        },
+      );
+    }
+    final session = _McpStdioSession._(transport);
     session._init();
     return session;
   }
 
   void _init() {
-    _sub = _stdoutLines.listen(
+    _sub = _transport.stdoutLines.listen(
       (line) {
         final trimmed = line.trim();
         if (trimmed.isEmpty) return;
@@ -835,20 +1274,43 @@ class _McpStdioSession {
           final decoded = jsonDecode(trimmed);
           if (decoded is Map) {
             final id = decoded['id'];
+            if (id == null) {
+              final method = decoded['method'];
+              if (method is String && method.isNotEmpty) {
+                final rawParams = decoded['params'];
+                final params = <String, Object?>{
+                  if (rawParams is Map)
+                    for (final e in rawParams.entries)
+                      if (e.key is String) e.key as String: e.value,
+                };
+                onNotification?.call(method, params);
+              }
+              return;
+            }
             if (id is int && _pendingRequests.containsKey(id)) {
-              _pendingRequests.remove(id)!.complete(
-                decoded.map((k, v) => MapEntry(k.toString(), v)),
-              );
+              _pendingRequests
+                  .remove(id)!
+                  .complete(decoded.map((k, v) => MapEntry(k.toString(), v)));
             }
           }
         } catch (_) {}
       },
-      onError: (err) {
-        _failAll(err);
+      onError: (_) {
+        _failAll(const _McpUnexpectedExitException());
       },
       onDone: () {
-        _failAll(StateError('MCP process stdout closed'));
+        _failAll(const _McpUnexpectedExitException());
       },
+    );
+    unawaited(
+      _transport.exitCode.then((_) {
+        if (_closed || _pendingRequests.isEmpty) return;
+        _exitGraceTimer = Timer(const Duration(milliseconds: 25), () {
+          if (!_closed && _pendingRequests.isNotEmpty) {
+            _failAll(const _McpUnexpectedExitException());
+          }
+        });
+      }),
     );
   }
 
@@ -877,41 +1339,28 @@ class _McpStdioSession {
       'method': method,
       if (params != null) 'params': params,
     };
-    _process.stdin.writeln(jsonEncode(req));
+    _transport.writeStdinLine(jsonEncode(req));
 
     return completer.future.timeout(timeout);
   }
 
-  void notify({
-    required String method,
-    Map<String, Object?>? params,
-  }) {
+  void notify({required String method, Map<String, Object?>? params}) {
     if (_closed) return;
     final msg = <String, Object?>{
       'jsonrpc': '2.0',
       'method': method,
       if (params != null) 'params': params,
     };
-    _process.stdin.writeln(jsonEncode(msg));
+    _transport.writeStdinLine(jsonEncode(msg));
   }
 
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _exitGraceTimer?.cancel();
+    _exitGraceTimer = null;
     _failAll(StateError('Session closed'));
     await _sub.cancel();
-    try {
-      await _process.stdin.close();
-    } catch (_) {}
-    try {
-      _process.kill();
-    } catch (_) {}
-    try {
-      await _process.exitCode.timeout(const Duration(milliseconds: 500));
-    } catch (_) {
-      try {
-        _process.kill();
-      } catch (_) {}
-    }
+    await _transport.terminate();
   }
 }

@@ -2588,7 +2588,9 @@ class ComputerUseSessionManager {
           errorCode: 'policy_blocked',
         );
       }
-      final cfg = policy.findApp(appId);
+      final cfg =
+          policy.findApp(appId) ??
+          (allowZeroConfig ? policy.findConfiguredAppFuzzy(appId) : null);
       if (cfg != null) {
         if (isHardDeniedAppOrProcess(cfg.target) ||
             isHardDeniedAppOrProcess(cfg.name)) {
@@ -2603,7 +2605,7 @@ class ComputerUseSessionManager {
             errorCode: 'policy_blocked',
           );
         }
-        final discoveredMatch = effectiveScanner?.findApp(appId);
+        final discoveredMatch = effectiveScanner?.findApp(cfg.id);
         allowedAppConfigs.add(cfg);
         addApp(
           requestedId: appId,

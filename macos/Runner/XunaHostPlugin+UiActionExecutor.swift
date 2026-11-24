@@ -649,10 +649,25 @@ extension XunaHostPlugin {
     let targetAppQuery = (args["windowTitle"] as? String) ?? (args["appName"] as? String)
     let submit = (args["submit"] as? Bool) ?? true
 
+    let trimmedQuery = (targetAppQuery ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let explicitTargetRequested = !trimmedQuery.isEmpty
+      && trimmedQuery.lowercased() != "active"
+      && trimmedQuery.lowercased() != "frontmost"
     let targetApp = resolveTargetApplication(
       matching: targetAppQuery,
-      activate: targetAppQuery != nil && !targetAppQuery!.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      activate: explicitTargetRequested
     )
+    if explicitTargetRequested && targetApp == nil {
+      replySuccess(result, [
+        "ok": false,
+        "invokedRefId": refId,
+        "detail": "TARGET_WINDOW_NOT_FOUND",
+        "windowTitle": trimmedQuery,
+        "nodes": [],
+        "screenshotBytesUsed": 0,
+      ])
+      return
+    }
     if let app = targetApp,
        Self.isHardDeniedApp(app.localizedName ?? "", bundleId: app.bundleIdentifier)
     {

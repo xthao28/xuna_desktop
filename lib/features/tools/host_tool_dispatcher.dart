@@ -28,6 +28,8 @@ import 'package:xuna_desktop/features/tools/handlers/symbiotic_tool_handlers.dar
 import 'package:xuna_desktop/features/tools/handlers/tv_smarthome_handlers.dart';
 import 'package:xuna_desktop/features/tools/handlers/workspace_copilot_handlers.dart';
 import 'package:xuna_desktop/features/tools/native_app_handlers.dart';
+import 'package:xuna_desktop/features/watch/acp_harness_adapter.dart';
+import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 export 'package:xuna_desktop/features/tools/browser_tool_handlers.dart';
@@ -206,6 +208,8 @@ class ToolExecutionContext {
     this.beamDirectoryPath,
     this.subStepExecutor,
     this.computerUseManager,
+    this.protocolTaskRegistry,
+    this.acpHarnessAdapter,
     this.hasVerifiedR3Approval = false,
   });
 
@@ -232,6 +236,8 @@ class ToolExecutionContext {
   final String? beamDirectoryPath;
   final SubStepExecutor? subStepExecutor;
   final ComputerUseSessionManager? computerUseManager;
+  final ProtocolTaskRegistry? protocolTaskRegistry;
+  final AcpHarnessAdapter? acpHarnessAdapter;
 }
 
 /// Base class for each of the 12 MVP tools (`UDC-3` §5.6.1: one class per tool).
@@ -303,8 +309,14 @@ class HostToolDispatcher {
     this.maxIdempotencyCacheEntries = 256,
     NativeAppBridge? nativeAppBridge,
     BrowserEngineProvider? browserEngineProvider,
+    ProtocolTaskRegistry? protocolTaskRegistry,
+    AcpHarnessAdapter? acpHarnessAdapter,
     List<HostToolHandler>? handlers,
-  }) : nativeAppBridge =
+  }) : _ownsProtocolTaskRegistry = protocolTaskRegistry == null,
+       protocolTaskRegistry =
+           protocolTaskRegistry ??
+           ProtocolTaskRegistry(stopController: stopController),
+       nativeAppBridge =
            nativeAppBridge ??
            (Platform.isMacOS
                ? MacosNativeAppBridge()
@@ -313,11 +325,15 @@ class HostToolDispatcher {
            browserEngineProvider ?? CdpBrowserEngineProvider(),
        appScanner = appScanner ?? AutoAppScanner(),
        workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer(),
-       mcpBridge = mcpBridge ?? AutoMcpBridge(),
        tvScanner = tvScanner ?? AutoTvScanner(),
        smartHomeBridge = smartHomeBridge ?? AutoSmartHomeBridge(),
        symbioticService = symbioticService ?? AutoSymbioticService(),
        actionLedger = actionLedger ?? ReversibleActionLedger() {
+    this.acpHarnessAdapter =
+        acpHarnessAdapter ??
+        AcpHarnessAdapter(taskRegistry: this.protocolTaskRegistry);
+    this.mcpBridge =
+        mcpBridge ?? AutoMcpBridge(taskRegistry: this.protocolTaskRegistry);
     final registered =
         handlers ??
         <HostToolHandler>[
@@ -350,11 +366,14 @@ class HostToolDispatcher {
   final BrowserEngineProvider browserEngineProvider;
   final AutoAppScanner appScanner;
   final AutoWorkspaceIndexer workspaceIndexer;
-  final AutoMcpBridge mcpBridge;
+  late final AutoMcpBridge mcpBridge;
   final AutoTvScanner tvScanner;
   final AutoSmartHomeBridge smartHomeBridge;
   final AutoSymbioticService symbioticService;
   final ReversibleActionLedger actionLedger;
+  final ProtocolTaskRegistry protocolTaskRegistry;
+  late final AcpHarnessAdapter acpHarnessAdapter;
+  final bool _ownsProtocolTaskRegistry;
   final String? beamDirectoryPath;
   final String agentVersion;
   final int maxIdempotencyCacheEntries;
@@ -395,6 +414,7 @@ class HostToolDispatcher {
     'selection.read',
     'window.active_context',
     'mcp.list_servers',
+    'mcp.task_result',
     'tv.list_devices',
     'smarthome.list_entities',
     'dev.ports',
@@ -693,6 +713,8 @@ class HostToolDispatcher {
           nowUtc: effectiveNow,
           beamDirectoryPath: beamDirectoryPath,
           computerUseManager: computerUseManager,
+          protocolTaskRegistry: protocolTaskRegistry,
+          acpHarnessAdapter: acpHarnessAdapter,
         );
         final subOut = await subHandler.execute(subContext);
         actionLedger.record(
@@ -739,6 +761,8 @@ class HostToolDispatcher {
         beamDirectoryPath: beamDirectoryPath,
         subStepExecutor: executeSubStep,
         computerUseManager: computerUseManager,
+        protocolTaskRegistry: protocolTaskRegistry,
+        acpHarnessAdapter: acpHarnessAdapter,
       );
 
       final deadline = Duration(milliseconds: params.deadlineMs);
@@ -1099,6 +1123,8 @@ class HostToolDispatcher {
       players: currentPolicy?.players ?? const <String>[],
       denyApps: List.unmodifiable(params.denyApps),
       denyDomains: List.unmodifiable(params.denyDomains),
+      protocolHarnesses:
+          currentPolicy?.protocolHarnesses ?? const <ProtocolHarnessConfig>[],
     );
 
     await policyStore.savePolicy(updatedPolicy);
@@ -1148,6 +1174,9 @@ class HostToolDispatcher {
 
   void dispose() {
     stopController.removeCancelListener(_onEmergencyStop);
+    if (_ownsProtocolTaskRegistry) {
+      unawaited(protocolTaskRegistry.dispose());
+    }
     unawaited(_toolsListChanged.close());
   }
 }

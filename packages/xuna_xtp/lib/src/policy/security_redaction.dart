@@ -425,6 +425,177 @@ bool isHardDeniedAppOrProcess(String? appIdOrProcess) {
   return false;
 }
 
+/// Shells, script launchers, and privilege-escalation binaries permanently
+/// forbidden as local `protocolHarnesses` executables (`AW2-M1`).
+const Set<String> forbiddenProtocolHarnessExecutables = <String>{
+  'sh',
+  'ash',
+  'dash',
+  'ksh',
+  'mksh',
+  'csh',
+  'tcsh',
+  'zsh',
+  'bash',
+  'rbash',
+  'fish',
+  'busybox',
+  'cmd',
+  'powershell',
+  'pwsh',
+  'osascript',
+  'sudo',
+  'su',
+  'doas',
+  'pkexec',
+  'env',
+  'wsl',
+  'conhost',
+  'terminal',
+  'iterm',
+  'iterm2',
+  'wt',
+  'windowsterminal',
+};
+
+const Set<String> _executableStripSuffixes = <String>{
+  '.exe',
+  '.cmd',
+  '.bat',
+  '.sh',
+  '.com',
+  '.ps1',
+  '.app',
+};
+
+String _extractExecutableStem(String executable) {
+  final raw = executable.trim().toLowerCase();
+  final trimmedPath = raw.replaceAll(RegExp(r'[/\\]+$'), '');
+  if (trimmedPath.isEmpty) return '';
+  final baseName = trimmedPath.split(RegExp(r'[/\\]')).last;
+  for (final suffix in _executableStripSuffixes) {
+    if (baseName.endsWith(suffix) && baseName.length > suffix.length) {
+      return baseName.substring(0, baseName.length - suffix.length);
+    }
+  }
+  return baseName;
+}
+
+/// Returns `true` if [executable] is empty, contains control characters,
+/// matches [isHardDeniedAppOrProcess], or names a shell, launcher, or
+/// privilege-escalation binary forbidden in `HostPolicy.protocolHarnesses`.
+bool isForbiddenProtocolHarnessExecutable(String? executable) {
+  if (executable == null) return true;
+  final trimmed = executable.trim();
+  if (trimmed.isEmpty ||
+      hasBinaryOrInvalidSurrogates(executable) ||
+      executable.contains('\n') ||
+      executable.contains('\r')) {
+    return true;
+  }
+  if (isHardDeniedAppOrProcess(executable)) return true;
+
+  final raw = trimmed.toLowerCase();
+  final trimmedPath = raw.replaceAll(RegExp(r'[/\\]+$'), '');
+  if (trimmedPath.isEmpty) return true;
+  final baseName = trimmedPath.split(RegExp(r'[/\\]')).last;
+  final stem = _extractExecutableStem(trimmedPath);
+  if (stem.isEmpty) return true;
+
+  if (isHardDeniedAppOrProcess(baseName) || isHardDeniedAppOrProcess(stem)) {
+    return true;
+  }
+  return forbiddenProtocolHarnessExecutables.contains(baseName) ||
+      forbiddenProtocolHarnessExecutables.contains(stem);
+}
+
+bool _isPythonExecutableStem(String stem) =>
+    stem == 'python' ||
+    stem == 'py' ||
+    stem.startsWith('python2') ||
+    stem.startsWith('python3');
+
+bool _isJsRuntimeExecutableStem(String stem) =>
+    stem == 'node' || stem == 'nodejs' || stem == 'deno' || stem == 'bun';
+
+/// Returns `true` if [args] contains any inline code-evaluation or command
+/// execution flag (e.g. `-c`, `-e`, `-ec`, `--eval`, `/c`, `-Command`,
+/// `-EncodedCommand`, `-enc`) for a `HostPolicy.protocolHarnesses` entry.
+bool hasForbiddenHarnessInlineEvalArg(
+  String executable,
+  List<String> args,
+) {
+  final stem = _extractExecutableStem(executable);
+  final isPython = _isPythonExecutableStem(stem);
+  final isJsRuntime = _isJsRuntimeExecutableStem(stem);
+  var seenNonFlagArg = false;
+
+  for (var i = 0; i < args.length; i++) {
+    final lower = args[i].trim().toLowerCase();
+    if (lower.isEmpty) continue;
+
+    // Exact inline eval / command flags across shells and runtimes.
+    if (lower == '-c' ||
+        lower == '-e' ||
+        lower == '-ec' ||
+        lower == '--eval' ||
+        lower == '--exec' ||
+        lower == '/c' ||
+        lower == '/k' ||
+        lower == '-command' ||
+        lower == '-encodedcommand' ||
+        lower == '-enc' ||
+        lower == '--command' ||
+        lower == '--encoded-command') {
+      return true;
+    }
+
+    // Key=value / colon-attached variants.
+    if (lower.startsWith('--eval=') ||
+        lower.startsWith('--exec=') ||
+        lower.startsWith('-e=') ||
+        lower.startsWith('-ec=') ||
+        lower.startsWith('-ec:') ||
+        lower.startsWith('-c=') ||
+        lower.startsWith('/c:') ||
+        lower.startsWith('/k:') ||
+        lower.startsWith('-command=') ||
+        lower.startsWith('-encodedcommand=') ||
+        lower.startsWith('-enc=') ||
+        lower.startsWith('--command=') ||
+        lower.startsWith('--encoded-command=')) {
+      return true;
+    }
+
+    // Single-dash flags starting with `-c...` (without touching `--config`).
+    if (lower.startsWith('-c') && !lower.startsWith('--')) {
+      return true;
+    }
+    if (lower.startsWith('/c') || lower.startsWith('/k')) {
+      return true;
+    }
+
+    // Interpreter-specific inline code flags.
+    if (isPython && RegExp(r'^-[a-z]*c').hasMatch(lower)) {
+      return true;
+    }
+    if (isJsRuntime) {
+      if (RegExp(r'^-[a-z]*(?:e|p)').hasMatch(lower) ||
+          lower == '--print' ||
+          lower.startsWith('--print=')) {
+        return true;
+      }
+      if (!seenNonFlagArg && !lower.startsWith('-')) {
+        seenNonFlagArg = true;
+        if ((stem == 'deno' || stem == 'bun') && lower == 'eval') {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /// Returns `true` if a UI node represents a password field (`UDC-8` §4.2).
 bool isPasswordUiNode(Map<String, Object?> node) {
   if (node['isPassword'] == true ||

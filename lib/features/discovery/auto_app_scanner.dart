@@ -308,10 +308,12 @@ class AutoAppScanner {
       if (Platform.isMacOS) ...<String>[
         '/opt/homebrew/bin',
         '/usr/local/bin',
+        '/Applications/Antigravity IDE.app/Contents/Resources/app/bin',
         '/Applications/Antigravity.app/Contents/Resources/app/bin',
         '/Applications/Cursor.app/Contents/Resources/app/bin',
         '/Applications/Visual Studio Code.app/Contents/Resources/app/bin',
         if (home.isNotEmpty) ...<String>[
+          '$home/Applications/Antigravity IDE.app/Contents/Resources/app/bin',
           '$home/Applications/Antigravity.app/Contents/Resources/app/bin',
           '$home/Applications/Cursor.app/Contents/Resources/app/bin',
           '$home/Applications/Visual Studio Code.app/Contents/Resources/app/bin',
@@ -349,13 +351,15 @@ class AutoAppScanner {
           : const <String>['claude'],
       'antigravity': Platform.isWindows
           ? const <String>[
+              'antigravity-ide.cmd',
+              'antigravity-ide.exe',
               'agy.cmd',
               'agy.exe',
               'antigravity.cmd',
               'antigravity.exe',
               'Antigravity.exe',
             ]
-          : const <String>['agy', 'antigravity'],
+          : const <String>['antigravity-ide', 'agy', 'antigravity'],
       'cursor': Platform.isWindows
           ? const <String>['cursor.cmd', 'cursor.exe', 'Cursor.exe']
           : const <String>['cursor'],
@@ -389,13 +393,28 @@ class AutoAppScanner {
     // Cross-platform fallback (Windows & macOS): if an IDE/agent is installed as a
     // GUI app (.app bundle on macOS, or .exe / .lnk in Start Menu / Programs on Windows)
     // without its CLI symlink on PATH, resolve it from discoverApps().
+    applyGuiCodingAgentFallbacks(result, discoverApps());
+
+    _cachedAgents = result;
+    return result;
+  }
+
+  /// Fills missing coding-agent entries from installed GUI apps, preferring
+  /// `'Antigravity IDE'` ahead of standalone `'Antigravity'`.
+  static void applyGuiCodingAgentFallbacks(
+    Map<String, String> result,
+    List<DiscoveredApp> installedGuiApps,
+  ) {
     const fallbackQueries = <String, List<String>>{
-      'antigravity': <String>['antigravity'],
+      'antigravity': <String>[
+        'antigravity ide',
+        'antigravity_ide',
+        'antigravity',
+      ],
       'cursor': <String>['cursor'],
       'vscode': <String>['visual studio code', 'vscode'],
       'claude_code': <String>['claude code', 'claude'],
     };
-    final installedGuiApps = discoverApps();
     for (final entry in fallbackQueries.entries) {
       if (result.containsKey(entry.key)) continue;
       for (final q in entry.value) {
@@ -409,9 +428,6 @@ class AutoAppScanner {
         if (result.containsKey(entry.key)) break;
       }
     }
-
-    _cachedAgents = result;
-    return result;
   }
 
   void _scanMacOsApplications(void Function(DiscoveredApp) register) {

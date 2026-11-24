@@ -469,60 +469,117 @@ extension XunaHostPlugin {
       || textInputAxRoles.contains(role)
       || subrole == "AXOutlineRow"
   }
-  func discoverInstalledAppBundleURL(matching query: String) -> URL? {
-    let tokens = query
-      .lowercased()
-      .components(separatedBy: CharacterSet.alphanumerics.inverted)
-      .filter { !$0.isEmpty }
-    guard !tokens.isEmpty else { return nil }
+  struct RunningAppMatchCandidate {
+    let pid: pid_t
+    let localizedName: String
+    let bundleId: String
+    let bundleStem: String
+    let windowTitles: [String]
+  }
 
-    let fm = FileManager.default
-    let home = fm.homeDirectoryForCurrentUser.path
-    let searchDirs = [
-      "/Applications",
-      "/System/Applications",
-      "/System/Applications/Utilities",
-      "\(home)/Applications",
-    ]
+  /// Matches a target query (app name, bundle ID, or live window title) strictly
+  /// against already-running GUI applications. Never matches short substring
+  /// fragments inside unrelated bundle identifiers (e.g. `"ai"` in
+  /// `"com.jetbrains.pycharm"`), and never launches non-running apps.
+  static func matchRunningAppCandidate(
+    query: String,
+    candidates: [RunningAppMatchCandidate]
+  ) -> pid_t? {
+    let lower = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !lower.isEmpty else { return nil }
 
-    var bestURL: URL?
+    let queryWords = Set(
+      lower
+        .components(separatedBy: CharacterSet.alphanumerics.inverted)
+        .filter { $0.count >= 3 }
+    )
+
+    var bestPid: pid_t?
     var bestScore = 0
-    let normalizedQuery = tokens.joined(separator: " ")
+    var tied = false
 
-    for dir in searchDirs {
-      guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-      for item in items where item.hasSuffix(".app") {
-        let appPath = "\(dir)/\(item)"
-        let appURL = URL(fileURLWithPath: appPath)
-        let stem = (item as NSString).deletingPathExtension.lowercased()
-        let bundle = Bundle(url: appURL)
-        let displayName = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "").lowercased()
-        let bundleName = (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "").lowercased()
-        let bundleId = (bundle?.bundleIdentifier ?? "").lowercased()
-        let candidates = [stem, displayName, bundleName, bundleId].filter { !$0.isEmpty }
+    for cand in candidates {
+      let name = cand.localizedName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let bid = cand.bundleId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let stem = cand.bundleStem.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let titles = cand.windowTitles
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        .filter { !$0.isEmpty }
 
-        var score = 0
-        for cand in candidates {
-          if cand == normalizedQuery || cand == query.lowercased() {
-            score = max(score, 100)
-          } else if cand.hasPrefix(normalizedQuery) || normalizedQuery.hasPrefix(cand) {
-            score = max(score, 80)
-          } else if cand.contains(normalizedQuery) || normalizedQuery.contains(cand) {
-            score = max(score, 65)
-          } else {
-            let matchedTokens = tokens.filter { cand.contains($0) }.count
-            if matchedTokens > 0 {
-              score = max(score, matchedTokens * 25)
-            }
-          }
+      var score = 0
+      if (!name.isEmpty && name == lower)
+        || (!bid.isEmpty && bid == lower)
+        || (!stem.isEmpty && stem == lower)
+      {
+        score = 100
+      } else if titles.contains(where: { $0 == lower }) {
+        score = 95
+      } else if lower.count >= 3
+        && titles.contains(where: { $0.contains(lower) || ($0.count >= 3 && lower.contains($0)) })
+      {
+        score = 85
+      } else if (!name.isEmpty && name.count >= 3 && (lower.contains(name) || name.contains(lower)))
+        || (!stem.isEmpty && stem.count >= 3 && (lower.contains(stem) || stem.contains(lower)))
+      {
+        score = 75
+      } else if !queryWords.isEmpty {
+        let appWords = Set(
+          [name, stem]
+            .flatMap { $0.components(separatedBy: CharacterSet.alphanumerics.inverted) }
+            .filter { $0.count >= 3 }
+        )
+        let overlap = queryWords.intersection(appWords).count
+        if overlap > 0 {
+          score = overlap * 30
         }
-        if score > bestScore {
-          bestScore = score
-          bestURL = appURL
+      }
+
+      if score > bestScore {
+        bestScore = score
+        bestPid = cand.pid
+        tied = false
+      } else if score > 0 && score == bestScore {
+        tied = true
+      }
+    }
+
+    guard bestScore >= 30, !tied else { return nil }
+    return bestPid
+  }
+
+  private func collectOnScreenWindowTitlesByPid() -> [pid_t: [String]] {
+    var byPid: [pid_t: [String]] = [:]
+    if let list = CGWindowListCopyWindowInfo(
+      [.optionOnScreenOnly, .excludeDesktopElements],
+      kCGNullWindowID
+    ) as? [[String: Any]] {
+      for info in list {
+        guard let pidNum = info[kCGWindowOwnerPID as String] as? NSNumber else { continue }
+        let title = (info[kCGWindowName as String] as? String ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty {
+          byPid[pidNum.int32Value, default: []].append(title)
         }
       }
     }
-    return bestScore >= 25 ? bestURL : nil
+    // Also include the frontmost app's focused AX window title so matching works
+    // even when Screen Recording permission omits kCGWindowName.
+    if let front = onMainThread({ NSWorkspace.shared.frontmostApplication }) {
+      let axApp = AXUIElementCreateApplication(front.processIdentifier)
+      AXUIElementSetMessagingTimeout(axApp, 0.15)
+      var winRef: CFTypeRef?
+      if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+         let winEl = winRef
+      {
+        if let title = extractAxString(winEl as! AXUIElement, kAXTitleAttribute as String)?
+          .trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty
+        {
+          byPid[front.processIdentifier, default: []].append(title)
+        }
+      }
+    }
+    return byPid
   }
 
   func resolveTargetApplication(matching query: String?, activate: Bool = false) -> NSRunningApplication? {
@@ -534,81 +591,41 @@ extension XunaHostPlugin {
       return onMainThread { NSWorkspace.shared.frontmostApplication }
     }
 
-    let lower = trimmed.lowercased()
-    let queryTokens = lower
-      .components(separatedBy: CharacterSet.alphanumerics.inverted)
-      .filter { !$0.isEmpty }
-
-    func findRunning() -> NSRunningApplication? {
-      let running = onMainThread {
-        NSWorkspace.shared.runningApplications.filter {
-          $0.activationPolicy == .regular && !$0.isTerminated
-        }
-      }
-      if let exact = running.first(where: {
-        let name = ($0.localizedName ?? "").lowercased()
-        let bid = ($0.bundleIdentifier ?? "").lowercased()
-        let stem = ($0.bundleURL?.deletingPathExtension().lastPathComponent ?? "").lowercased()
-        return name == lower || bid == lower || stem == lower
-      }) {
-        return exact
-      }
-      var bestApp: NSRunningApplication?
-      var bestScore = 0
-      for app in running {
-        let name = (app.localizedName ?? "").lowercased()
-        let bid = (app.bundleIdentifier ?? "").lowercased()
-        let stem = (app.bundleURL?.deletingPathExtension().lastPathComponent ?? "").lowercased()
-        var score = 0
-        if (!name.isEmpty && (name.contains(lower) || lower.contains(name)))
-          || (!stem.isEmpty && (stem.contains(lower) || lower.contains(stem)))
-          || (!bid.isEmpty && bid.contains(lower))
-        {
-          score = 70
-        } else {
-          let hits = queryTokens.filter { name.contains($0) || stem.contains($0) || bid.contains($0) }.count
-          score = hits * 25
-        }
-        if score > bestScore {
-          bestScore = score
-          bestApp = app
-        }
-      }
-      return bestScore >= 25 ? bestApp : nil
-    }
-
-    var targetApp = findRunning()
-    if targetApp == nil && activate {
-      let openProc = Process()
-      openProc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-      if let bundleURL = discoverInstalledAppBundleURL(matching: trimmed) {
-        openProc.arguments = ["-a", bundleURL.path]
-      } else {
-        openProc.arguments = ["-a", trimmed]
-      }
-      openProc.environment = Self.sanitizedChildEnvironment()
-      try? openProc.run()
-      openProc.waitUntilExit()
-      for _ in 0..<16 {
-        Thread.sleep(forTimeInterval: 0.15)
-        if let found = findRunning() {
-          targetApp = found
-          break
-        }
+    let running = onMainThread {
+      NSWorkspace.shared.runningApplications.filter {
+        $0.activationPolicy == .regular && !$0.isTerminated
       }
     }
+    let windowTitlesByPid = collectOnScreenWindowTitlesByPid()
+    let candidates = running.map { app in
+      RunningAppMatchCandidate(
+        pid: app.processIdentifier,
+        localizedName: app.localizedName ?? "",
+        bundleId: app.bundleIdentifier ?? "",
+        bundleStem: app.bundleURL?.deletingPathExtension().lastPathComponent ?? "",
+        windowTitles: windowTitlesByPid[app.processIdentifier] ?? []
+      )
+    }
 
-    if let app = targetApp, activate {
+    // Never launch non-running applications from inspect/invoke helpers; app
+    // launching is strictly gated by handleAppLaunch (R2 + allowlist).
+    guard let matchedPid = Self.matchRunningAppCandidate(query: trimmed, candidates: candidates),
+          let targetApp = running.first(where: { $0.processIdentifier == matchedPid })
+    else {
+      return nil
+    }
+
+    if activate {
       onMainThread {
         if #available(macOS 14.0, *) {
-          _ = app.activate()
+          _ = targetApp.activate()
         } else {
-          _ = app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+          _ = targetApp.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         }
       }
       Thread.sleep(forTimeInterval: 0.2)
     }
-    return targetApp ?? onMainThread { NSWorkspace.shared.frontmostApplication }
+    return targetApp
   }
 
   func extractAxString(_ element: AXUIElement, _ attr: String) -> String? {

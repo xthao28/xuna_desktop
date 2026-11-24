@@ -1090,4 +1090,68 @@ class RunnerTests: XCTestCase {
     wait(for: [exp], timeout: 2.0)
   }
 
+  func testMatchRunningAppCandidatePreventsShortTokenBundleFalsePositives() {
+    let candidates: [XunaHostPlugin.RunningAppMatchCandidate] = [
+      XunaHostPlugin.RunningAppMatchCandidate(
+        pid: 101,
+        localizedName: "Antigravity IDE",
+        bundleId: "com.google.antigravity-ide",
+        bundleStem: "Antigravity IDE",
+        windowTitles: [
+          "xuna_pet — mvp_devops_catalog.dart",
+          "physical-ai-venture — index.html — Untracked",
+        ]
+      ),
+      XunaHostPlugin.RunningAppMatchCandidate(
+        pid: 202,
+        localizedName: "PyCharm",
+        bundleId: "com.jetbrains.pycharm",
+        bundleStem: "PyCharm",
+        windowTitles: ["Welcome to PyCharm"]
+      ),
+      XunaHostPlugin.RunningAppMatchCandidate(
+        pid: 303,
+        localizedName: "Finder",
+        bundleId: "com.apple.finder",
+        bundleStem: "Finder",
+        windowTitles: ["Projects"]
+      ),
+    ]
+
+    // Raw workspace window title matches the live Antigravity IDE window, not PyCharm.
+    XCTAssertEqual(
+      XunaHostPlugin.matchRunningAppCandidate(
+        query: "physical-ai-venture — index.html — Untracked",
+        candidates: candidates
+      ),
+      101
+    )
+
+    // Without Antigravity IDE running, `"ai"` inside `"physical-ai-venture"` must NEVER
+    // false-match `"com.jetbrains.pycharm"`.
+    let withoutIde = candidates.filter { $0.pid != 101 }
+    XCTAssertNil(
+      XunaHostPlugin.matchRunningAppCandidate(
+        query: "physical-ai-venture — index.html — Untracked",
+        candidates: withoutIde
+      )
+    )
+
+    // Explicit app name & prefixed window title still resolve deterministically.
+    XCTAssertEqual(
+      XunaHostPlugin.matchRunningAppCandidate(
+        query: "Antigravity IDE — physical-ai-venture",
+        candidates: candidates
+      ),
+      101
+    )
+    XCTAssertEqual(
+      XunaHostPlugin.matchRunningAppCandidate(
+        query: "PyCharm",
+        candidates: candidates
+      ),
+      202
+    )
+  }
+
 }

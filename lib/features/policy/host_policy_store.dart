@@ -146,19 +146,7 @@ class HostPolicyStore {
     if (!addedAny) {
       return _evaluator;
     }
-    return savePolicy(
-      HostPolicy(
-        schemaVersion: current.schemaVersion,
-        trustPreset: current.trustPreset,
-        families: updatedFamilies,
-        apps: current.apps,
-        urlDomains: current.urlDomains,
-        workflows: current.workflows,
-        players: current.players,
-        denyApps: current.denyApps,
-        denyDomains: current.denyDomains,
-      ),
-    );
+    return savePolicy(current.copyWith(families: updatedFamilies));
   }
 
   Future<void> dispose() async {

@@ -1338,7 +1338,7 @@ void main() {
       expect(psDenied.allowed, isFalse);
       expect(psDenied.errorCode, equals('denylisted_target_forbidden'));
 
-      // UDC-12 S12.2 & S12.3: Desk Co-Pilot tools (selection.read, host.lock_screen, workspace.watch_task, mcp.list_servers, mcp.call)
+      // UDC-12 S12.2 & S12.3 + Wave 2 AW2-M1: Desk Co-Pilot tools (7 tools)
       final copilotTools = buildDeskCopilotTools();
       expect(
         copilotTools.map((t) => t.name).toList(),
@@ -1348,6 +1348,8 @@ void main() {
           'workspace.watch_task',
           'mcp.list_servers',
           'mcp.call',
+          'mcp.task_result',
+          'mcp.task_cancel',
         ]),
       );
 
@@ -1763,7 +1765,7 @@ void main() {
         includeSmartTvHomeTools: true,
         includeSymbioticCopilotTools: true,
       );
-      expect(fullCatalog, hasLength(36));
+      expect(fullCatalog, hasLength(38));
 
       // S15.1: clipboard.write requires R2 approval and safe text
       const clipArgs = <String, Object?>{
@@ -1874,7 +1876,7 @@ void main() {
         includeSymbioticCopilotTools: true,
         includeSymbioticEvolutionTools: true,
       );
-      expect(fullCatalog, hasLength(42));
+      expect(fullCatalog, hasLength(44));
 
       // R1 workspace.capture_capsule & workspace.list_capsules
       expect(
@@ -1994,7 +1996,7 @@ void main() {
         includeSymbioticEvolutionTools: true,
         includeSymbioticSentinelTools: true,
       );
-      expect(fullCatalog50, hasLength(47));
+      expect(fullCatalog50, hasLength(49));
 
       expect(
         evaluator
@@ -2081,7 +2083,7 @@ void main() {
         includeSymbioticSentinelTools: true,
         includeOmniForgeTools: true,
       );
-      expect(fullCatalog55, hasLength(52));
+      expect(fullCatalog55, hasLength(54));
 
       expect(
         evaluator
@@ -2205,7 +2207,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(61));
+      expect(fullCatalog71, hasLength(63));
 
       expect(
         evaluator
@@ -2606,7 +2608,7 @@ void main() {
     });
 
     test(
-        'every tool in the full 61-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
+        'every tool in the full 63-tool catalog resolves to a valid ToolFamily matching its descriptor policy',
         () {
       final fullCatalog71 = buildMvpToolCatalog(
         includeBrowserCurrentUrl: true,
@@ -2620,7 +2622,7 @@ void main() {
         includeOmniForgeTools: true,
         includeClawPulseTools: true,
       );
-      expect(fullCatalog71, hasLength(61));
+      expect(fullCatalog71, hasLength(63));
       for (final tool in fullCatalog71) {
         final resolvedFamily = resolveToolFamilyForName(tool.name);
         expect(
@@ -4457,6 +4459,479 @@ void main() {
       ]) {
         expect(scrubbed, isNot(contains(leaked)),
             reason: 'Path leaked: $leaked');
+      }
+    });
+  });
+
+  group('Wave 2 AW2-M1 protocolHarnesses & async MCP/ACP schemas', () {
+    test('rejects forbidden shell/launcher executables and inline eval args',
+        () {
+      for (final badExe in const <String>[
+        '',
+        '   ',
+        'sh',
+        'bash',
+        'zsh',
+        'fish',
+        'dash',
+        'ksh',
+        'csh',
+        'tcsh',
+        'cmd',
+        'cmd.exe',
+        'powershell',
+        'powershell.exe',
+        'pwsh',
+        'osascript',
+        'sudo',
+        'su',
+        'doas',
+        'env',
+        '/bin/bash',
+        '/usr/bin/env',
+        r'C:\Windows\System32\cmd.exe',
+        'bash.sh',
+        'cmd.bat',
+        'sh.cmd',
+        'cmd.cmd',
+        'powershell.ps1',
+        'bad\nbin',
+      ]) {
+        expect(
+          isForbiddenProtocolHarnessExecutable(badExe),
+          isTrue,
+          reason: 'Expected forbidden executable rejection for "$badExe"',
+        );
+      }
+
+      for (final okExe in const <String>[
+        'uvx',
+        'npx',
+        'npx.cmd',
+        'python3',
+        'node',
+        'build_mcp_bin',
+        '/opt/tools/mcp-server',
+      ]) {
+        expect(
+          isForbiddenProtocolHarnessExecutable(okExe),
+          isFalse,
+          reason: 'Expected valid executable acceptance for "$okExe"',
+        );
+      }
+
+      for (final badCase in <({String exe, List<String> args})>[
+        (exe: 'python3', args: <String>['-c', 'import os']),
+        (exe: 'python3', args: <String>['-uc', 'print(1)']),
+        (exe: 'python3', args: <String>['-cprint(1)']),
+        (exe: 'node', args: <String>['-e', 'process.exit(1)']),
+        (exe: 'node', args: <String>['--eval', '1+1']),
+        (exe: 'node', args: <String>['--eval=1+1']),
+        (exe: 'node', args: <String>['-p', '1+1']),
+        (exe: 'node', args: <String>['--print=1']),
+        (exe: 'deno', args: <String>['eval', 'console.log(1)']),
+        (exe: 'tool', args: <String>['/c', 'dir']),
+        (exe: 'tool', args: <String>['-Command', 'Get-Process']),
+        (exe: 'tool', args: <String>['-EncodedCommand', 'QQ==']),
+        (exe: 'tool', args: <String>['-enc', 'QQ==']),
+      ]) {
+        expect(
+          hasForbiddenHarnessInlineEvalArg(badCase.exe, badCase.args),
+          isTrue,
+          reason:
+              'Expected inline eval rejection for ${badCase.exe} ${badCase.args}',
+        );
+      }
+
+      expect(
+        hasForbiddenHarnessInlineEvalArg(
+          'python3',
+          const <String>['-m', 'my_mcp_server', '--config', 'cfg.json'],
+        ),
+        isFalse,
+      );
+      expect(
+        hasForbiddenHarnessInlineEvalArg(
+          'node',
+          const <String>['server.js', '--stdio'],
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+        'HostPolicy.protocolHarnesses round-trips, enforces unique IDs & R2/R3 floor, and fails closed',
+        () {
+      final rawPolicy = <String, Object?>{
+        'schemaVersion': 1,
+        'trustPreset': 'autopilot',
+        'families': <String, Object?>{'app': 'allow'},
+        'apps': const <Object?>[],
+        'urlDomains': const <String>[],
+        'workflows': const <Object?>[],
+        'players': const <String>[],
+        'protocolHarnesses': <Map<String, Object?>>[
+          <String, Object?>{
+            'id': 'build_mcp',
+            'name': 'Build MCP Server',
+            'protocol': 'mcp_stdio',
+            'executable': 'python3',
+            'args': <String>['-m', 'build_mcp', '--stdio'],
+            'risk': 'R2',
+          },
+          <String, Object?>{
+            'id': 'eval_acp',
+            'name': 'Eval ACP Harness',
+            'protocol': 'acp_stdio',
+            'executable': '/opt/tools/acp-runner',
+            'args': <String>['--stdio'],
+            'risk': 'R3',
+          },
+        ],
+      };
+
+      final evaluator =
+          HostPolicyEvaluator.fromJsonString(jsonEncode(rawPolicy));
+      expect(evaluator.isHealthy, isTrue);
+      final policy = evaluator.policy!;
+      expect(policy.protocolHarnesses.length, equals(2));
+      expect(policy.findProtocolHarness('build_mcp')?.protocol,
+          equals(ProtocolHarnessProtocol.mcpStdio));
+      expect(policy.findProtocolHarness('eval_acp')?.risk, equals(RiskTier.r3));
+
+      final wireSanitized =
+          policy.protocolHarnesses.first.toSanitizedWireJson();
+      expect(wireSanitized.keys,
+          equals(<String>{'id', 'name', 'protocol', 'risk'}));
+      expect(wireSanitized.containsKey('executable'), isFalse);
+      expect(wireSanitized.containsKey('args'), isFalse);
+
+      // copyWith preserves protocolHarnesses by default.
+      final copied = policy.copyWith(trustPreset: TrustPreset.strict);
+      expect(copied.trustPreset, equals(TrustPreset.strict));
+      expect(copied.protocolHarnesses.length, equals(2));
+
+      // JSON round-trip preserves protocolHarnesses.
+      final reparsed = HostPolicy.fromJson(policy.toJson());
+      expect(reparsed.protocolHarnesses.length, equals(2));
+      expect(reparsed.findProtocolHarness('eval_acp')?.executable,
+          equals('/opt/tools/acp-runner'));
+
+      // Fail closed on shell executable, inline eval arg, R1 risk, or duplicate ID.
+      for (final badHarness in <Map<String, Object?>>[
+        <String, Object?>{
+          'id': 'bad_shell',
+          'name': 'Bad Shell',
+          'protocol': 'mcp_stdio',
+          'executable': '/bin/zsh',
+          'args': <String>[],
+          'risk': 'R2',
+        },
+        <String, Object?>{
+          'id': 'bad_eval',
+          'name': 'Bad Eval',
+          'protocol': 'acp_stdio',
+          'executable': 'python3',
+          'args': <String>['-c', 'import os'],
+          'risk': 'R2',
+        },
+        <String, Object?>{
+          'id': 'bad_risk',
+          'name': 'Low Risk',
+          'protocol': 'mcp_stdio',
+          'executable': 'uvx',
+          'args': <String>['mcp-srv'],
+          'risk': 'R1',
+        },
+      ]) {
+        final badEval = HostPolicyEvaluator.fromJsonString(
+          jsonEncode(<String, Object?>{
+            ...rawPolicy,
+            'protocolHarnesses': <Map<String, Object?>>[badHarness],
+          }),
+        );
+        expect(badEval.isHealthy, isFalse);
+      }
+
+      final dupEval = HostPolicyEvaluator.fromJsonString(
+        jsonEncode(<String, Object?>{
+          ...rawPolicy,
+          'protocolHarnesses': <Map<String, Object?>>[
+            rawPolicy['protocolHarnesses']! is List
+                ? (rawPolicy['protocolHarnesses']! as List).first
+                    as Map<String, Object?>
+                : const <String, Object?>{},
+            <String, Object?>{
+              'id': 'build_mcp',
+              'name': 'Duplicate ID',
+              'protocol': 'acp_stdio',
+              'executable': 'uvx',
+              'risk': 'R2',
+            },
+          ],
+        }),
+      );
+      expect(dupEval.isHealthy, isFalse);
+    });
+
+    test('xuna/set_policy rejects protocolHarnesses with -32602', () {
+      expect(
+        () => XtpFrame.parse(
+          jsonEncode(<String, Object?>{
+            'jsonrpc': '2.0',
+            'id': 910,
+            'method': 'xuna/set_policy',
+            'params': <String, Object?>{
+              'schemaVersion': 1,
+              'trustPreset': 'standard',
+              'protocolHarnesses': const <Object?>[],
+            },
+          }),
+        ),
+        throwsA(
+          isA<XtpProtocolException>()
+              .having((e) => e.jsonRpcCode, 'jsonRpcCode', equals(-32602)),
+        ),
+      );
+    });
+
+    test(
+        'mcp.call validates asyncMode/yieldMs, elevates harness R3 risk, and mcp.task_result/task_cancel validate at R1',
+        () {
+      final policy = HostPolicy(
+        families: const <ToolFamily, FamilyPolicyDecision>{
+          ToolFamily.app: FamilyPolicyDecision.allow,
+        },
+        apps: const <AllowedAppConfig>[],
+        urlDomains: const <String>[],
+        workflows: const <WorkflowConfig>[],
+        players: const <String>[],
+        trustPreset: TrustPreset.autopilot,
+        protocolHarnesses: <ProtocolHarnessConfig>[
+          ProtocolHarnessConfig(
+            id: 'r2_mcp',
+            name: 'R2 MCP',
+            protocol: ProtocolHarnessProtocol.mcpStdio,
+            executable: 'uvx',
+            args: const <String>['safe-mcp'],
+            risk: RiskTier.r2,
+          ),
+          ProtocolHarnessConfig(
+            id: 'r3_acp',
+            name: 'R3 ACP',
+            protocol: ProtocolHarnessProtocol.acpStdio,
+            executable: 'node',
+            args: const <String>['acp.js', '--stdio'],
+            risk: RiskTier.r3,
+          ),
+        ],
+      );
+      final evaluator = HostPolicyEvaluator.healthy(policy);
+      final now = DateTime.utc(2026, 11, 23, 12, 0);
+
+      // R2 harness under autopilot succeeds without approval.
+      final r2Call = evaluator.evaluateInvocation(
+        toolName: 'mcp.call',
+        arguments: const <String, Object?>{
+          'server': 'r2_mcp',
+          'tool': 'run_build',
+          'asyncMode': true,
+          'yieldMs': 2000,
+        },
+        nowUtc: now,
+      );
+      expect(r2Call.allowed, isTrue);
+      expect(r2Call.effectiveRisk, equals(RiskTier.r2));
+
+      // R3 harness under autopilot elevates effectiveRisk to R3 and requires approval.
+      final r3CallNoApproval = evaluator.evaluateInvocation(
+        toolName: 'mcp.call',
+        arguments: const <String, Object?>{
+          'server': 'r3_acp',
+          'tool': 'run_turn',
+          'asyncMode': true,
+        },
+        nowUtc: now,
+      );
+      expect(r3CallNoApproval.allowed, isFalse);
+      expect(r3CallNoApproval.effectiveRisk, equals(RiskTier.r3));
+      expect(r3CallNoApproval.errorCode, equals('approval_required'));
+
+      // Invalid yieldMs bounds fail closed with schema_mismatch.
+      for (final badYield in const <Object?>[499, 15001, true, '2000', null]) {
+        final bad = evaluator.evaluateInvocation(
+          toolName: 'mcp.call',
+          arguments: <String, Object?>{
+            'server': 'r2_mcp',
+            'tool': 'run_build',
+            'yieldMs': badYield,
+          },
+          nowUtc: now,
+        );
+        expect(bad.allowed, isFalse);
+        expect(bad.errorCode, equals('schema_mismatch'));
+      }
+
+      // mcp.task_result and mcp.task_cancel succeed at R1 and reject bad task IDs.
+      for (final toolName in const <String>[
+        'mcp.task_result',
+        'mcp.task_cancel'
+      ]) {
+        final ok = evaluator.evaluateInvocation(
+          toolName: toolName,
+          arguments: const <String, Object?>{
+            'server': 'r3_acp',
+            'protocolTaskId': 'task_01.run',
+          },
+          nowUtc: now,
+        );
+        expect(ok.allowed, isTrue);
+        expect(ok.effectiveRisk, equals(RiskTier.r1));
+
+        final bad = evaluator.evaluateInvocation(
+          toolName: toolName,
+          arguments: const <String, Object?>{
+            'server': 'r3_acp',
+            'protocolTaskId': 'bad/task',
+          },
+          nowUtc: now,
+        );
+        expect(bad.allowed, isFalse);
+        expect(bad.errorCode, equals('schema_mismatch'));
+      }
+
+      // mcp.list_servers schema exposes acp_stdio and supportsAsync without secrets.
+      final listTool = buildDeskCopilotTools()
+          .firstWhere((t) => t.name == 'mcp.list_servers');
+      final itemProps = ((listTool.outputSchema['properties']!
+              as Map<String, Object?>)['servers']!
+          as Map<String, Object?>)['items']! as Map<String, Object?>;
+      final fields = itemProps['properties']! as Map<String, Object?>;
+      expect(
+        (fields['transport']! as Map<String, Object?>)['enum'],
+        equals(<String>['stdio', 'http', 'acp_stdio']),
+      );
+      expect(fields.containsKey('supportsAsync'), isTrue);
+      expect(fields.containsKey('executable'), isFalse);
+      expect(fields.containsKey('args'), isFalse);
+      expect(fields.containsKey('env'), isFalse);
+    });
+
+    test(
+        'remediates inline eval bypasses (node/bun -pe, -ec, deno/bun <flags> eval) while allowing benign args',
+        () {
+      const forbiddenCases = <({String exe, List<String> args})>[
+        (exe: 'node', args: <String>['-pe', '1+1']),
+        (exe: 'node', args: <String>['-ep', '1+1']),
+        (exe: 'node', args: <String>['-ip', '1+1']),
+        (exe: 'node', args: <String>['-ie', '1+1']),
+        (exe: 'node', args: <String>['-p=1+1']),
+        (exe: 'bun', args: <String>['-pe', '1+1']),
+        (exe: 'bun', args: <String>['eval', '1+1']),
+        (exe: 'bun', args: <String>['--smol', 'eval', '1+1']),
+        (exe: 'mytool', args: <String>['-ec', 'QQ==']),
+        (exe: 'mytool', args: <String>['-ec=QQ==']),
+        (exe: 'mytool', args: <String>['-ec:QQ==']),
+        (exe: 'deno', args: <String>['--quiet', 'eval', 'console.log(1)']),
+      ];
+
+      for (final c in forbiddenCases) {
+        expect(
+          hasForbiddenHarnessInlineEvalArg(c.exe, c.args),
+          isTrue,
+          reason: 'Expected inline eval rejection for ${c.exe} ${c.args}',
+        );
+
+        final harnessJson = <String, Object?>{
+          'id': 'bad_harness',
+          'name': 'Bad Harness',
+          'protocol': 'mcp_stdio',
+          'executable': c.exe,
+          'args': c.args,
+          'risk': 'R2',
+        };
+        expect(
+          () => ProtocolHarnessConfig.fromJson(harnessJson),
+          throwsFormatException,
+          reason:
+              'Expected ProtocolHarnessConfig.fromJson failure for ${c.exe} ${c.args}',
+        );
+
+        final policyEvaluator = HostPolicyEvaluator.fromJsonString(
+          jsonEncode(<String, Object?>{
+            'schemaVersion': 1,
+            'trustPreset': 'autopilot',
+            'families': const <String, Object?>{'app': 'allow'},
+            'apps': const <Object?>[],
+            'urlDomains': const <String>[],
+            'workflows': const <Object?>[],
+            'players': const <String>[],
+            'protocolHarnesses': <Map<String, Object?>>[harnessJson],
+          }),
+        );
+        expect(
+          policyEvaluator.isHealthy,
+          isFalse,
+          reason:
+              'Expected HostPolicyEvaluator fail-closed for ${c.exe} ${c.args}',
+        );
+      }
+
+      const benignCases = <({String exe, List<String> args})>[
+        (exe: 'mytool', args: <String>['--config', 'cfg.json']),
+        (exe: 'deno', args: <String>['run', 'script.ts', 'eval']),
+        (exe: 'deno', args: <String>['--quiet', 'run', 'script.ts', 'eval']),
+        (exe: 'bun', args: <String>['run', 'script.ts', 'eval']),
+        (
+          exe: 'node',
+          args: <String>[
+            '--experimental-strip-types',
+            '--env-file=.env',
+            '-r',
+            'preload.js',
+            '-i',
+            '-h',
+            '-v',
+            'server.js',
+          ]
+        ),
+      ];
+
+      for (final c in benignCases) {
+        expect(
+          hasForbiddenHarnessInlineEvalArg(c.exe, c.args),
+          isFalse,
+          reason: 'Expected benign acceptance for ${c.exe} ${c.args}',
+        );
+
+        final harnessJson = <String, Object?>{
+          'id': 'good_harness',
+          'name': 'Good Harness',
+          'protocol': 'mcp_stdio',
+          'executable': c.exe,
+          'args': c.args,
+          'risk': 'R2',
+        };
+        final parsed = ProtocolHarnessConfig.fromJson(harnessJson);
+        expect(parsed.args, equals(c.args));
+
+        final policyEvaluator = HostPolicyEvaluator.fromJsonString(
+          jsonEncode(<String, Object?>{
+            'schemaVersion': 1,
+            'trustPreset': 'autopilot',
+            'families': const <String, Object?>{'app': 'allow'},
+            'apps': const <Object?>[],
+            'urlDomains': const <String>[],
+            'workflows': const <Object?>[],
+            'players': const <String>[],
+            'protocolHarnesses': <Map<String, Object?>>[harnessJson],
+          }),
+        );
+        expect(
+          policyEvaluator.isHealthy,
+          isTrue,
+          reason: 'Expected healthy HostPolicyEvaluator for ${c.exe} ${c.args}',
+        );
       }
     });
   });

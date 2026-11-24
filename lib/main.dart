@@ -24,6 +24,7 @@ import 'package:xuna_desktop/features/stop/desktop_tray_service.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_desktop/features/ui/desktop_agent_window.dart';
+import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_desktop/shared/constants/const_src.dart';
 import 'package:xuna_desktop/shared/themes/app_colors.dart';
 
@@ -79,6 +80,9 @@ Future<void> main() async {
     autoLaunchBrowser: true,
     userDataDirPath: '${paths.rootDir.path}/cdp-browser-profile',
   );
+  final protocolTaskRegistry = ProtocolTaskRegistry(
+    stopController: stopController,
+  );
 
   final dispatcher = HostToolDispatcher(
     policyStore: policyStore,
@@ -90,6 +94,7 @@ Future<void> main() async {
     computerUseManager: computerUseManager,
     appScanner: appScanner,
     browserEngineProvider: cdpBrowserProvider,
+    protocolTaskRegistry: protocolTaskRegistry,
   );
 
   final lanServer = LanOfflineServer(
@@ -136,6 +141,7 @@ Future<void> main() async {
       symbioticService: dispatcher.symbioticService,
       presenceCoordinator: presenceCoordinator,
       cdpBrowserProvider: cdpBrowserProvider,
+      protocolTaskRegistry: protocolTaskRegistry,
       appScanner: appScanner,
       workspaceIndexer: workspaceIndexer,
       logger: logger,

@@ -704,7 +704,15 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(77));
+        expect(toolsList, hasLength(79));
+        final toolNames = toolsList
+            .whereType<Map<Object?, Object?>>()
+            .map((t) => t['name'])
+            .toSet();
+        expect(
+          toolNames,
+          containsAll(<String>['mcp.task_result', 'mcp.task_cancel']),
+        );
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)
         expect(client.computeBackoffMs(0, jitterMsOverride: 0), 1000);
@@ -3881,5 +3889,326 @@ void main() {
         expect(records.map((r) => r.invocationId).toSet(), equals(ids.toSet()));
       },
     );
+
+    test(
+      'AutoAppScanner prefers Antigravity IDE over standalone Antigravity and git_summary exposes bounded relative changedFiles',
+      () {
+        final scanner = AutoAppScanner(
+          scanFileSystem: false,
+          seedApps: const <DiscoveredApp>[
+            DiscoveredApp(
+              id: 'antigravity',
+              name: 'Antigravity',
+              kind: AppLaunchKind.bundle,
+              target: '/Applications/Antigravity.app',
+            ),
+            DiscoveredApp(
+              id: 'antigravity_ide',
+              name: 'Antigravity IDE',
+              kind: AppLaunchKind.bundle,
+              target: '/Applications/Antigravity IDE.app',
+            ),
+          ],
+        );
+        // Fallback resolution prefers Antigravity IDE over standalone Antigravity.
+        final fallbackAgents = <String, String>{};
+        AutoAppScanner.applyGuiCodingAgentFallbacks(
+          fallbackAgents,
+          scanner.discoverApps(),
+        );
+        expect(
+          fallbackAgents['antigravity'],
+          equals('/Applications/Antigravity IDE.app'),
+        );
+        expect(
+          AutoWorkspaceIndexer.resolveMacIdeAppName(
+            'antigravity',
+            '/Applications/Antigravity IDE.app/Contents/Resources/app/bin/antigravity-ide',
+          ),
+          equals('Antigravity IDE'),
+        );
+        expect(
+          AutoWorkspaceIndexer.resolveMacIdeAppName(
+            'antigravity',
+            '/Applications/Antigravity IDE.app',
+          ),
+          equals('Antigravity IDE'),
+        );
+        expect(
+          AutoWorkspaceIndexer.resolveMacIdeAppName(
+            'antigravity',
+            '/Applications/Antigravity.app',
+          ),
+          equals('Antigravity'),
+        );
+        expect(
+          scanner.discoverApps().map((a) => a.id),
+          containsAll(<String>['antigravity', 'antigravity_ide']),
+        );
+
+        // parseGitPorcelainStatus returns bounded sanitized relative filenames only.
+        final parsed = AutoWorkspaceIndexer.parseGitPorcelainStatus(
+          'physical-ai-venture',
+          '''
+## main...origin/main
+ M docs/business_plan.md
+R  docs/old.md -> docs/gtm_playbook.md
+?? web/index.html
+?? /etc/passwd
+?? ../escape.txt
+''',
+        );
+        expect(parsed.branch, equals('main'));
+        expect(parsed.clean, isFalse);
+        expect(parsed.modifiedCount, equals(2));
+        expect(parsed.untrackedCount, equals(3));
+        expect(
+          parsed.changedFiles,
+          equals(<String>[
+            'docs/business_plan.md',
+            'docs/gtm_playbook.md',
+            'web/index.html',
+          ]),
+        );
+        expect(
+          parsed.toStructuredContent()['changedFiles'],
+          equals(<String>[
+            'docs/business_plan.md',
+            'docs/gtm_playbook.md',
+            'web/index.html',
+          ]),
+        );
+
+        // HostPolicy.findConfiguredAppFuzzy prioritizes unique owner-allowlisted app
+        // and returns null when ambiguous (Rule H3).
+        final uniquePolicy = HostPolicy.fromJson(<String, Object?>{
+          'schemaVersion': 1,
+          'families': const <String, Object?>{'app': 'allow'},
+          'apps': const <Object?>[
+            <String, Object?>{
+              'id': 'antigravity_ide',
+              'name': 'Antigravity IDE',
+              'kind': 'bundle',
+              'target': '/Applications/Antigravity IDE.app',
+              'risk': 'R2',
+            },
+          ],
+          'urlDomains': const <Object?>[],
+          'workflows': const <Object?>[],
+          'players': const <Object?>[],
+        });
+        expect(
+          uniquePolicy.findConfiguredAppFuzzy('antigravity')?.id,
+          equals('antigravity_ide'),
+        );
+        final ambiguousPolicy = HostPolicy.fromJson(<String, Object?>{
+          'schemaVersion': 1,
+          'families': const <String, Object?>{'app': 'allow'},
+          'apps': const <Object?>[
+            <String, Object?>{
+              'id': 'antigravity_ide',
+              'name': 'Antigravity IDE',
+              'kind': 'bundle',
+              'target': '/Applications/Antigravity IDE.app',
+              'risk': 'R2',
+            },
+            <String, Object?>{
+              'id': 'antigravity_beta',
+              'name': 'Antigravity Beta',
+              'kind': 'bundle',
+              'target': '/Applications/Antigravity Beta.app',
+              'risk': 'R2',
+            },
+          ],
+          'urlDomains': const <Object?>[],
+          'workflows': const <Object?>[],
+          'players': const <Object?>[],
+        });
+        expect(ambiguousPolicy.findConfiguredAppFuzzy('antigravity'), isNull);
+      },
+    );
+
+    test(
+      'deliverMacIdePromptNative reads Swift refId/label, translates window-relative bounds on secondary monitor, never passes raw windowTitle, and aborts on focus drift',
+      () async {
+        final channel = _IdePromptDeliveryFakeChannel();
+        final sent = await WorkspaceCodingAgentTool.deliverMacIdePromptNative(
+          channel: channel,
+          workspaceAlias: 'physical-ai-venture',
+          ideLabel: 'Antigravity IDE',
+          prompt: 'Tạo docs/supply_chain.md',
+          stepDelay: Duration.zero,
+        );
+        expect(sent, isTrue);
+        expect(
+          channel.writtenClipboardText,
+          equals('Tạo docs/supply_chain.md'),
+        );
+        expect(
+          channel.recordedControlCalls.every((c) => c.windowTitle == null),
+          isTrue,
+        );
+        expect(
+          channel.recordedControlCalls.any(
+            (c) => c.action == 'invoke_ref' && c.refId == 'ui_21',
+          ),
+          isTrue,
+        );
+        // Composer bounds (1100, 760, 300x80) inside window at (1920, 25) ->
+        // screen-absolute center (1920 + 1100 + 150, 25 + 760 + 40) = (3170.0, 825.0).
+        expect(
+          channel.recordedControlCalls.any(
+            (c) => c.action == 'click_point' && c.valueText == '3170.0,825.0',
+          ),
+          isTrue,
+        );
+        expect(
+          channel.recordedControlCalls.map((c) => c.refId),
+          containsAllInOrder(<String>[
+            'ui_21',
+            'shortcut:Cmd+V',
+            'shortcut:Enter',
+          ]),
+        );
+
+        // Focus-drift fail-closed check: if active window switches to another
+        // workspace before paste, refuse Cmd+V/Enter and return false.
+        final driftChannel = _IdePromptDeliveryFakeChannel(
+          driftToOtherWindowOnToggle: true,
+        );
+        final driftSent =
+            await WorkspaceCodingAgentTool.deliverMacIdePromptNative(
+              channel: driftChannel,
+              workspaceAlias: 'physical-ai-venture',
+              ideLabel: 'Antigravity IDE',
+              prompt: 'Should not land in xuna_pet',
+              stepDelay: Duration.zero,
+            );
+        expect(driftSent, isFalse);
+        expect(
+          driftChannel.recordedControlCalls.any(
+            (c) => c.refId == 'shortcut:Cmd+V' || c.refId == 'shortcut:Enter',
+          ),
+          isFalse,
+        );
+      },
+    );
   });
+}
+
+class _IdePromptDeliveryFakeChannel extends FakeXunaHostChannel {
+  _IdePromptDeliveryFakeChannel({this.driftToOtherWindowOnToggle = false}) {
+    activeWindowContextResult = const ActiveWindowContextSnapshot(
+      appName: 'Antigravity IDE',
+      processName: 'Antigravity IDE',
+      windowTitle: 'physical-ai-venture — index.html — Untracked',
+      focusedRole: 'AXTextArea',
+      visibleText: '',
+    );
+  }
+
+  final bool driftToOtherWindowOnToggle;
+  bool agentPanelOpen = false;
+  String? writtenClipboardText;
+  final List<
+    ({String action, String refId, String? windowTitle, String? valueText})
+  >
+  recordedControlCalls =
+      <
+        ({String action, String refId, String? windowTitle, String? valueText})
+      >[];
+
+  @override
+  Future<void> clipboardWriteText(String text) async {
+    writtenClipboardText = text;
+    await super.clipboardWriteText(text);
+  }
+
+  @override
+  Future<WindowUiTreeSnapshot> inspectWindowUiTree({
+    String? windowTitle,
+    int maxNodes = 35,
+  }) async {
+    return WindowUiTreeSnapshot(
+      windowTitle: activeWindowContextResult.windowTitle,
+      appName: activeWindowContextResult.appName,
+      windowX: 1920,
+      windowY: 25,
+      windowWidth: 1440,
+      windowHeight: 900,
+      nodes: <Map<String, Object?>>[
+        const <String, Object?>{
+          'refId': 'ui_10',
+          'role': 'AXTextArea',
+          'label': 'index.html',
+          'editable': true,
+          'bounds': <String, Object?>{
+            'x': 300,
+            'y': 100,
+            'width': 700,
+            'height': 600,
+          },
+        },
+        const <String, Object?>{
+          'refId': 'ui_21',
+          'role': 'AXButton',
+          'label': 'Toggle Agent (⌥⌘B)',
+          'editable': false,
+          'bounds': <String, Object?>{
+            'x': 1340,
+            'y': 10,
+            'width': 24,
+            'height': 24,
+          },
+        },
+        if (agentPanelOpen)
+          const <String, Object?>{
+            'refId': 'ui_1',
+            'role': 'AXTextArea',
+            'label': 'Message input',
+            'editable': true,
+            'bounds': <String, Object?>{
+              'x': 1100,
+              'y': 760,
+              'width': 300,
+              'height': 80,
+            },
+          },
+      ],
+    );
+  }
+
+  @override
+  Future<WindowUiControlActionResult> invokeWindowUiControl({
+    required String action,
+    required String refId,
+    String? windowTitle,
+    String? valueText,
+    bool submit = true,
+  }) async {
+    recordedControlCalls.add((
+      action: action,
+      refId: refId,
+      windowTitle: windowTitle,
+      valueText: valueText,
+    ));
+    if (action == 'invoke_ref' && refId == 'ui_21') {
+      agentPanelOpen = true;
+      if (driftToOtherWindowOnToggle) {
+        activeWindowContextResult = const ActiveWindowContextSnapshot(
+          appName: 'Antigravity IDE',
+          processName: 'Antigravity IDE',
+          windowTitle: 'xuna_pet — AGENTS.md',
+          focusedRole: 'AXTextArea',
+          visibleText: '',
+        );
+      }
+    }
+    return WindowUiControlActionResult(
+      ok: true,
+      invokedRefId: refId,
+      detail: 'OK',
+      windowTitle: activeWindowContextResult.windowTitle,
+    );
+  }
 }
