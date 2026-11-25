@@ -14,6 +14,10 @@ import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
 import 'package:xuna_desktop/features/discovery/auto_tv_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
+import 'package:xuna_desktop/features/exec/exec_host_environment.dart';
+import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
+import 'package:xuna_desktop/features/exec/exec_tools.dart';
+import 'package:xuna_desktop/features/exec/fs_tools.dart';
 import 'package:xuna_desktop/features/native_bridge/macos_native_app_bridge.dart';
 import 'package:xuna_desktop/features/native_bridge/native_app_bridge.dart';
 import 'package:xuna_desktop/features/native_bridge/windows_native_app_bridge.dart';
@@ -211,7 +215,19 @@ class ToolExecutionContext {
     this.protocolTaskRegistry,
     this.acpHarnessAdapter,
     this.hasVerifiedR3Approval = false,
+    this.execRegistry,
+    this.execFsContext,
+    this.deadlineMs,
   });
+
+  /// RAM-only registry of `exec.run` children (`ADR-0018`).
+  final ExecProcessRegistry? execRegistry;
+
+  /// Host facts used to classify `fs.*` / `exec.*` paths (home, symlinks).
+  final ExecFsHostContext? execFsContext;
+
+  /// The `tools/call` deadline (`xuna/deadlineMs`), when known.
+  final int? deadlineMs;
 
   /// Whether the call carries an approval the host verified as R3-grade:
   /// bound to these arguments, unexpired, scope `once` and signed by an
@@ -311,8 +327,12 @@ class HostToolDispatcher {
     BrowserEngineProvider? browserEngineProvider,
     ProtocolTaskRegistry? protocolTaskRegistry,
     AcpHarnessAdapter? acpHarnessAdapter,
+    ExecProcessRegistry? execRegistry,
     List<HostToolHandler>? handlers,
-  }) : _ownsProtocolTaskRegistry = protocolTaskRegistry == null,
+  }) : execRegistry =
+           execRegistry ??
+           ExecProcessRegistry(stopController: stopController, logger: logger),
+       _ownsProtocolTaskRegistry = protocolTaskRegistry == null,
        protocolTaskRegistry =
            protocolTaskRegistry ??
            ProtocolTaskRegistry(stopController: stopController),
@@ -345,6 +365,8 @@ class HostToolDispatcher {
           ...defaultForgeClawToolHandlers,
           ...defaultNativeAppToolHandlers(this.nativeAppBridge),
           ...defaultBrowserToolHandlers(this.browserEngineProvider),
+          ...defaultFsToolHandlers,
+          ...defaultExecToolHandlers,
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -353,11 +375,27 @@ class HostToolDispatcher {
       _handlers[handler.name] = handler;
     }
     stopController.addCancelListener(_onEmergencyStop);
+    // ADR-0018: `exec.*` permission is part of the manifest, so a local
+    // shellControl change must refresh the backend's copy (tools/list_changed).
+    _shellEnabled = policyStore.evaluator.policy?.shellControl.enabled ?? false;
+    _policySub = policyStore.changes.listen((evaluator) {
+      final enabled = evaluator.policy?.shellControl.enabled ?? false;
+      if (enabled == _shellEnabled) return;
+      _shellEnabled = enabled;
+      if (!enabled) unawaited(this.execRegistry.killAll());
+      if (!_toolsListChanged.isClosed) _toolsListChanged.add(null);
+    });
   }
+
+  bool _shellEnabled = false;
+  StreamSubscription<HostPolicyEvaluator>? _policySub;
 
   final HostPolicyStore policyStore;
   final XunaHostChannel channel;
   final AuditLogStore auditStore;
+
+  /// `exec.run` children of this host (`ADR-0018`); killed on E-Stop.
+  final ExecProcessRegistry execRegistry;
   final EmergencyStopController stopController;
   final ContentFreeLogger logger;
   final EnrollmentStateStore? enrollmentStore;
@@ -443,6 +481,11 @@ class HostToolDispatcher {
     'web.snapshot',
     'web.extract',
     'web.wait_for',
+    'fs.list_files',
+    'fs.read_file',
+    'fs.grep',
+    'exec.status',
+    'exec.cancel',
   };
 
   /// Builds the `tools/list` manifest with current OS permission states.
@@ -466,6 +509,8 @@ class HostToolDispatcher {
       includeSymbioticSentinelTools: true,
       includeOmniForgeTools: true,
       includeClawPulseTools: true,
+      includeExecFsTools: true,
+      shellEnabled: policyStore.evaluator.policy?.shellControl.enabled ?? false,
     );
     final dynamicForged = symbioticService.buildDynamicToolDescriptors(
       defaultPermission: perms.accessibility,
@@ -554,6 +599,7 @@ class HostToolDispatcher {
       allowZeroConfigAppDiscovery: true,
       allowPublicHttpsDomains: true,
       nowUtc: nowUtc,
+      execFsContext: buildExecFsHostContext(execRegistry),
     );
 
     if (!evaluation.allowed) {
@@ -763,6 +809,9 @@ class HostToolDispatcher {
         computerUseManager: computerUseManager,
         protocolTaskRegistry: protocolTaskRegistry,
         acpHarnessAdapter: acpHarnessAdapter,
+        execRegistry: execRegistry,
+        execFsContext: buildExecFsHostContext(execRegistry),
+        deadlineMs: params.deadlineMs,
       );
 
       final deadline = Duration(milliseconds: params.deadlineMs);
@@ -947,6 +996,7 @@ class HostToolDispatcher {
       allowZeroConfigAppDiscovery: true,
       allowPublicHttpsDomains: true,
       nowUtc: now,
+      execFsContext: buildExecFsHostContext(execRegistry),
     );
 
     XtpResponse refuse(XtpStatus status, String errorCode) {
@@ -970,7 +1020,7 @@ class HostToolDispatcher {
     }
 
     var risk = evaluation.effectiveRisk;
-    var reasonCode = 'policy';
+    var reasonCode = evaluation.reasonCode ?? 'policy';
     String? elementRole;
     String? elementName;
     final manager = computerUseManager;
@@ -1025,6 +1075,8 @@ class HostToolDispatcher {
       'allowDomains': policy?.urlDomains ?? const <String>[],
       'denyDomains': policy?.denyDomains ?? const <String>[],
       'discoveredApps': discovered,
+      // Local-only switch: only the boolean summary leaves the host.
+      'shellEnabled': policy?.shellControl.enabled ?? false,
     };
     return XtpResponse(id: requestId, result: result);
   }
@@ -1125,6 +1177,9 @@ class HostToolDispatcher {
       denyDomains: List.unmodifiable(params.denyDomains),
       protocolHarnesses:
           currentPolicy?.protocolHarnesses ?? const <ProtocolHarnessConfig>[],
+      // Local-only (ADR-0018): a remote policy write never changes it.
+      shellControl:
+          currentPolicy?.shellControl ?? const ShellControlPolicy.disabled(),
     );
 
     await policyStore.savePolicy(updatedPolicy);
@@ -1174,6 +1229,7 @@ class HostToolDispatcher {
 
   void dispose() {
     stopController.removeCancelListener(_onEmergencyStop);
+    unawaited(_policySub?.cancel());
     if (_ownsProtocolTaskRegistry) {
       unawaited(protocolTaskRegistry.dispose());
     }

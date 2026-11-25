@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import '../canonical_json.dart';
 import '../schemas.dart';
+import 'exec_fs_validators.dart';
 import 'forge_swarm_validators.dart';
 import 'policy_models.dart';
 import 'security_redaction.dart';
@@ -178,7 +179,16 @@ PolicyEvaluationResult validateToolArguments({
   required bool allowZeroConfigAppDiscovery,
   bool allowPublicHttpsDomains = false,
   required EvaluateStepCallback evaluateStep,
+  ExecFsHostContext? execFsContext,
 }) {
+  if (isExecFsTool(toolName)) {
+    return validateExecFsArguments(
+      toolName: toolName,
+      arguments: arguments,
+      activePolicy: activePolicy,
+      context: execFsContext,
+    );
+  }
   late final RiskTier effectiveRisk;
   AllowedAppConfig? matchedApp;
   WorkflowConfig? matchedWorkflow;
@@ -336,8 +346,22 @@ PolicyEvaluationResult validateToolArguments({
         );
       }
       effectiveRisk = RiskTier.r1;
-    case 'host.lock_screen':
     case 'mcp.list_servers':
+      final includeTools = arguments['includeTools'];
+      final serverId = arguments['serverId'];
+      if (arguments.keys.any((k) => k != 'includeTools' && k != 'serverId') ||
+          (arguments.containsKey('includeTools') && includeTools is! bool) ||
+          (arguments.containsKey('serverId') &&
+              (serverId is! String || !isValidShortId(serverId)))) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.invalidArgs,
+          effectiveRisk: RiskTier.r1,
+          errorCode: 'schema_mismatch',
+        );
+      }
+      effectiveRisk = RiskTier.r1;
+    case 'host.lock_screen':
     case 'action.undo':
     case 'tv.list_devices':
       if (arguments.isNotEmpty) {
@@ -1627,6 +1651,7 @@ PolicyEvaluationResult validateToolArguments({
           );
         }
         if (stepTool == 'workflow.batch_steps' ||
+            isExecFsTool(stepTool) ||
             stepTool.startsWith('cu.') ||
             stepTool.startsWith('screen.') ||
             stepTool.startsWith('ui.') ||

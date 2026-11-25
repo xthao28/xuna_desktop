@@ -556,6 +556,7 @@ class LocalWatchSentinel {
         WatchMode.protocolAsync => const <WatchSignal>[
           WatchSignal.protocolAsync,
         ],
+        WatchMode.execAsync => const <WatchSignal>[WatchSignal.execAsync],
       };
 
   static WatchRejectErrorCode? _validateTargetRequirements(
@@ -585,6 +586,10 @@ class LocalWatchSentinel {
           }
         case WatchSignal.protocolAsync:
           if (target.mcpServerId == null || target.protocolTaskId == null) {
+            return WatchRejectErrorCode.targetNotFound;
+          }
+        case WatchSignal.execAsync:
+          if (target.execTaskId == null) {
             return WatchRejectErrorCode.targetNotFound;
           }
         case WatchSignal.timer:

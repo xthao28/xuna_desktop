@@ -12,6 +12,7 @@ import Security
 /// - `XunaHostPlugin+UiTreeScanner.swift`: App discovery, AXUIElement UI tree inspection, and pointer/scroll primitives.
 /// - `XunaHostPlugin+UiActionExecutor.swift`: Universal AXUIElement/DOM/AppleEvents/CGEvent UI control execution.
 /// - `XunaHostPlugin+Watch.swift`: Bounded-unary native OS watchers (`AXObserver`, `libproc`, `FSEvents`).
+/// - `XunaHostPlugin+Exec.swift`: `exec.run` children in their own process group (`ADR-0018`).
 final class XunaHostPlugin: NSObject, FlutterPlugin {
   static let channelName = "xuna/host"
   static let keyTag = "ai.xuna.desktop.host.signing.v1"
@@ -275,6 +276,9 @@ final class XunaHostPlugin: NSObject, FlutterPlugin {
     case "watchStop":
       watchQueue.async { self.handleWatchStop(args: args, result: result) }
     default:
+      if routeExecMethod(method, args: args, result: result) {
+        return
+      }
       DispatchQueue.main.async {
         result(FlutterMethodNotImplemented)
       }

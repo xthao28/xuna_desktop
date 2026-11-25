@@ -8,6 +8,9 @@ import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Tab 2 (`Chính sách`): Local `host-policy.json` dual-consent toggles and allowlists.
 class PolicyTabView extends BaseTabView<DesktopAgentController> {
+  /// Local-only `shellControl` switch (`ADR-0018`).
+  static const shellControlToggleKey = Key('policy.shellControl.toggle');
+
   const PolicyTabView({
     super.key,
     required super.controller,
@@ -118,6 +121,18 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
             ),
             UtilWidget.sizedBox10,
           ],
+          AppSectionCard(
+            key: shellControlToggleKey,
+            title: 'Dòng lệnh & tệp (exec.*) — chỉ bật tại máy này',
+            subtitle:
+                'Cho XUNA chạy lệnh kiểm thử/build và đọc, sửa tệp trong thư mục dự án. sudo, kho mật khẩu, ~/.ssh và lệnh phá hủy luôn bị chặn; lệnh xóa, mạng hay hệ thống luôn cần ký duyệt R3 trên điện thoại. Điện thoại không thể bật mục này từ xa.',
+            shadow: AppDimens.shadow2,
+            trailing: AppToggle(
+              value: policy.shellControl.enabled,
+              onChanged: controller.setShellControlEnabled,
+            ),
+          ),
+          UtilWidget.sizedBox10,
           AppSectionCard(
             title: 'Tên miền cho phép (url.open)',
             shadow: AppDimens.shadow2,

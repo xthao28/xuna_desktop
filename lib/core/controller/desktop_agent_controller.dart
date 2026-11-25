@@ -20,7 +20,9 @@ import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
+import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
 import 'package:xuna_desktop/features/watch/cdp_watch_signal_driver.dart';
+import 'package:xuna_desktop/features/watch/exec_async_watch_driver.dart';
 import 'package:xuna_desktop/features/watch/local_watch_sentinel.dart';
 import 'package:xuna_desktop/features/watch/native_watch_signal_driver.dart';
 import 'package:xuna_desktop/features/watch/protocol_async_watch_driver.dart';
@@ -48,10 +50,12 @@ class DesktopAgentController extends BaseGetxController {
     this.presenceCoordinator,
     LocalWatchSentinel? watchSentinel,
     ProtocolTaskRegistry? protocolTaskRegistry,
+    ExecProcessRegistry? execRegistry,
     CdpBrowserEngineProvider? cdpBrowserProvider,
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
   }) : _appScanner = appScanner ?? AutoAppScanner(),
+       _execRegistry = execRegistry,
        _workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer() {
     if (watchSentinel != null) {
       _watchSentinel = watchSentinel;
@@ -79,6 +83,8 @@ class DesktopAgentController extends BaseGetxController {
               taskRegistry: protocolTaskRegistry,
               logger: logger,
             ),
+          if (execRegistry != null)
+            ExecAsyncWatchDriver(registry: execRegistry),
         ],
       );
       _ownsWatchSentinel = true;
@@ -130,6 +136,7 @@ class DesktopAgentController extends BaseGetxController {
   final isPolicyHealthy = false.obs;
   final policyBanner = RxnString();
   final activePolicy = Rxn<HostPolicy>();
+  final ExecProcessRegistry? _execRegistry;
   final isStopped = false.obs;
   final followMeEnabled = false.obs;
   final lanModeEnabled = false.obs;
@@ -800,6 +807,20 @@ class DesktopAgentController extends BaseGetxController {
 
   Future<void> restoreDefaultPolicy() async {
     await policyStore.writeDefaultPolicy();
+  }
+
+  /// Turns the local-only `shellControl` switch on or off (`ADR-0018`).
+  /// Only this desktop UI (or a direct edit of `host-policy.json`) can change
+  /// it; turning it off also terminates every running `exec.run` task.
+  Future<void> setShellControlEnabled(bool enabled) async {
+    final current = activePolicy.value;
+    if (current == null) return;
+    await policyStore.savePolicy(
+      current.copyWith(
+        shellControl: current.shellControl.copyWith(enabled: enabled),
+      ),
+    );
+    if (!enabled) await _execRegistry?.killAll();
   }
 
   Future<void> toggleFamilyPolicy(ToolFamily family, bool allow) async {

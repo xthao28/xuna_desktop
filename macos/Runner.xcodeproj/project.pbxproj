@@ -23,6 +23,7 @@
 /* Begin PBXBuildFile section */
 		331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C80D7294CF71000263BE5 /* RunnerTests.swift */; };
 		331C80E1294CF71000263BE5 /* RunnerWatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C80E0294CF71000263BE5 /* RunnerWatchTests.swift */; };
+		331C80E3294CF71000263BE5 /* RunnerExecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C80E2294CF71000263BE5 /* RunnerExecTests.swift */; };
 		335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */; };
 		33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC10F02044A3C60003C045 /* AppDelegate.swift */; };
 		33CC10F32044A3C60003C045 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F22044A3C60003C045 /* Assets.xcassets */; };
@@ -35,6 +36,7 @@
 		33CC11372044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11362044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift */; };
 		33CC11392044BFA00003C045 /* XunaHostPlugin+Presence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11382044BFA00003C045 /* XunaHostPlugin+Presence.swift */; };
 		33CC113B2044BFA00003C045 /* XunaHostPlugin+Watch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC113A2044BFA00003C045 /* XunaHostPlugin+Watch.swift */; };
+		33CC113D2044BFA00003C045 /* XunaHostPlugin+Exec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC113C2044BFA00003C045 /* XunaHostPlugin+Exec.swift */; };
 		B9DECC2B6D9A09A5F9E1F9C9 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = CE18EC8A75AB69B6555B3B8E /* Pods_RunnerTests.framework */; };
 		F32C9C50DF777EB1D7A7D541 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DB18933E1F6A6CDC371CD0AF /* Pods_Runner.framework */; };
 /* End PBXBuildFile section */
@@ -75,6 +77,7 @@
 		331C80D5294CF71000263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		331C80D7294CF71000263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
 		331C80E0294CF71000263BE5 /* RunnerWatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerWatchTests.swift; sourceTree = "<group>"; };
+		331C80E2294CF71000263BE5 /* RunnerExecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerExecTests.swift; sourceTree = "<group>"; };
 		333000ED22D3DE5D00554162 /* Warnings.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Warnings.xcconfig; sourceTree = "<group>"; };
 		335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GeneratedPluginRegistrant.swift; sourceTree = "<group>"; };
 		33CC10ED2044A3C60003C045 /* xuna_desktop.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = xuna_desktop.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -90,6 +93,7 @@
 		33CC11362044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+UiActionExecutor.swift"; sourceTree = "<group>"; };
 		33CC11382044BFA00003C045 /* XunaHostPlugin+Presence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+Presence.swift"; sourceTree = "<group>"; };
 		33CC113A2044BFA00003C045 /* XunaHostPlugin+Watch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+Watch.swift"; sourceTree = "<group>"; };
+		33CC113C2044BFA00003C045 /* XunaHostPlugin+Exec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "XunaHostPlugin+Exec.swift"; sourceTree = "<group>"; };
 		33CEB47222A05771004F2AC0 /* Flutter-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Debug.xcconfig"; sourceTree = "<group>"; };
 		33CEB47422A05771004F2AC0 /* Flutter-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Release.xcconfig"; sourceTree = "<group>"; };
 		33CEB47722A0578A004F2AC0 /* Flutter-Generated.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = "Flutter-Generated.xcconfig"; path = "ephemeral/Flutter-Generated.xcconfig"; sourceTree = "<group>"; };
@@ -131,6 +135,7 @@
 			children = (
 				331C80D7294CF71000263BE5 /* RunnerTests.swift */,
 				331C80E0294CF71000263BE5 /* RunnerWatchTests.swift */,
+				331C80E2294CF71000263BE5 /* RunnerExecTests.swift */,
 			);
 			path = RunnerTests;
 			sourceTree = "<group>";
@@ -201,6 +206,7 @@
 				33CC11362044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift */,
 				33CC11382044BFA00003C045 /* XunaHostPlugin+Presence.swift */,
 				33CC113A2044BFA00003C045 /* XunaHostPlugin+Watch.swift */,
+				33CC113C2044BFA00003C045 /* XunaHostPlugin+Exec.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
 				33E51914231749380026EE4D /* Release.entitlements */,
 				33CC11242044D66E0003C045 /* Resources */,
@@ -456,6 +462,7 @@
 			files = (
 				331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */,
 				331C80E1294CF71000263BE5 /* RunnerWatchTests.swift in Sources */,
+				331C80E3294CF71000263BE5 /* RunnerExecTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -472,6 +479,7 @@
 				33CC11372044BFA00003C045 /* XunaHostPlugin+UiActionExecutor.swift in Sources */,
 				33CC11392044BFA00003C045 /* XunaHostPlugin+Presence.swift in Sources */,
 				33CC113B2044BFA00003C045 /* XunaHostPlugin+Watch.swift in Sources */,
+				33CC113D2044BFA00003C045 /* XunaHostPlugin+Exec.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

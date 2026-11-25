@@ -493,7 +493,7 @@ enum RiskTier implements Comparable<RiskTier> {
       };
 }
 
-/// Canonical tool families (`UDC-3` §5.4, `UDC-8` §4.2).
+/// Canonical tool families (`UDC-3` §5.4, `UDC-8` §4.2, `ADR-0018` `exec`).
 enum ToolFamily {
   media('media'),
   app('app'),
@@ -504,7 +504,11 @@ enum ToolFamily {
   screen('screen'),
   ui('ui'),
   input('input'),
-  files('files');
+  files('files'),
+
+  /// Local opt-in command execution (`exec.*`, `ADR-0018`). Gated by the
+  /// local-only `HostPolicy.shellControl` switch and an explicit grant.
+  exec('exec');
 
   const ToolFamily(this.wire);
   final String wire;
@@ -520,6 +524,7 @@ enum ToolFamily {
         'ui' => ToolFamily.ui,
         'input' => ToolFamily.input,
         'files' => ToolFamily.files,
+        'exec' => ToolFamily.exec,
         _ => throw FormatException('Unknown ToolFamily: $value'),
       };
 }
@@ -808,7 +813,7 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   if (prefix == 'habit' || prefix == 'shortcuts') {
     return ToolFamily.workflow;
   }
-  if (prefix == 'finder') {
+  if (prefix == 'finder' || prefix == 'fs') {
     return ToolFamily.files;
   }
   if (prefix == 'display' ||

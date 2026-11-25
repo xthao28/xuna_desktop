@@ -2,6 +2,7 @@
 library;
 
 export 'schemas/core_types.dart';
+export 'schemas/exec_fs_catalog.dart';
 export 'schemas/forge_claw_catalog.dart';
 export 'schemas/mvp_devops_catalog.dart';
 export 'schemas/native_browser_catalog.dart';

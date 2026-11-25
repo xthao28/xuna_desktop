@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
+import 'package:xuna_desktop/features/discovery/mcp_tools_introspector.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -495,20 +496,37 @@ class McpListServersTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final byId = <String, Map<String, Object?>>{
-      for (final s in context.mcpBridge.discoverServers()) s.id: s.toWireJson(),
+    final byId = <String, DiscoveredMcpServer>{
+      for (final s in context.mcpBridge.discoverServers()) s.id: s,
     };
     final harnesses =
         context.policy?.protocolHarnesses ?? const <ProtocolHarnessConfig>[];
     for (final harness in harnesses) {
-      byId[harness.id] = <String, Object?>{
-        'id': harness.id,
-        'transport': harness.mcpListTransport,
-        'source': 'host_policy',
-        'supportsAsync': true,
-      };
+      byId[harness.id] = AutoMcpBridge.buildServerFromHarness(harness);
     }
-    final servers = byId.values.toList();
+    var selected = byId.values.toList();
+    final serverId = context.arguments['serverId'] as String?;
+    if (serverId != null) {
+      selected = selected.where((s) => s.id == serverId).toList();
+      if (selected.isEmpty) {
+        throw XunaHostChannelException(
+          status: XtpStatus.invalidArgs,
+          errorCode: 'unknown_id',
+          message: 'Known servers: ${byId.keys.take(10).join(', ')}',
+        );
+      }
+    }
+    // ADR-0018 Pillar 2: real `tools/list` metadata unless includeTools=false.
+    final includeTools = context.arguments['includeTools'] != false;
+    final introspector = McpToolsIntrospector.forBridge(context.mcpBridge);
+    final servers = await Future.wait(
+      selected.map((s) async {
+        final wire = <String, Object?>{...s.toWireJson()};
+        if (includeTools) wire.addAll(await introspector.describe(s));
+        return wire;
+      }),
+    );
+    introspector.enforceBudget(servers);
     return ToolHandlerOutput(
       text: 'Có ${servers.length} máy chủ MCP cục bộ khả dụng.',
       structuredContent: <String, Object?>{'servers': servers},

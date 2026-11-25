@@ -3,14 +3,21 @@ import 'dart:typed_data';
 
 import 'canonical_json.dart';
 import 'crypto.dart';
+import 'policy/exec_fs_validators.dart';
 import 'policy/policy_models.dart';
 import 'policy/tool_arg_validators.dart';
 import 'schemas.dart';
 
+export 'policy/exec_command_classifier.dart';
+export 'policy/exec_command_lexer.dart';
+export 'policy/exec_environment.dart';
+export 'policy/exec_fs_validators.dart';
 export 'policy/forge_swarm_validators.dart';
+export 'policy/fs_path_guard.dart';
 export 'policy/input_step_risk.dart';
 export 'policy/policy_models.dart';
 export 'policy/security_redaction.dart';
+export 'policy/shell_control_policy.dart';
 export 'policy/tool_arg_validators.dart';
 export 'policy/ui_find.dart';
 export 'policy/url_domain_validator.dart';
@@ -76,6 +83,7 @@ class HostPolicyEvaluator {
     Set<String>? cuSessionApprovedApps,
     bool allowZeroConfigAppDiscovery = true,
     bool allowPublicHttpsDomains = false,
+    ExecFsHostContext? execFsContext,
   }) {
     final now = (nowUtc ?? DateTime.now()).toUtc();
     ToolDescriptor.validateToolName(toolName);
@@ -116,7 +124,19 @@ class HostPolicyEvaluator {
 
     final activePolicy = policy!;
     final family = resolveToolFamilyForName(toolName)!;
-    if (!activePolicy.isFamilyAllowed(family)) {
+    // `exec` is enabled only by the local-only `shellControl` switch
+    // (ADR-0018); the `families` map cannot turn it on.
+    if (family == ToolFamily.exec) {
+      if (!activePolicy.shellControl.enabled) {
+        return const PolicyEvaluationResult(
+          allowed: false,
+          status: XtpStatus.denied,
+          effectiveRisk: RiskTier.r2,
+          errorCode: 'shell_not_enabled',
+          reasonCode: 'policy',
+        );
+      }
+    } else if (!activePolicy.isFamilyAllowed(family)) {
       return const PolicyEvaluationResult(
         allowed: false,
         status: XtpStatus.denied,
@@ -140,6 +160,7 @@ class HostPolicyEvaluator {
       allowZeroConfigAppDiscovery: effectiveAllowZeroConfig,
       allowPublicHttpsDomains: allowPublicHttpsDomains,
       evaluateStep: evaluateInvocation,
+      execFsContext: execFsContext,
     );
     if (!argResult.allowed) {
       return argResult;
@@ -193,6 +214,7 @@ class HostPolicyEvaluator {
           status: XtpStatus.denied,
           effectiveRisk: effectiveRisk,
           errorCode: approvalError,
+          reasonCode: argResult.reasonCode,
         );
       }
     }
@@ -204,6 +226,7 @@ class HostPolicyEvaluator {
       app: matchedApp,
       workflow: matchedWorkflow,
       normalizedUrlHost: normalizedUrlHost,
+      reasonCode: argResult.reasonCode,
     );
   }
 }

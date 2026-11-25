@@ -45,9 +45,9 @@ void main() {
   });
 
   group('Golden valid frames round-trip', () {
-    test('parses and re-encodes all 27 valid frames identically', () {
+    test('parses and re-encodes all 30 valid frames identically', () {
       final frames = watchFixture['frames'] as Map<String, Object?>;
-      expect(frames.length, equals(27));
+      expect(frames.length, equals(30));
 
       for (final entry in frames.entries) {
         final rawMap = entry.value as Map<String, Object?>;
@@ -130,6 +130,21 @@ void main() {
         equals(const <WatchSignal>[WatchSignal.protocolAsync]),
       );
 
+      final execReq = XtpFrame.parse(
+        jsonEncode(frames['watchRegisterExecAsyncRequest']),
+      ) as XtpRequest;
+      final execParams = execReq.typedParams as WatchRegisterParams;
+      expect(execParams.mode, equals(WatchMode.execAsync));
+      expect(execParams.target.execTaskId, equals('exec_7f3a9c'));
+      expect(execParams.requireInitialChange, isFalse);
+      final execSettled = XtpFrame.parse(
+        jsonEncode(frames['watchEventExecAsyncSettledNotification']),
+      ) as XtpNotification;
+      expect(
+        (execSettled.typedParams as WatchEventParams).observedSignals,
+        equals(const <WatchSignal>[WatchSignal.execAsync]),
+      );
+
       final protoLost = XtpFrame.parse(
         jsonEncode(frames['watchEventProtocolAsyncTargetLostNotification']),
       ) as XtpNotification;
@@ -202,10 +217,10 @@ void main() {
   });
 
   group('Golden invalidFrames rejected', () {
-    test('rejects all 14 invalidFrames with expectedJsonRpcCode', () {
+    test('rejects all 15 invalidFrames with expectedJsonRpcCode', () {
       final invalidFrames =
           watchFixture['invalidFrames'] as Map<String, Object?>;
-      expect(invalidFrames.length, equals(14));
+      expect(invalidFrames.length, equals(15));
 
       for (final entry in invalidFrames.entries) {
         final spec = entry.value as Map<String, Object?>;

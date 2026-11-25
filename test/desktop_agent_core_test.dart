@@ -704,7 +704,8 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        expect(toolsList, hasLength(79));
+        // 79 pre-Wave-3 tools + 5 fs.* + 4 exec.* (ADR-0018).
+        expect(toolsList, hasLength(88));
         final toolNames = toolsList
             .whereType<Map<Object?, Object?>>()
             .map((t) => t['name'])
@@ -712,6 +713,10 @@ void main() {
         expect(
           toolNames,
           containsAll(<String>['mcp.task_result', 'mcp.task_cancel']),
+        );
+        expect(
+          toolNames,
+          containsAll(<String>['fs.read_file', 'fs.patch_file', 'exec.run']),
         );
 
         // 6. Backoff calculation check (1, 2, 4, 8, 16, 32, 60 s)

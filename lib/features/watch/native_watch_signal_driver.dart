@@ -117,6 +117,7 @@ class NativeWatchSignalDriver implements WatchSignalDriver {
       case WatchSignal.cdpIdle:
       case WatchSignal.timer:
       case WatchSignal.protocolAsync:
+      case WatchSignal.execAsync:
         throw const WatchDriverException(
           errorCode: 'watch_unsupported',
           message: 'Unsupported signal for native watch driver.',

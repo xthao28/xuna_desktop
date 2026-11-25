@@ -1,5 +1,6 @@
 import '../schemas.dart';
 import 'security_redaction.dart';
+import 'shell_control_policy.dart';
 import 'url_domain_validator.dart';
 
 /// Family-level policy decision in `host-policy.json` (`allow` | `block`).
@@ -325,6 +326,7 @@ class HostPolicy {
     this.denyDomains = const <String>[],
     List<ProtocolHarnessConfig> protocolHarnesses =
         const <ProtocolHarnessConfig>[],
+    this.shellControl = const ShellControlPolicy.disabled(),
   }) : protocolHarnesses = List<ProtocolHarnessConfig>.unmodifiable(
           protocolHarnesses,
         ) {
@@ -357,6 +359,7 @@ class HostPolicy {
         'denyApps',
         'denyDomains',
         'protocolHarnesses',
+        'shellControl',
       },
       context: 'HostPolicy',
     );
@@ -473,6 +476,13 @@ class HostPolicy {
       }
     }
 
+    final rawShell = json['shellControl'];
+    final shellControl = rawShell == null
+        ? const ShellControlPolicy.disabled()
+        : ShellControlPolicy.fromJson(
+            castPolicyObjectMap(rawShell, 'shellControl'),
+          );
+
     return HostPolicy(
       schemaVersion: 1,
       trustPreset: trustPreset,
@@ -484,6 +494,7 @@ class HostPolicy {
       denyApps: List.unmodifiable(denyApps),
       denyDomains: List.unmodifiable(denyDomains),
       protocolHarnesses: List.unmodifiable(protocolHarnesses),
+      shellControl: shellControl,
     );
   }
 
@@ -497,6 +508,9 @@ class HostPolicy {
   final List<String> denyApps;
   final List<String> denyDomains;
   final List<ProtocolHarnessConfig> protocolHarnesses;
+
+  /// Local-only command execution switch (`ADR-0018`); never set remotely.
+  final ShellControlPolicy shellControl;
 
   bool isFamilyAllowed(ToolFamily family) {
     if (family == ToolFamily.host) {
@@ -636,6 +650,7 @@ class HostPolicy {
     List<String>? denyApps,
     List<String>? denyDomains,
     List<ProtocolHarnessConfig>? protocolHarnesses,
+    ShellControlPolicy? shellControl,
   }) =>
       HostPolicy(
         schemaVersion: schemaVersion ?? this.schemaVersion,
@@ -648,6 +663,7 @@ class HostPolicy {
         denyApps: denyApps ?? this.denyApps,
         denyDomains: denyDomains ?? this.denyDomains,
         protocolHarnesses: protocolHarnesses ?? this.protocolHarnesses,
+        shellControl: shellControl ?? this.shellControl,
       );
 
   Map<String, Object?> toJson() => <String, Object?>{
@@ -664,6 +680,7 @@ class HostPolicy {
         'denyApps': denyApps,
         'denyDomains': denyDomains,
         'protocolHarnesses': protocolHarnesses.map((h) => h.toJson()).toList(),
+        'shellControl': shellControl.toJson(),
       };
 }
 
@@ -677,6 +694,7 @@ class PolicyEvaluationResult {
     this.app,
     this.workflow,
     this.normalizedUrlHost,
+    this.reasonCode,
   });
 
   final bool allowed;
@@ -686,6 +704,10 @@ class PolicyEvaluationResult {
   final AllowedAppConfig? app;
   final WorkflowConfig? workflow;
   final String? normalizedUrlHost;
+
+  /// Optional machine-readable reason for [effectiveRisk] or the refusal
+  /// (`xuna/preflight.reasonCode`), e.g. `outside_workspace`.
+  final String? reasonCode;
 }
 
 /// Casts [raw] to `Map<String, Object?>`, throwing [FormatException] on

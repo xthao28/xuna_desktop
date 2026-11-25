@@ -701,7 +701,10 @@ enum WatchMode {
   cdpIdle('cdp_idle'),
   composite('composite'),
   timer('timer'),
-  protocolAsync('protocol_async');
+  protocolAsync('protocol_async'),
+
+  /// Wakes a job when a detached `exec.run` task ends (`ADR-0018`).
+  execAsync('exec_async');
 
   const WatchMode(this.wire);
   final String wire;
@@ -715,6 +718,7 @@ enum WatchMode {
         'composite' => WatchMode.composite,
         'timer' => WatchMode.timer,
         'protocol_async' => WatchMode.protocolAsync,
+        'exec_async' => WatchMode.execAsync,
         _ => throw FormatException('Unknown WatchMode: $value'),
       };
 }
@@ -728,7 +732,8 @@ enum WatchSignal {
   fsQuiescence('fs_quiescence'),
   cdpIdle('cdp_idle'),
   timer('timer'),
-  protocolAsync('protocol_async');
+  protocolAsync('protocol_async'),
+  execAsync('exec_async');
 
   const WatchSignal(this.wire);
   final String wire;
@@ -749,6 +754,7 @@ enum WatchSignal {
         'cdp_idle' => WatchSignal.cdpIdle,
         'timer' => WatchSignal.timer,
         'protocol_async' => WatchSignal.protocolAsync,
+        'exec_async' => WatchSignal.execAsync,
         _ => throw FormatException('Unknown WatchSignal: $value'),
       };
 }
@@ -841,6 +847,7 @@ class WatchTarget {
     this.tabId,
     this.mcpServerId,
     this.protocolTaskId,
+    this.execTaskId,
   });
 
   factory WatchTarget.fromJson(Map<String, Object?> json) {
@@ -855,6 +862,7 @@ class WatchTarget {
         'tabId',
         'mcpServerId',
         'protocolTaskId',
+        'execTaskId',
       },
     );
     int? pid;
@@ -885,6 +893,10 @@ class WatchTarget {
     if (json.containsKey('protocolTaskId') && json['protocolTaskId'] != null) {
       protocolTaskId = _requireStringParam(json, 'protocolTaskId');
     }
+    String? execTaskId;
+    if (json.containsKey('execTaskId') && json['execTaskId'] != null) {
+      execTaskId = _requireStringParam(json, 'execTaskId');
+    }
     final target = WatchTarget(
       pid: pid,
       windowId: windowId,
@@ -893,6 +905,7 @@ class WatchTarget {
       tabId: tabId,
       mcpServerId: mcpServerId,
       protocolTaskId: protocolTaskId,
+      execTaskId: execTaskId,
     );
     target.validate();
     return target;
@@ -905,6 +918,9 @@ class WatchTarget {
   final String? tabId;
   final String? mcpServerId;
   final String? protocolTaskId;
+
+  /// `exec.run` task id for `exec_async` watches (`^exec_[a-zA-Z0-9_-]{1,64}$`).
+  final String? execTaskId;
 
   void validate() {
     final p = pid;
@@ -951,6 +967,10 @@ class WatchTarget {
             _asciiControlCharPattern.hasMatch(task))) {
       throw const FormatException('Invalid target.protocolTaskId');
     }
+    final exec = execTaskId;
+    if (exec != null && !RegExp(r'^exec_[a-zA-Z0-9_-]{1,64}$').hasMatch(exec)) {
+      throw const FormatException('Invalid target.execTaskId');
+    }
   }
 
   Map<String, Object?> toJson() {
@@ -963,6 +983,7 @@ class WatchTarget {
       if (tabId != null) 'tabId': tabId,
       if (mcpServerId != null) 'mcpServerId': mcpServerId,
       if (protocolTaskId != null) 'protocolTaskId': protocolTaskId,
+      if (execTaskId != null) 'execTaskId': execTaskId,
     };
   }
 }
@@ -2021,8 +2042,13 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
           'denyApps',
           'allowDomains',
           'denyDomains',
+          'shellEnabled',
         },
       );
+      if (result.containsKey('shellEnabled') &&
+          result['shellEnabled'] is! bool) {
+        throw const FormatException('shellEnabled must be a boolean');
+      }
     } on FormatException catch (error) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,

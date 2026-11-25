@@ -2,6 +2,7 @@
 library;
 
 import 'core_types.dart';
+import 'exec_fs_catalog.dart';
 import 'forge_claw_catalog.dart';
 import 'symbiotic_catalog.dart';
 
@@ -19,6 +20,8 @@ List<ToolDescriptor> buildMvpToolCatalog({
   bool includeSymbioticSentinelTools = false,
   bool includeOmniForgeTools = false,
   bool includeClawPulseTools = false,
+  bool includeExecFsTools = false,
+  bool shellEnabled = false,
 }) {
   const emptyObjectSchema = <String, Object?>{
     'type': 'object',
@@ -392,6 +395,10 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildOmniForgeTools(defaultPermission: defaultPermission),
     if (includeClawPulseTools)
       ...buildClawPulseTools(defaultPermission: defaultPermission),
+    if (includeExecFsTools) ...[
+      ...buildFsTools(defaultPermission: defaultPermission),
+      ...buildExecTools(shellEnabled: shellEnabled),
+    ],
   ];
   return tools;
 }
@@ -725,10 +732,16 @@ List<ToolDescriptor> buildDeskCopilotTools({
     ToolDescriptor(
       name: 'mcp.list_servers',
       description:
-          'List locally configured MCP and ACP protocol servers (names and transports only; never secrets or env vars).',
+          'List local MCP/ACP servers and, by default, each MCP server\'s tools/list names and argument summaries (no secrets or env vars).',
       inputSchema: const <String, Object?>{
         'type': 'object',
-        'properties': <String, Object?>{},
+        'properties': <String, Object?>{
+          'includeTools': <String, Object?>{'type': 'boolean'},
+          'serverId': <String, Object?>{
+            'type': 'string',
+            'pattern': r'^[a-z0-9_.-]{1,64}$',
+          },
+        },
         'additionalProperties': false,
       },
       outputSchema: const <String, Object?>{
@@ -752,6 +765,47 @@ List<ToolDescriptor> buildDeskCopilotTools({
                   'maxLength': 32,
                 },
                 'supportsAsync': <String, Object?>{'type': 'boolean'},
+                'tools': <String, Object?>{
+                  'type': 'array',
+                  'items': <String, Object?>{
+                    'type': 'object',
+                    'properties': <String, Object?>{
+                      'name': <String, Object?>{
+                        'type': 'string',
+                        'maxLength': 128,
+                      },
+                      'description': <String, Object?>{
+                        'type': 'string',
+                        'maxLength': 160,
+                      },
+                      'requiredArgs': <String, Object?>{
+                        'type': 'array',
+                        'items': <String, Object?>{'type': 'string'},
+                      },
+                      'optionalArgs': <String, Object?>{
+                        'type': 'array',
+                        'items': <String, Object?>{'type': 'string'},
+                      },
+                    },
+                    'required': <String>[
+                      'name',
+                      'description',
+                      'requiredArgs',
+                      'optionalArgs',
+                    ],
+                    'additionalProperties': false,
+                  },
+                },
+                'toolsTruncated': <String, Object?>{'type': 'boolean'},
+                'toolsError': <String, Object?>{
+                  'type': 'string',
+                  'enum': <String>[
+                    'timeout',
+                    'spawn_failed',
+                    'protocol_error',
+                    'unsupported_transport',
+                  ],
+                },
               },
               'required': <String>['id', 'transport', 'source'],
               'additionalProperties': false,

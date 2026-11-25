@@ -68,6 +68,10 @@ HostPolicy _buildPermissiveParityPolicy() => HostPolicy(
         ),
       ],
       players: const <String>['spotify'],
+      shellControl: ShellControlPolicy(
+        enabled: true,
+        workspaceRoots: const <String>['/ws/proj'],
+      ),
     );
 
 PolicyEvaluationResult _validateArgs(
@@ -295,6 +299,19 @@ Map<String, Object?> _synthesizeArgs(
       } else if (args['action'] == 'pre_compaction_flush') {
         args.putIfAbsent('sessionTranscript', () => 'User discussed Q4 goals.');
       }
+    case 'fs.list_files':
+    case 'fs.read_file':
+    case 'fs.grep':
+    case 'fs.write_file':
+    case 'fs.patch_file':
+      args['path'] = '/ws/proj/src/main.dart';
+    case 'exec.run':
+      args['command'] = 'npm test';
+      if (args.containsKey('cwd')) args['cwd'] = '/ws/proj';
+    case 'exec.status':
+    case 'exec.write_stdin':
+    case 'exec.cancel':
+      args['taskId'] = 'exec_parity1';
     case 'notes.append':
       if (!args.containsKey('id') && !args.containsKey('title')) {
         args['id'] = 'note_1';
@@ -337,6 +354,11 @@ Map<String, Object?> _synthesizeArgs(
 }
 
 String _stringWithExactLength(String toolName, String propName, int length) {
+  if ((toolName.startsWith('fs.') && propName == 'path') ||
+      (toolName == 'exec.run' && propName == 'cwd')) {
+    const prefix = '/ws/proj/';
+    return prefix + ('a' * (length - prefix.length));
+  }
   switch (propName) {
     case 'url':
       const prefix = 'https://example.com/';
@@ -417,6 +439,8 @@ void main() {
       includeSymbioticSentinelTools: true,
       includeOmniForgeTools: true,
       includeClawPulseTools: true,
+      includeExecFsTools: true,
+      shellEnabled: true,
     ),
     ...buildNativeAppToolCatalog(),
     ...buildBrowserToolCatalog(),
@@ -459,7 +483,7 @@ void main() {
 
   final allTools = <ToolDescriptor>[...staticCatalog, dynamicCustomTool];
 
-  group('Schema-Validator Parity Invariants (91 static + 1 dynamic)', () {
+  group('Schema-Validator Parity Invariants (100 static + 1 dynamic)', () {
     late HostPolicyEvaluator evaluator;
     final now = DateTime.utc(2026, 11, 19, 12, 0);
 
@@ -467,11 +491,12 @@ void main() {
       evaluator = HostPolicyEvaluator.healthy(_buildPermissiveParityPolicy());
     });
 
-    test('catalog has 91 unique static tools + valid metadata & strict schemas',
+    test(
+        'catalog has 100 unique static tools + valid metadata & strict schemas',
         () {
-      expect(staticCatalog.length, equals(91));
+      expect(staticCatalog.length, equals(100));
       final names = staticCatalog.map((t) => t.name).toSet();
-      expect(names.length, equals(91));
+      expect(names.length, equals(100));
 
       for (final tool in allTools) {
         expect(
@@ -553,7 +578,7 @@ void main() {
       }
     });
 
-    test('additionalProperties: false rejects undeclared keys on all 92 tools',
+    test('additionalProperties: false rejects undeclared keys on all 101 tools',
         () {
       for (final tool in allTools) {
         final badArgs = _synthesizeArgs(tool, full: false)

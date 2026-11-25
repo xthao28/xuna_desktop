@@ -142,6 +142,7 @@ Future<void> main() async {
       presenceCoordinator: presenceCoordinator,
       cdpBrowserProvider: cdpBrowserProvider,
       protocolTaskRegistry: protocolTaskRegistry,
+      execRegistry: dispatcher.execRegistry,
       appScanner: appScanner,
       workspaceIndexer: workspaceIndexer,
       logger: logger,
