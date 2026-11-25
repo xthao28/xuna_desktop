@@ -135,4 +135,57 @@ class RunnerExecTests: XCTestCase {
     }
     XCTAssertEqual(last["exited"] as? Bool, true)
   }
+
+  func testZshHardeningDisablesGlobQualifiersAndEqualsExpansion() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "xuna_zsh_hardening_\(UUID().uuidString)"
+    )
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let seed = dir.appendingPathComponent("a.txt")
+    try "ok\n".write(to: seed, atomically: true, encoding: .utf8)
+    let pwned = dir.appendingPathComponent("pwned")
+
+    // Bare glob qualifier `(e:'...':)` must NOT execute.
+    let globProc = try XunaExecProcess.spawn(
+      command: "echo a.txt(e:'touch pwned':)",
+      cwd: dir.path,
+      environment: baseEnv,
+      pty: false
+    )
+    defer { globProc.release() }
+    let (_, globLast) = drain(globProc, until: Date().addingTimeInterval(10)) { _, p in
+      (p["exited"] as? Bool) == true && (p["outputClosed"] as? Bool) == true
+    }
+    XCTAssertNotEqual(globLast["exitCode"] as? Int, 0)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: pwned.path))
+
+    // `=env` equals expansion must NOT resolve to `/usr/bin/env`.
+    let eqProc = try XunaExecProcess.spawn(
+      command: "=env",
+      cwd: dir.path,
+      environment: baseEnv,
+      pty: false
+    )
+    defer { eqProc.release() }
+    let (_, eqLast) = drain(eqProc, until: Date().addingTimeInterval(10)) { _, p in
+      (p["exited"] as? Bool) == true && (p["outputClosed"] as? Bool) == true
+    }
+    XCTAssertNotEqual(eqLast["exitCode"] as? Int, 0)
+
+    // Standard quoting and globbing must keep working cleanly.
+    let okProc = try XunaExecProcess.spawn(
+      command: "echo \"hello \\\"world\\\"\" && ls *.txt",
+      cwd: dir.path,
+      environment: baseEnv,
+      pty: false
+    )
+    defer { okProc.release() }
+    let (okText, okLast) = drain(okProc, until: Date().addingTimeInterval(10)) { _, p in
+      (p["exited"] as? Bool) == true && (p["outputClosed"] as? Bool) == true
+    }
+    XCTAssertEqual(okLast["exitCode"] as? Int, 0)
+    XCTAssertTrue(okText.contains("hello \"world\""))
+    XCTAssertTrue(okText.contains("a.txt"))
+  }
 }

@@ -131,7 +131,17 @@ FsGuardDecision _classifySegment(ExecSegment segment, ExecCommandContext ctx) {
   }
   if (k >= words.length) return decision;
   final exeWord = words[k];
-  final exe = _exeName(exeWord.text, ctx.windows);
+  // Zsh `=cmd` equals expansion resolves a command in PATH (`=sudo`, `=env`).
+  // Strip the leading `=` so Hard-Deny rules still catch it, and force R3 if
+  // it survives Hard-Deny.
+  final isZshEqualsExe = !ctx.windows &&
+      exeWord.text.startsWith('=') &&
+      exeWord.text.length > 1 &&
+      !exeWord.text.substring(1).contains('=');
+  final exe = _exeName(
+    isZshEqualsExe ? exeWord.text.substring(1) : exeWord.text,
+    ctx.windows,
+  );
   final args = [for (final w in words.skip(k + 1)) w.text];
   if (exeWord.hasExpansion) {
     return decision.merge(
@@ -140,6 +150,11 @@ FsGuardDecision _classifySegment(ExecSegment segment, ExecCommandContext ctx) {
   }
   final hard = _hardDenyRule(exe, args, ctx);
   if (hard != null) return hard;
+  if (isZshEqualsExe) {
+    return decision.merge(
+      const FsGuardDecision.allow(RiskTier.r3, 'unclassified_command'),
+    );
+  }
   if (segment.pipedFrom && _interpreters.contains(exe)) {
     return decision.merge(
       const FsGuardDecision.allow(RiskTier.r3, 'pipe_to_interpreter'),
@@ -174,7 +189,12 @@ FsGuardDecision _riskRule(
   if (_network.contains(exe)) return net;
   if (_readOnly.contains(exe)) return r2;
   if (exe == 'set' || exe == 'export' || exe == 'unset') {
-    // Bare `set` / `export` / `export -p` are refused earlier as env dumps.
+    // Bare `set` / `export` / `export -p` (and Windows `set <prefix>` without
+    // `=`) are refused earlier as env dumps. On Windows, mutating env via
+    // `set K=V` is elevated to R3 because `%VAR%` expands before cmd parsing.
+    if (ctx.windows && exe == 'set') {
+      return const FsGuardDecision.allow(RiskTier.r3, 'env_mutation');
+    }
     return r2;
   }
   if (_destructive.contains(exe)) {
@@ -295,8 +315,14 @@ FsGuardDecision _riskRule(
 }
 
 FsGuardDecision _checkPathWord(String raw, ExecCommandContext ctx) {
+  var decision = const FsGuardDecision.allow(RiskTier.r1, 'path_ok');
   for (final candidate in raw.split('=')) {
     if (candidate.isEmpty) continue;
+    if (!candidate.startsWith('-') && _couldGlobSecretFile(candidate)) {
+      decision = decision.merge(
+        const FsGuardDecision.allow(RiskTier.r3, 'secret_glob'),
+      );
+    }
     final looksLikePath = candidate.contains('/') ||
         (ctx.windows && candidate.contains(r'\')) ||
         candidate.startsWith('~') ||
@@ -327,7 +353,7 @@ FsGuardDecision _checkPathWord(String raw, ExecCommandContext ctx) {
       }
     }
   }
-  return const FsGuardDecision.allow(RiskTier.r1, 'path_ok');
+  return decision;
 }
 
 FsGuardDecision _writeTarget(ExecWord target, ExecCommandContext ctx) {

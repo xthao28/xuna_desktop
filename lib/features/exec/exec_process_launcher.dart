@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
+import 'package:xuna_desktop/features/exec/windows_create_process.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
 /// Result of polling a running child.
@@ -80,8 +81,9 @@ class UnsupportedExecProcessLauncher implements ExecProcessLauncher {
   }
 }
 
-/// Windows runner: `cmd.exe /d /s /c <command>` (`/d` skips AutoRun), killed
-/// as a tree with `taskkill /PID <pid> /T /F`. PTY is not available before
+/// Windows runner: native `CreateProcessW` with verbatim `cmd.exe /d /s /c`
+/// `lpCommandLine` (avoids Dart's MSVCRT `\"` escaping) and Job Object /
+/// `taskkill /PID <pid> /T /F` tree termination. PTY is not available before
 /// ConPTY support, so `pty: true` fails closed.
 class WindowsExecProcessLauncher implements ExecProcessLauncher {
   WindowsExecProcessLauncher({this.comspec = 'cmd.exe'});
@@ -104,82 +106,12 @@ class WindowsExecProcessLauncher implements ExecProcessLauncher {
         errorCode: 'pty_unsupported_on_platform',
       );
     }
-    final Process process;
-    try {
-      process = await Process.start(
-        comspec,
-        <String>['/d', '/s', '/c', command],
-        workingDirectory: cwd,
-        environment: environment,
-        includeParentEnvironment: false,
-      );
-    } on ProcessException {
-      throw const XunaHostChannelException(
-        status: XtpStatus.failed,
-        errorCode: 'exec_spawn_failed',
-      );
-    }
-    return _DartProcessHandle(process);
-  }
-}
-
-class _DartProcessHandle implements ExecProcessHandle {
-  _DartProcessHandle(this._process) {
-    _subs.add(_process.stdout.listen(_buffer.addAll));
-    _subs.add(_process.stderr.listen(_buffer.addAll));
-    _process.exitCode.then((code) => _exitCode = code);
-  }
-
-  final Process _process;
-  final List<int> _buffer = <int>[];
-  final List<StreamSubscription<List<int>>> _subs =
-      <StreamSubscription<List<int>>>[];
-  int? _exitCode;
-  bool _stdinClosed = false;
-
-  @override
-  int get pid => _process.pid;
-
-  @override
-  Future<ExecPollResult> poll() async {
-    final data = List<int>.of(_buffer);
-    _buffer.clear();
-    return ExecPollResult(
-      data: data,
-      exited: _exitCode != null,
-      exitCode: _exitCode,
+    return startWindowsNativeCmdProcess(
+      comspec: comspec,
+      command: command,
+      cwd: cwd,
+      environment: environment,
     );
-  }
-
-  @override
-  Future<int> writeStdin(List<int> bytes, {bool eof = false}) async {
-    if (_stdinClosed) return 0;
-    _process.stdin.add(bytes);
-    await _process.stdin.flush();
-    if (eof) {
-      _stdinClosed = true;
-      await _process.stdin.close();
-    }
-    return bytes.length;
-  }
-
-  @override
-  Future<bool> killGroup({required bool force}) async {
-    if (_exitCode != null) return false;
-    final result = await Process.run('taskkill', <String>[
-      '/PID',
-      '${_process.pid}',
-      '/T',
-      '/F',
-    ]);
-    return result.exitCode == 0;
-  }
-
-  @override
-  Future<void> release() async {
-    for (final sub in _subs) {
-      await sub.cancel();
-    }
   }
 }
 

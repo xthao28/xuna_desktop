@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
+import 'package:xuna_desktop/features/discovery/windows_stdio_launcher.dart';
 import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -1235,29 +1236,12 @@ class _McpStdioSession {
     if (transportFactory != null) {
       transport = await transportFactory(command, args);
     } else {
-      final process = await Process.start(command, args, runInShell: false);
-      final stdoutLines = process.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter());
+      final spawned = await startStdioJsonRpcProcess(command, args);
       transport = McpStdioTransport(
-        stdoutLines: stdoutLines,
-        writeStdinLine: (line) => process.stdin.writeln(line),
-        exitCode: process.exitCode,
-        terminate: () async {
-          try {
-            await process.stdin.close();
-          } catch (_) {}
-          try {
-            process.kill(ProcessSignal.sigterm);
-          } catch (_) {}
-          try {
-            await process.exitCode.timeout(const Duration(seconds: 2));
-          } catch (_) {
-            try {
-              process.kill(ProcessSignal.sigkill);
-            } catch (_) {}
-          }
-        },
+        stdoutLines: spawned.stdoutLines,
+        writeStdinLine: spawned.writeStdinLine,
+        exitCode: spawned.exitCode,
+        terminate: spawned.terminate,
       );
     }
     final session = _McpStdioSession._(transport);

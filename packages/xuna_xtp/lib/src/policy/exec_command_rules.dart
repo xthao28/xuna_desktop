@@ -89,9 +89,11 @@ FsGuardDecision? _hardDenyRule(
     return const FsGuardDecision.deny(_hardDenied, 'credential_store');
   }
   final bareArgs = args.where((a) => !a.startsWith('-')).isEmpty;
+  final windowsSetDump =
+      ctx.windows && exe == 'set' && !args.any((a) => a.contains('='));
   if (exe == 'printenv' ||
       (exe == 'export' && (args.isEmpty || args.contains('-p'))) ||
-      (exe == 'set' && args.isEmpty) ||
+      (exe == 'set' && (args.isEmpty || windowsSetDump)) ||
       ((exe == 'declare' || exe == 'typeset') && bareArgs) ||
       (exe == 'env' && args.isEmpty)) {
     return const FsGuardDecision.deny('exec_env_dump_forbidden', 'env_dump');
@@ -223,4 +225,84 @@ FsGuardDecision _gitRule(List<String> args) {
           : destructive;
   }
   return destructive;
+}
+
+const List<String> _dotSecretSamples = <String>[
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.npmrc',
+  '.pypirc',
+  '.pgpass',
+  '.htpasswd',
+  '.netrc',
+  '.git-credentials',
+];
+
+const List<String> _namedSecretSamples = <String>[
+  'id_rsa',
+  'id_ed25519',
+  'id_ecdsa',
+  'id_dsa',
+];
+
+const List<String> _secretGlobExtensions = <String>[
+  '.pem',
+  '.key',
+  '.p12',
+  '.pfx',
+  '.jks',
+];
+
+/// Whether a glob pattern's basename specifically targets secret dotfiles
+/// (`.en?`, `.en*`, `.*`) or secret key names (`*.pem`, `id_rsa*`) without
+/// flagging generic globs such as `*`, `*.dart` or `src/*`.
+bool _couldGlobSecretFile(String raw) {
+  final base = raw.replaceAll(r'\', '/').split('/').last.toLowerCase();
+  if (base.isEmpty ||
+      (!base.contains('*') && !base.contains('?') && !base.contains('['))) {
+    return false;
+  }
+  if (RegExp(r'^[*?]+$').hasMatch(base)) return false;
+  for (final ext in _secretGlobExtensions) {
+    if (base.endsWith(ext)) return true;
+  }
+  final regex = _globToSimpleRegex(base);
+  if (regex == null) return false;
+  if (base.startsWith('.')) {
+    if (_dotSecretSamples.any(regex.hasMatch)) return true;
+  }
+  if (base.startsWith('id_') ||
+      base.startsWith('id?') ||
+      base.startsWith('id[')) {
+    if (_namedSecretSamples.any(regex.hasMatch)) return true;
+  }
+  return false;
+}
+
+RegExp? _globToSimpleRegex(String pattern) {
+  final buf = StringBuffer('^');
+  for (var i = 0; i < pattern.length; i++) {
+    final c = pattern[i];
+    if (c == '*') {
+      buf.write('.*');
+    } else if (c == '?') {
+      buf.write('.');
+    } else if (c == '[') {
+      final close = pattern.indexOf(']', i + 1);
+      if (close < 0) return null;
+      var cls = pattern.substring(i + 1, close);
+      if (cls.startsWith('!')) cls = '^${cls.substring(1)}';
+      buf.write('[$cls]');
+      i = close;
+    } else {
+      buf.write(RegExp.escape(c));
+    }
+  }
+  buf.write(r'$');
+  try {
+    return RegExp(buf.toString(), caseSensitive: false);
+  } on FormatException {
+    return null;
+  }
 }

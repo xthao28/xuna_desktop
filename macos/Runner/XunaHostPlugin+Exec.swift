@@ -105,7 +105,9 @@ final class XunaExecProcess {
     posix_spawnattr_setsigdefault(&attr, &defaults)
 
     // `cd` runs inside the child shell (posix_spawn chdir needs macOS 10.15).
-    let script = "cd -- \"$1\" || exit 97; exec /bin/zsh -f -c \"$2\""
+    // Disable zsh-only bare glob qualifiers (`*(e:'...':)`) and `=cmd` equals
+    // expansion so the shell matches the POSIX lexer strictly.
+    let script = "cd -- \"$1\" || exit 97; exec /bin/zsh -f -o NO_BARE_GLOB_QUAL -o NO_EQUALS -c \"$2\""
     let argv = ["/bin/zsh", "-f", "-c", script, "xuna-exec", cwd, command]
     let cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) } + [nil]
     let cEnv: [UnsafeMutablePointer<CChar>?] =

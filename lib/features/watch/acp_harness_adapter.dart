@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/computer_use/mcp_stdio_client.dart';
+import 'package:xuna_desktop/features/discovery/windows_stdio_launcher.dart';
 import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -68,29 +68,12 @@ class AcpHarnessAdapter {
     String executable,
     List<String> args,
   ) async {
-    final p = await Process.start(executable, args, runInShell: false);
-    final lines = p.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter());
+    final spawned = await startStdioJsonRpcProcess(executable, args);
     return AcpTransport(
-      stdoutLines: lines,
-      writeStdinLine: (line) => p.stdin.writeln(line),
-      exitCode: p.exitCode,
-      terminate: () async {
-        try {
-          await p.stdin.close();
-        } catch (_) {}
-        try {
-          p.kill(ProcessSignal.sigterm);
-        } catch (_) {}
-        try {
-          await p.exitCode.timeout(const Duration(seconds: 2));
-        } catch (_) {
-          try {
-            p.kill(ProcessSignal.sigkill);
-          } catch (_) {}
-        }
-      },
+      stdoutLines: spawned.stdoutLines,
+      writeStdinLine: spawned.writeStdinLine,
+      exitCode: spawned.exitCode,
+      terminate: spawned.terminate,
     );
   }
 

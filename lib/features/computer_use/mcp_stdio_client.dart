@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:xuna_desktop/features/computer_use/driver_map.dart';
+import 'package:xuna_desktop/features/discovery/windows_stdio_launcher.dart';
 
 typedef McpNotificationHandler =
     void Function(String method, Map<String, Object?> params);
@@ -57,31 +57,18 @@ class McpStdioClient {
     Map<String, String>? environment,
     McpNotificationHandler? onNotification,
   }) async {
-    final process = await Process.start(
+    final spawned = await startStdioJsonRpcProcess(
       executable,
       arguments,
       environment: environment,
       includeParentEnvironment: true,
-      runInShell: false,
     );
-    final lines = process.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter());
     return McpStdioClient.fromStreams(
-      stdoutLines: lines,
-      writeStdinLine: (line) {
-        process.stdin.writeln(line);
-      },
+      stdoutLines: spawned.stdoutLines,
+      writeStdinLine: spawned.writeStdinLine,
       onNotification: onNotification,
-      exitCode: process.exitCode,
-      onTerminate: () async {
-        process.kill(ProcessSignal.sigterm);
-        try {
-          await process.exitCode.timeout(const Duration(seconds: 2));
-        } catch (_) {
-          process.kill(ProcessSignal.sigkill);
-        }
-      },
+      exitCode: spawned.exitCode,
+      onTerminate: spawned.terminate,
     );
   }
 
