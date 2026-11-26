@@ -141,9 +141,9 @@ inline bool QueryWindowsScreenLocked(bool* out_locked, std::string* error_msg) {
   return false;
 }
 
-inline bool QueryWindowsMediaPlaying(bool* out_playing,
-                                     std::string* error_msg,
-                                     std::string* diag_note = nullptr) {
+inline bool QueryWindowsMediaPlayingImpl(bool* out_playing,
+                                         std::string* error_msg,
+                                         std::string* diag_note) {
 #if XUNA_HAS_CPPWINRT_GSMTC
   try {
     using winrt::Windows::Foundation::AsyncStatus;
@@ -200,6 +200,44 @@ inline bool QueryWindowsMediaPlaying(bool* out_playing,
     *diag_note = "WinRT SMTC headers unavailable; degraded mediaPlaying=false";
   }
   return true;
+#endif
+}
+
+// Called on the STA platform thread: the WinRT query runs on an MTA worker.
+inline bool QueryWindowsMediaPlaying(bool* out_playing,
+                                     std::string* error_msg,
+                                     std::string* diag_note = nullptr) {
+#if XUNA_HAS_CPPWINRT_GSMTC
+  struct Result {
+    bool ok = false;
+    bool playing = false;
+    std::string error;
+    std::string diag;
+  };
+  Result r;
+  if (!RunOnMtaWorker<Result>(
+          []() {
+            Result x;
+            x.ok = QueryWindowsMediaPlayingImpl(&x.playing, &x.error, &x.diag);
+            return x;
+          },
+          std::chrono::milliseconds(250), &r)) {
+    *out_playing = false;
+    if (diag_note != nullptr) {
+      *diag_note = "WinRT SMTC query timed out; degraded mediaPlaying=false";
+    }
+    return true;
+  }
+  *out_playing = r.playing;
+  if (!r.ok) {
+    *error_msg = r.error;
+  }
+  if (diag_note != nullptr && !r.diag.empty()) {
+    *diag_note = r.diag;
+  }
+  return r.ok;
+#else
+  return QueryWindowsMediaPlayingImpl(out_playing, error_msg, diag_note);
 #endif
 }
 

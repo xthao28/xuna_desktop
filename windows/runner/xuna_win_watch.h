@@ -701,7 +701,7 @@ inline void RunUiWatchThread(std::shared_ptr<WatchSlot> slot, HWND hwnd,
       UIA_IsEnabledPropertyId,
       UIA_BoundingRectanglePropertyId,
   };
-  bool prop_ok = SUCCEEDED(uia->AddPropertyChangedEventHandler(
+  bool prop_ok = SUCCEEDED(uia->AddPropertyChangedEventHandlerNativeArray(
       root, TreeScope_Subtree, nullptr, prop_handler, kPropIds,
       static_cast<int>(ARRAYSIZE(kPropIds))));
 

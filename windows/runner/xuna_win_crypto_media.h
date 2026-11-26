@@ -139,7 +139,8 @@ inline bool SendMediaVirtualKey(WORD vk) {
   return SendInput(2, inputs, sizeof(INPUT)) == 2;
 }
 
-inline bool HandleMediaCommand(const std::string& cmd, std::string* out_state) {
+inline bool HandleMediaCommandImpl(const std::string& cmd,
+                                   std::string* out_state) {
   *out_state = "unknown";
 #if XUNA_HAS_CPPWINRT_GSMTC
   try {
@@ -213,8 +214,33 @@ inline bool HandleMediaCommand(const std::string& cmd, std::string* out_state) {
   return false;
 }
 
-inline bool HandleNowPlaying(const std::vector<std::string>& allowed_players,
-                             flutter::EncodableMap* out_map) {
+// Called on the STA platform thread: WinRT waits run on an MTA worker.
+inline bool HandleMediaCommand(const std::string& cmd, std::string* out_state) {
+#if XUNA_HAS_CPPWINRT_GSMTC
+  struct Result {
+    bool ok = false;
+    std::string state = "unknown";
+  };
+  Result r;
+  if (!RunOnMtaWorker<Result>(
+          [cmd]() {
+            Result x;
+            x.ok = HandleMediaCommandImpl(cmd, &x.state);
+            return x;
+          },
+          std::chrono::milliseconds(1500), &r)) {
+    *out_state = "unknown";
+    return false;
+  }
+  *out_state = r.state;
+  return r.ok;
+#else
+  return HandleMediaCommandImpl(cmd, out_state);
+#endif
+}
+
+inline bool HandleNowPlayingImpl(const std::vector<std::string>& allowed_players,
+                                 flutter::EncodableMap* out_map) {
   (*out_map)[flutter::EncodableValue("state")] =
       flutter::EncodableValue("unknown");
   if (allowed_players.empty()) {
@@ -306,6 +332,35 @@ inline bool HandleNowPlaying(const std::vector<std::string>& allowed_players,
   }
 #else
   return true;
+#endif
+}
+
+// Called on the STA platform thread: WinRT waits run on an MTA worker.
+inline bool HandleNowPlaying(const std::vector<std::string>& allowed_players,
+                             flutter::EncodableMap* out_map) {
+#if XUNA_HAS_CPPWINRT_GSMTC
+  struct Result {
+    bool ok = true;
+    flutter::EncodableMap map;
+  };
+  Result r;
+  if (!RunOnMtaWorker<Result>(
+          [allowed_players]() {
+            Result x;
+            x.ok = HandleNowPlayingImpl(allowed_players, &x.map);
+            return x;
+          },
+          std::chrono::milliseconds(1000), &r)) {
+    (*out_map)[flutter::EncodableValue("state")] =
+        flutter::EncodableValue("unknown");
+    return true;
+  }
+  for (auto& kv : r.map) {
+    (*out_map)[kv.first] = kv.second;
+  }
+  return r.ok;
+#else
+  return HandleNowPlayingImpl(allowed_players, out_map);
 #endif
 }
 

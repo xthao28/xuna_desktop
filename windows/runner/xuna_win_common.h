@@ -37,6 +37,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -233,6 +235,51 @@ struct ScopedComInitializer {
   ScopedComInitializer(const ScopedComInitializer&) = delete;
   ScopedComInitializer& operator=(const ScopedComInitializer&) = delete;
 };
+
+// Runs `fn` on a short-lived MTA worker thread and waits up to `timeout`.
+// Blocking cppwinrt waits (`wait_for`/`get`) on the STA platform thread trip
+// `check_sta_blocking_wait` (WINRT_ASSERT -> debug break in Debug builds); in
+// Release a timed `wait_for` stalls the UI thread for the whole timeout and,
+// when completion needs the STA, always times out (silently degraded result).
+// `fn` must only touch state it owns: on timeout the worker keeps running and
+// its result is dropped. Returns false on timeout or thread-spawn failure.
+template <typename R, typename F>
+inline bool RunOnMtaWorker(F fn, std::chrono::milliseconds timeout, R* out) {
+  struct State {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+    R value{};
+  };
+  auto state = std::make_shared<State>();
+  try {
+    std::thread([state, fn = std::move(fn)]() mutable {
+      HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+      R value{};
+      try {
+        value = fn();
+      } catch (...) {
+      }
+      if (SUCCEEDED(hr)) {
+        CoUninitialize();
+      }
+      {
+        std::lock_guard<std::mutex> lk(state->mu);
+        state->value = std::move(value);
+        state->done = true;
+      }
+      state->cv.notify_all();
+    }).detach();
+  } catch (...) {
+    return false;
+  }
+  std::unique_lock<std::mutex> lk(state->mu);
+  if (!state->cv.wait_for(lk, timeout, [&] { return state->done; })) {
+    return false;
+  }
+  *out = std::move(state->value);
+  return true;
+}
 
 inline std::string QueryProcessBaseNameForHwnd(HWND hwnd) {
   if (hwnd == nullptr) return std::string();
