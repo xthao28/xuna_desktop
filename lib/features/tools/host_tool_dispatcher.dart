@@ -50,10 +50,18 @@ class ToolHandlerOutput {
     required this.text,
     required this.structuredContent,
     this.toastBody,
+    this.status = XtpStatus.ok,
+    this.errorCode,
   });
 
   final String text;
   final Map<String, Object?> structuredContent;
+
+  /// Tool outcome. A handler returns a non-`ok` status here (instead of
+  /// throwing) when the failure carries structured facts the caller needs,
+  /// e.g. `exec.run` `expected_output_*` with its `artifacts` (Rule H4).
+  final XtpStatus status;
+  final String? errorCode;
 
   /// Optional short toast description (`"đã mở VS Code"`). Never contains full
   /// URLs or file paths (`UDC-3` §5.6.5 rule 7).
@@ -852,7 +860,8 @@ class HostToolDispatcher {
           text = 'Đã hủy thực thi ${params.name}.';
         }
       } else {
-        status = XtpStatus.ok;
+        status = output.status;
+        errorCode = output.errorCode;
         text = output.text;
         structuredContent = output.structuredContent;
         toastBody = output.toastBody;

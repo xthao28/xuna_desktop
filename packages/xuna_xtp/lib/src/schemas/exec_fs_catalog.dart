@@ -43,6 +43,61 @@ const Map<String, Object?> _output = <String, Object?>{
   'maxLength': 16384,
 };
 
+/// `exec.run` `expectFiles` entries (upgrade plan P1.1 / U3).
+final Map<String, Object?> _expectFiles = <String, Object?>{
+  'type': 'array',
+  'minItems': 1,
+  'maxItems': 16,
+  'items': _obj(<String, Object?>{
+    'path': _str(1, 512),
+    'minBytes': _count,
+    'magic': const <String, Object?>{
+      'type': 'string',
+      'pattern': r'^([0-9a-fA-F]{2}){1,16}$',
+    },
+    'sha256': const <String, Object?>{
+      'type': 'string',
+      'pattern': r'^[0-9a-fA-F]{64}$',
+    },
+  }, required: <String>[
+    'path'
+  ]),
+};
+
+/// Facts about each expected file once an `exec` task exited 0; also the
+/// artifact shape the effect manifest of the draft workspace (F1) reuses.
+final Map<String, Object?> _artifacts = <String, Object?>{
+  'type': 'array',
+  'maxItems': 16,
+  'items': _obj(<String, Object?>{
+    'path': _str(1, 512),
+    'exists': _bool,
+    'sizeBytes': _count,
+    'sha256': _sha256,
+    'magicOk': _bool,
+    'problem': const <String, Object?>{
+      'type': 'string',
+      'enum': <String>[
+        'missing',
+        'not_a_file',
+        'too_small',
+        'magic_mismatch',
+        'sha256_mismatch',
+        'too_large_to_hash',
+        'unreadable',
+        'forbidden',
+      ],
+    },
+  }, required: <String>[
+    'path',
+    'exists'
+  ]),
+};
+const Map<String, Object?> _expectedOutputError = <String, Object?>{
+  'type': 'string',
+  'enum': <String>['expected_output_missing', 'expected_output_mismatch'],
+};
+
 /// Builds the five `fs.*` descriptors (family `files`).
 List<ToolDescriptor> buildFsTools({
   XtpPermissionState defaultPermission = XtpPermissionState.granted,
@@ -224,13 +279,14 @@ List<ToolDescriptor> buildExecTools({required bool shellEnabled}) {
     ToolDescriptor(
       name: 'exec.run',
       description:
-          'Run a local command in its own process group (host preflight: R2 local dev, R3 destructive/network, sudo/secrets refused).',
+          'Run a local command in its own process group (host preflight: R2 local dev, R3 destructive/network, sudo/secrets refused). expectFiles: completed only if each file exists and matches.',
       inputSchema: _obj(<String, Object?>{
         'command': _str(1, 4096),
         'cwd': _str(1, 512),
         'timeoutMs': _int(1000, 300000),
         'yieldMs': _int(500, 60000),
         'pty': _bool,
+        'expectFiles': _expectFiles,
       }, required: <String>[
         'command'
       ]),
@@ -241,6 +297,8 @@ List<ToolDescriptor> buildExecTools({required bool shellEnabled}) {
         'output': _output,
         'truncated': _bool,
         'durationMs': _count,
+        'errorCode': _expectedOutputError,
+        'artifacts': _artifacts,
       }, required: <String>[
         'status',
         'output',
@@ -266,6 +324,8 @@ List<ToolDescriptor> buildExecTools({required bool shellEnabled}) {
         'output': _output,
         'truncated': _bool,
         'elapsedMs': _count,
+        'errorCode': _expectedOutputError,
+        'artifacts': _artifacts,
       }, required: <String>[
         'taskId',
         'status',

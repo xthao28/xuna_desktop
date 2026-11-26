@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/exec/exec_host_environment.dart';
+import 'package:xuna_desktop/features/exec/exec_output_verifier.dart';
 import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -41,7 +42,23 @@ Map<String, Object?> _snapshotJson(
   'output': s.output,
   'truncated': s.truncated,
   durationKey: s.elapsedMs,
+  if (s.errorCode != null) 'errorCode': s.errorCode,
+  if (s.artifacts != null) 'artifacts': s.artifacts,
 };
+
+/// `ok`, or `failed` + the `expected_output_*` code when the exit code was 0
+/// but `expectFiles` did not match (Rule H1/H4); the structured facts
+/// (`artifacts`, output, exit code) are kept either way.
+ToolHandlerOutput _output(
+  String text,
+  ExecTaskSnapshot s,
+  String durationKey,
+) => ToolHandlerOutput(
+  text: s.errorCode == null ? text : '$text ${s.errorCode}',
+  structuredContent: _snapshotJson(s, durationKey: durationKey),
+  status: s.errorCode == null ? XtpStatus.ok : XtpStatus.failed,
+  errorCode: s.errorCode,
+);
 
 String _summary(ExecTaskSnapshot s) => switch (s.status) {
   ExecTaskStatus.running => 'running ${s.taskId}',
@@ -102,6 +119,15 @@ class ExecRunTool extends HostToolHandler {
       500,
       min((args['yieldMs'] as int?) ?? 10000, deadlineMs - 1500),
     );
+    final expectFiles = args.containsKey('expectFiles')
+        ? ExpectedFileSpec.parseList(args['expectFiles'])
+        : null;
+    if (args.containsKey('expectFiles') && expectFiles == null) {
+      throw const XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'schema_mismatch',
+      );
+    }
     final snapshot = await registry.run(
       command: args['command']! as String,
       cwd: cwd,
@@ -111,11 +137,14 @@ class ExecRunTool extends HostToolHandler {
       yieldAfter: Duration(milliseconds: yieldMs),
       risk: context.evaluation.effectiveRisk,
       concurrencyLimit: shell.maxConcurrentTasks,
+      verifyOutputs: expectFiles == null
+          ? null
+          : () => verifyExpectedFiles(
+              expectFiles,
+              homeDirectory: fsContext?.homeDirectory,
+            ),
     );
-    return ToolHandlerOutput(
-      text: 'exec.run ${_summary(snapshot)}',
-      structuredContent: _snapshotJson(snapshot, durationKey: 'durationMs'),
-    );
+    return _output('exec.run ${_summary(snapshot)}', snapshot, 'durationMs');
   }
 }
 
@@ -138,10 +167,7 @@ class ExecStatusTool extends HostToolHandler {
         errorCode: 'exec_task_not_found',
       );
     }
-    return ToolHandlerOutput(
-      text: 'exec.status ${_summary(snapshot)}',
-      structuredContent: _snapshotJson(snapshot, durationKey: 'elapsedMs'),
-    );
+    return _output('exec.status ${_summary(snapshot)}', snapshot, 'elapsedMs');
   }
 }
 

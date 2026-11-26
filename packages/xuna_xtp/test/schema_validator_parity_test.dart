@@ -166,6 +166,16 @@ Object? _validValueForSchema(
         },
       ];
     }
+    if (propName == 'expectFiles') {
+      return <Map<String, Object?>>[
+        <String, Object?>{
+          'path': '/ws/proj/dist/out.pdf',
+          if (full) 'minBytes': 1,
+          if (full) 'magic': '25504446',
+          if (full) 'sha256': 'a' * 64,
+        },
+      ];
+    }
     if (propName == 'to' || propName == 'cc' || propName == 'bcc') {
       return <String>['owner@example.com'];
     }

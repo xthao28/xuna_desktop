@@ -2,8 +2,10 @@ import 'dart:convert';
 
 import '../schemas.dart';
 import 'exec_command_classifier.dart';
+import 'exec_expected_outputs.dart';
 import 'fs_path_guard.dart';
 import 'policy_models.dart';
+import 'shell_control_policy.dart';
 
 /// Host facts used to classify `fs.*` and `exec.*` calls (`ADR-0018`).
 ///
@@ -27,7 +29,7 @@ class ExecFsHostContext {
   final RiskTier? Function(String taskId)? execTaskRisk;
 }
 
-/// Pattern of an `exec` task id (`exec.status`, `exec.write_stdin`, …).
+/// Pattern of an `exec` task id (`exec.status`, `exec.write_stdin`, â€¦).
 final RegExp execTaskIdPattern = RegExp(r'^exec_[a-zA-Z0-9_-]{1,64}$');
 
 /// Whether [toolName] is one of the Wave 3 `fs.*` / `exec.*` tools.
@@ -48,7 +50,7 @@ const Map<String, Set<String>> _allowedKeys = <String, Set<String>>{
   'fs.grep': {'path', 'pattern', 'isRegex', 'glob', 'maxMatches'},
   'fs.write_file': {'path', 'content', 'createParents', 'overwrite'},
   'fs.patch_file': {'path', 'target', 'replacement', 'replaceAll'},
-  'exec.run': {'command', 'cwd', 'timeoutMs', 'yieldMs', 'pty'},
+  'exec.run': {'command', 'cwd', 'timeoutMs', 'yieldMs', 'pty', 'expectFiles'},
   'exec.status': {'taskId', 'tailBytes'},
   'exec.write_stdin': {'taskId', 'input', 'appendNewline', 'eof'},
   'exec.cancel': {'taskId'},
@@ -182,6 +184,10 @@ PolicyEvaluationResult validateExecFsArguments({
       if (arguments['pty'] == true && !shell.allowPty) {
         return _denied('pty_not_allowed', 'policy');
       }
+      if (arguments.containsKey('expectFiles')) {
+        final refusal = _expectFilesRefusal(arguments['expectFiles'], ctx);
+        if (refusal != null) return refusal;
+      }
       final rawCwd = arguments['cwd'] as String? ?? ctx.homeDirectory;
       String? cwd;
       if (rawCwd != null) {
@@ -232,6 +238,40 @@ PolicyEvaluationResult validateExecFsArguments({
           : _ok(RiskTier.r2, 'stdin');
   }
   return _invalid('unknown_tool');
+}
+
+/// Checks `exec.run` `expectFiles` (P1.1): schema, then every path through
+/// [classifyFsPath] as a read, so a Hard-Deny location or a secret file can
+/// never be named as an expected output. Reading file facts does not raise
+/// the command's risk. Returns null when every entry is acceptable.
+PolicyEvaluationResult? _expectFilesRefusal(
+  Object? raw,
+  ExecFsHostContext ctx,
+) {
+  final specs = ExpectedFileSpec.parseList(raw);
+  if (specs == null) return _invalid('schema_mismatch', RiskTier.r2);
+  for (final spec in specs) {
+    final normalized = normalizeHostPath(
+      spec.path,
+      homeDirectory: ctx.homeDirectory,
+      windows: ctx.windows,
+    );
+    if (normalized == null) return _invalid('path_not_absolute', RiskTier.r2);
+    final decision = classifyFsPath(
+      normalizedPath: normalized,
+      resolvedPath: ctx.realPath?.call(normalized),
+      access: FsAccessKind.read,
+      shellControl: const ShellControlPolicy.disabled(),
+      homeDirectory: ctx.homeDirectory,
+      windows: ctx.windows,
+      caseInsensitive: ctx.caseInsensitive,
+      realPath: ctx.realPath,
+    );
+    if (decision.denied) {
+      return _denied(decision.errorCode!, decision.reasonCode);
+    }
+  }
+  return null;
 }
 
 PolicyEvaluationResult _pathDecision(

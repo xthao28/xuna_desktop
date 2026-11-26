@@ -11,6 +11,7 @@ import 'schemas.dart';
 export 'policy/exec_command_classifier.dart';
 export 'policy/exec_command_lexer.dart';
 export 'policy/exec_environment.dart';
+export 'policy/exec_expected_outputs.dart';
 export 'policy/exec_fs_validators.dart';
 export 'policy/forge_swarm_validators.dart';
 export 'policy/fs_path_guard.dart';

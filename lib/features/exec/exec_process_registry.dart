@@ -29,6 +29,21 @@ class ExecTaskEvent {
   final ExecTaskStatus status;
 }
 
+/// Outcome of an `exec.run` output postcondition (`expectFiles`, P1.1).
+class ExecOutputCheck {
+  const ExecOutputCheck({required this.artifacts, this.errorCode});
+
+  /// `artifacts[]` entries (`XUNA_XTP_V1_CONTRACT.md` §8).
+  final List<Map<String, Object?>> artifacts;
+
+  /// `expected_output_missing` / `expected_output_mismatch`, or null when
+  /// every expected file matched.
+  final String? errorCode;
+}
+
+/// Checks a task's expected outputs after its process exited with code 0.
+typedef ExecOutputVerifier = Future<ExecOutputCheck> Function();
+
 /// Snapshot returned to tool handlers (output already U5-redacted).
 class ExecTaskSnapshot {
   const ExecTaskSnapshot({
@@ -38,6 +53,8 @@ class ExecTaskSnapshot {
     required this.truncated,
     required this.elapsedMs,
     this.exitCode,
+    this.errorCode,
+    this.artifacts,
   });
 
   final String taskId;
@@ -46,15 +63,25 @@ class ExecTaskSnapshot {
   final String output;
   final bool truncated;
   final int elapsedMs;
+
+  /// Set when the exit code was 0 but `expectFiles` did not match; the
+  /// status is then `failed` (Rule H1).
+  final String? errorCode;
+
+  /// Expected-output facts, once checked (null when no `expectFiles`).
+  final List<Map<String, Object?>>? artifacts;
 }
 
 class _ExecTask {
-  _ExecTask(this.id, this.handle, this.risk, this.startedAt);
+  _ExecTask(this.id, this.handle, this.risk, this.startedAt, this.verifier);
 
   final String id;
   final ExecProcessHandle handle;
   final RiskTier risk;
   final DateTime startedAt;
+  final ExecOutputVerifier? verifier;
+  String? errorCode;
+  List<Map<String, Object?>>? artifacts;
   final List<int> buffer = <int>[];
   bool bufferTruncated = false;
   ExecTaskStatus status = ExecTaskStatus.running;
@@ -124,6 +151,11 @@ class ExecProcessRegistry {
 
   /// Starts [command] and waits up to [yieldAfter]. Returns the finished
   /// snapshot, or a `running` snapshot when the task detached.
+  ///
+  /// With [verifyOutputs], an exit code of 0 is reported `completed` only
+  /// after the verifier found every expected output; otherwise the task ends
+  /// `failed` with the verifier's error code. A non-zero exit, timeout or
+  /// cancel is reported as before, without checking outputs.
   Future<ExecTaskSnapshot> run({
     required String command,
     required String cwd,
@@ -133,6 +165,7 @@ class ExecProcessRegistry {
     required Duration yieldAfter,
     required RiskTier risk,
     int? concurrencyLimit,
+    ExecOutputVerifier? verifyOutputs,
   }) async {
     _purge();
     if (_stop.isStopped) {
@@ -154,7 +187,7 @@ class ExecProcessRegistry {
       environment: environment,
       pty: pty,
     );
-    final task = _ExecTask(_newId(), handle, risk, _clock());
+    final task = _ExecTask(_newId(), handle, risk, _clock(), verifyOutputs);
     _tasks[task.id] = task;
     task.timeoutTimer = Timer(timeout, () {
       unawaited(_terminate(task, ExecTaskStatus.timedOut));
@@ -180,17 +213,43 @@ class ExecProcessRegistry {
       _append(task, result.data, dropped: result.dropped);
       if (result.exited) {
         final code = result.exitCode;
-        _finish(
-          task,
-          code == 0 ? ExecTaskStatus.completed : ExecTaskStatus.failed,
-          exitCode: code,
-        );
+        var status = code == 0
+            ? ExecTaskStatus.completed
+            : ExecTaskStatus.failed;
+        final verifier = task.verifier;
+        if (status == ExecTaskStatus.completed &&
+            verifier != null &&
+            !task.status.isTerminal) {
+          // The process finished in time; checking outputs is host work and
+          // must not turn into `timed_out`. E-Stop/cancel still win.
+          task.timeoutTimer?.cancel();
+          status = await _verify(task, verifier);
+        }
+        _finish(task, status, exitCode: code);
         return;
       }
       // Keep polling after a cancel/timeout signal until the exit is reaped.
       if (task.done.isCompleted) return;
       await Future<void>.delayed(pollInterval);
     }
+  }
+
+  Future<ExecTaskStatus> _verify(
+    _ExecTask task,
+    ExecOutputVerifier verifier,
+  ) async {
+    try {
+      final check = await verifier();
+      task.artifacts = check.artifacts;
+      task.errorCode = check.errorCode;
+    } on Object {
+      // The check itself could not run: never report `completed` (Rule H1).
+      task.artifacts = const <Map<String, Object?>>[];
+      task.errorCode = expectedOutputMismatch;
+    }
+    return task.errorCode == null
+        ? ExecTaskStatus.completed
+        : ExecTaskStatus.failed;
   }
 
   void _append(_ExecTask task, List<int> data, {required bool dropped}) {
@@ -297,6 +356,12 @@ class ExecProcessRegistry {
       output: redacted.text,
       truncated: redacted.truncated || task.bufferTruncated,
       elapsedMs: end.difference(task.startedAt).inMilliseconds,
+      errorCode: task.status == ExecTaskStatus.failed ? task.errorCode : null,
+      artifacts:
+          task.status == ExecTaskStatus.completed ||
+              task.status == ExecTaskStatus.failed
+          ? task.artifacts
+          : null,
     );
   }
 
