@@ -44,6 +44,7 @@ class PresenceCoordinator {
   HostPresenceSnapshot? _lastEmittedPresence;
   DateTime? _lastPresenceSentAt;
   String? _lastCapabilitiesVersion;
+  bool _pendingForceRefresh = false;
   bool _probingInFlight = false;
   bool _disposed = false;
 
@@ -54,6 +55,9 @@ class PresenceCoordinator {
       _lastPresenceSentAt = null;
       _lastCapabilitiesVersion = null;
       unawaited(publishResources());
+      if (resourceDigestBuilder.toolchainProber != null) {
+        unawaited(publishResources(forceRefresh: true));
+      }
       unawaited(pollAndPublishPresence(forceEmit: true));
       _pollTimer?.cancel();
       _pollTimer = Timer.periodic(deltaPollInterval, (_) {
@@ -64,6 +68,7 @@ class PresenceCoordinator {
       _pollTimer = null;
       _resourceDebounceTimer?.cancel();
       _resourceDebounceTimer = null;
+      _pendingForceRefresh = false;
     }
   }
 
@@ -128,14 +133,34 @@ class PresenceCoordinator {
     }
   }
 
+  /// Asynchronously warms up cached host toolchains at startup without
+  /// blocking the caller, and publishes updated `xuna/resources` if the
+  /// session is already ready and `capabilitiesVersion` changed.
+  Future<bool> warmUpToolchains({bool forceRefresh = false}) async {
+    final prober = resourceDigestBuilder.toolchainProber;
+    if (_disposed || prober == null) {
+      return false;
+    }
+    await prober.probe(forceRefresh: forceRefresh);
+    if (_disposed || sessionClient.phase != HostSessionPhase.ready) {
+      return false;
+    }
+    return publishResources();
+  }
+
   /// Schedules a debounced `xuna/resources` publish if capabilities changed.
   void scheduleResourcesPublish({bool forceRefresh = false}) {
     if (_disposed || sessionClient.phase != HostSessionPhase.ready) {
       return;
     }
+    if (forceRefresh) {
+      _pendingForceRefresh = true;
+    }
     _resourceDebounceTimer?.cancel();
     _resourceDebounceTimer = Timer(resourceDebounceDuration, () {
-      unawaited(publishResources(forceRefresh: forceRefresh));
+      final refresh = _pendingForceRefresh;
+      _pendingForceRefresh = false;
+      unawaited(publishResources(forceRefresh: refresh));
     });
   }
 
@@ -144,6 +169,13 @@ class PresenceCoordinator {
   Future<bool> publishResources({bool forceRefresh = false}) async {
     if (_disposed || sessionClient.phase != HostSessionPhase.ready) {
       return false;
+    }
+    final prober = resourceDigestBuilder.toolchainProber;
+    if (forceRefresh && prober != null) {
+      await prober.probe(forceRefresh: true);
+      if (_disposed || sessionClient.phase != HostSessionPhase.ready) {
+        return false;
+      }
     }
     final digest = resourceDigestBuilder.build(forceRefresh: forceRefresh);
     if (_lastCapabilitiesVersion == digest.capabilitiesVersion) {

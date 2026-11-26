@@ -52,6 +52,7 @@ class ToolHandlerOutput {
     this.toastBody,
     this.status = XtpStatus.ok,
     this.errorCode,
+    this.remediation,
   });
 
   final String text;
@@ -59,9 +60,14 @@ class ToolHandlerOutput {
 
   /// Tool outcome. A handler returns a non-`ok` status here (instead of
   /// throwing) when the failure carries structured facts the caller needs,
-  /// e.g. `exec.run` `expected_output_*` with its `artifacts` (Rule H4).
+  /// e.g. `exec.run` `expected_output_*` with its `artifacts` or
+  /// `toolchain_missing` with `remediation` (Rule H4).
   final XtpStatus status;
   final String? errorCode;
+
+  /// Optional display-only remediation attached on non-`ok` outcomes
+  /// (`XUNA_XTP_V1_CONTRACT.md` §5.1, P1.2 / U4).
+  final XtpRemediation? remediation;
 
   /// Optional short toast description (`"đã mở VS Code"`). Never contains full
   /// URLs or file paths (`UDC-3` §5.6.5 rule 7).
@@ -226,6 +232,7 @@ class ToolExecutionContext {
     this.execRegistry,
     this.execFsContext,
     this.deadlineMs,
+    this.onToolchainRefreshRequested,
   });
 
   /// RAM-only registry of `exec.run` children (`ADR-0018`).
@@ -236,6 +243,10 @@ class ToolExecutionContext {
 
   /// The `tools/call` deadline (`xuna/deadlineMs`), when known.
   final int? deadlineMs;
+
+  /// Optional host callback invoked when tool execution observes missing or
+  /// newly installed toolchains so `xuna/resources` refreshes asynchronously.
+  final void Function({bool forceRefresh})? onToolchainRefreshRequested;
 
   /// Whether the call carries an approval the host verified as R3-grade:
   /// bound to these arguments, unexpired, scope `once` and signed by an
@@ -336,10 +347,12 @@ class HostToolDispatcher {
     ProtocolTaskRegistry? protocolTaskRegistry,
     AcpHarnessAdapter? acpHarnessAdapter,
     ExecProcessRegistry? execRegistry,
+    void Function({bool forceRefresh})? onToolchainRefreshRequested,
     List<HostToolHandler>? handlers,
   }) : execRegistry =
            execRegistry ??
            ExecProcessRegistry(stopController: stopController, logger: logger),
+       _onToolchainRefreshRequested = onToolchainRefreshRequested,
        _ownsProtocolTaskRegistry = protocolTaskRegistry == null,
        protocolTaskRegistry =
            protocolTaskRegistry ??
@@ -397,6 +410,15 @@ class HostToolDispatcher {
 
   bool _shellEnabled = false;
   StreamSubscription<HostPolicyEvaluator>? _policySub;
+  void Function({bool forceRefresh})? _onToolchainRefreshRequested;
+
+  /// Attaches a host callback to refresh `xuna/resources` when tool execution
+  /// detects missing or newly installed toolchains.
+  void attachToolchainRefreshCallback(
+    void Function({bool forceRefresh}) callback,
+  ) {
+    _onToolchainRefreshRequested = callback;
+  }
 
   final HostPolicyStore policyStore;
   final XunaHostChannel channel;
@@ -666,6 +688,7 @@ class HostToolDispatcher {
     String? errorCode;
     String text = '';
     Map<String, Object?> structuredContent = const <String, Object?>{};
+    XtpRemediation? remediation;
     String? toastBody;
 
     final effectiveNow = (nowUtc ?? DateTime.now()).toUtc();
@@ -820,6 +843,7 @@ class HostToolDispatcher {
         execRegistry: execRegistry,
         execFsContext: buildExecFsHostContext(execRegistry),
         deadlineMs: params.deadlineMs,
+        onToolchainRefreshRequested: _onToolchainRefreshRequested,
       );
 
       final deadline = Duration(milliseconds: params.deadlineMs);
@@ -864,6 +888,7 @@ class HostToolDispatcher {
         errorCode = output.errorCode;
         text = output.text;
         structuredContent = output.structuredContent;
+        remediation = output.remediation;
         toastBody = output.toastBody;
         if (params.name != 'action.undo') {
           actionLedger.record(
@@ -927,6 +952,7 @@ class HostToolDispatcher {
         status: status,
         durationMs: stopwatch.elapsedMilliseconds,
         errorCode: errorCode,
+        remediation: remediation,
       );
     } on XtpProtocolException {
       status = XtpStatus.failed;

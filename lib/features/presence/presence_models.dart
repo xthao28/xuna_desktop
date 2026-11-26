@@ -62,21 +62,24 @@ class HostPresenceSnapshot {
   );
 }
 
-/// Sanitized, path-free capability digest sent over `xuna/resources` (`M3` Phase 2).
+/// Sanitized, path-free capability digest sent over `xuna/resources` (`M3` Phase 2, P1.2 / U4).
 class ResourceDigest {
   const ResourceDigest({
     required this.installedApps,
     required this.workspaces,
     required this.capabilitiesVersion,
+    this.toolchains = const <XtpToolchainEntry>[],
   });
 
   final List<String> installedApps;
   final List<String> workspaces;
   final String capabilitiesVersion;
+  final List<XtpToolchainEntry> toolchains;
 
   ResourcesParams toResourcesParams() => ResourcesParams(
     installedApps: installedApps,
     workspaces: workspaces,
     capabilitiesVersion: capabilitiesVersion,
+    toolchains: toolchains,
   );
 }

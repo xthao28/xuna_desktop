@@ -6,6 +6,7 @@ import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/discovery/mcp_tools_introspector.dart';
+import 'package:xuna_desktop/features/tools/host_remediation_catalog.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_desktop/features/watch/protocol_task_registry.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
@@ -46,9 +47,16 @@ class WorkspaceOpenTool extends HostToolHandler {
     }
     final resolvedIde = context.appScanner.resolveCodingAgent(ide);
     if (resolvedIde == null) {
-      throw const XunaHostChannelException(
+      final remediation = HostRemediationCatalog.forDependency(ide);
+      return ToolHandlerOutput(
         status: XtpStatus.unsupported,
         errorCode: 'ide_not_found',
+        text: 'Không tìm thấy IDE phù hợp ($ide).',
+        structuredContent: const <String, Object?>{
+          'errorCode': 'ide_not_found',
+          'message': 'Requested IDE is not available on this host.',
+        },
+        remediation: remediation,
       );
     }
     final plan = await context.workspaceIndexer.launchCodingAgent(
@@ -360,9 +368,16 @@ class WorkspaceCodingAgentTool extends HostToolHandler {
     }
     final resolvedAgent = context.appScanner.resolveCodingAgent(agent);
     if (resolvedAgent == null) {
-      throw const XunaHostChannelException(
+      final remediation = HostRemediationCatalog.forDependency(agent);
+      return ToolHandlerOutput(
         status: XtpStatus.unsupported,
         errorCode: 'coding_agent_not_found',
+        text: 'Không tìm thấy coding agent phù hợp ($agent).',
+        structuredContent: const <String, Object?>{
+          'errorCode': 'coding_agent_not_found',
+          'message': 'Requested coding agent is not available on this host.',
+        },
+        remediation: remediation,
       );
     }
     final cleanPrompt = (prompt ?? '').trim();

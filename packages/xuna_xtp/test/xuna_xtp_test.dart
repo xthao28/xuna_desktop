@@ -3814,9 +3814,9 @@ void main() {
   });
 
   group('M3 Spatial Device Mesh XTP frames', () {
-    test('parses and re-encodes all 7 frames in mesh_frames.json', () {
+    test('parses and re-encodes all 8 frames in mesh_frames.json', () {
       final frames = meshFrames['frames'] as Map<String, Object?>;
-      expect(frames, hasLength(7));
+      expect(frames, hasLength(8));
       for (final entry in frames.entries) {
         final rawText = jsonEncode(entry.value);
         final parsed = XtpFrame.parse(rawText);
@@ -3872,6 +3872,20 @@ void main() {
       expect(resTyped.installedApps, equals(<String>['vscode', 'obsidian']));
       expect(resTyped.workspaces, equals(<String>['xuna_pet', 'Notes_Vault']));
       expect(resTyped.capabilitiesVersion, equals('r1_0001'));
+      expect(resTyped.toolchains, isEmpty);
+
+      final resourcesWithToolchains = XtpFrame.parse(
+        jsonEncode(frames['resourcesWithToolchainsNotification']),
+      ) as XtpNotification;
+      final resTcTyped = resourcesWithToolchains.typedParams as ResourcesParams;
+      expect(resTcTyped.capabilitiesVersion, equals('r1_0002'));
+      expect(
+        resTcTyped.toolchains,
+        equals(const <XtpToolchainEntry>[
+          XtpToolchainEntry(id: 'git', version: '2.47.1'),
+          XtpToolchainEntry(id: 'node', version: '22.11.0'),
+        ]),
+      );
 
       final focusHotkey = XtpFrame.parse(
         jsonEncode(frames['focusRequestHotkeyNotification']),

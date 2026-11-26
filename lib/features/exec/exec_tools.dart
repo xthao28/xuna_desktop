@@ -6,6 +6,7 @@ import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/exec/exec_host_environment.dart';
 import 'package:xuna_desktop/features/exec/exec_output_verifier.dart';
 import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
+import 'package:xuna_desktop/features/tools/host_remediation_catalog.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -128,22 +129,87 @@ class ExecRunTool extends HostToolHandler {
         errorCode: 'schema_mismatch',
       );
     }
-    final snapshot = await registry.run(
-      command: args['command']! as String,
-      cwd: cwd,
-      environment: await buildExecEnvironment(cwd: cwd, pty: pty),
-      pty: pty,
-      timeout: Duration(milliseconds: timeoutMs),
-      yieldAfter: Duration(milliseconds: yieldMs),
-      risk: context.evaluation.effectiveRisk,
-      concurrencyLimit: shell.maxConcurrentTasks,
-      verifyOutputs: expectFiles == null
-          ? null
-          : () => verifyExpectedFiles(
-              expectFiles,
-              homeDirectory: fsContext?.homeDirectory,
-            ),
-    );
+    final command = args['command']! as String;
+    final ExecTaskSnapshot snapshot;
+    try {
+      snapshot = await registry.run(
+        command: command,
+        cwd: cwd,
+        environment: await buildExecEnvironment(cwd: cwd, pty: pty),
+        pty: pty,
+        timeout: Duration(milliseconds: timeoutMs),
+        yieldAfter: Duration(milliseconds: yieldMs),
+        risk: context.evaluation.effectiveRisk,
+        concurrencyLimit: shell.maxConcurrentTasks,
+        verifyOutputs: expectFiles == null
+            ? null
+            : () => verifyExpectedFiles(
+                expectFiles,
+                homeDirectory: fsContext?.homeDirectory,
+              ),
+      );
+    } on XunaHostChannelException catch (error) {
+      if (error.errorCode == 'exec_spawn_failed') {
+        final token = HostRemediationCatalog.extractMissingCommandToken(
+          command,
+          error.message ?? '',
+        );
+        final remediation = HostRemediationCatalog.forCommandToken(token);
+        if (remediation != null) {
+          context.onToolchainRefreshRequested?.call(forceRefresh: true);
+          return ToolHandlerOutput(
+            status: XtpStatus.failed,
+            errorCode: 'toolchain_missing',
+            text: 'exec.run failed toolchain_missing ($token)',
+            structuredContent: const <String, Object?>{
+              'status': 'failed',
+              'output': '',
+              'truncated': false,
+              'durationMs': 0,
+              'errorCode': 'toolchain_missing',
+            },
+            remediation: remediation,
+          );
+        }
+      }
+      rethrow;
+    }
+
+    if (snapshot.status == ExecTaskStatus.failed &&
+        snapshot.errorCode == null &&
+        HostRemediationCatalog.isMissingCommandFailure(
+          exitCode: snapshot.exitCode,
+          output: snapshot.output,
+        )) {
+      final token = HostRemediationCatalog.extractMissingCommandToken(
+        command,
+        snapshot.output,
+      );
+      final remediation = HostRemediationCatalog.forCommandToken(token);
+      if (remediation != null) {
+        context.onToolchainRefreshRequested?.call(forceRefresh: true);
+        return ToolHandlerOutput(
+          status: XtpStatus.failed,
+          errorCode: 'toolchain_missing',
+          text: 'exec.run ${_summary(snapshot)} toolchain_missing ($token)',
+          structuredContent: <String, Object?>{
+            ..._snapshotJson(snapshot, durationKey: 'durationMs'),
+            'errorCode': 'toolchain_missing',
+          },
+          remediation: remediation,
+        );
+      }
+    }
+
+    if (snapshot.status == ExecTaskStatus.completed &&
+        snapshot.errorCode == null &&
+        HostRemediationCatalog.isPackageOrToolchainInstallCommand(
+          command,
+          reasonCode: context.evaluation.reasonCode,
+        )) {
+      context.onToolchainRefreshRequested?.call(forceRefresh: true);
+    }
+
     return _output('exec.run ${_summary(snapshot)}', snapshot, 'durationMs');
   }
 }

@@ -95,6 +95,7 @@ void main() {
           'presenceNotification',
           'presenceDesktopNoBatteryNotification',
           'resourcesNotification',
+          'resourcesWithToolchainsNotification',
           'focusRequestHotkeyNotification',
           'focusRequestTrayNotification',
         ]) {

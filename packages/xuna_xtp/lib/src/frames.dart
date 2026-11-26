@@ -2,7 +2,12 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'crypto.dart';
-import 'policy/security_redaction.dart' show isHardDeniedAppOrProcess;
+import 'policy/security_redaction.dart'
+    show
+        hasBinaryOrInvalidSurrogates,
+        isHardDeniedAppOrProcess,
+        redactFilesystemPaths,
+        redactSensitiveSelectionText;
 import 'schemas.dart';
 
 /// Maximum WebSocket text frame size in UTF-8 bytes (`512 KiB`).
@@ -383,13 +388,20 @@ class XtpResponse extends XtpFrame {
     required XtpStatus status,
     required int durationMs,
     String? errorCode,
+    XtpRemediation? remediation,
     bool allowMediaPayload = false,
   }) {
-    final isMedia =
-        allowMediaPayload || _hasMediaStructuredContent(structuredContent);
+    final effectiveStructuredContent = remediation == null
+        ? structuredContent
+        : <String, Object?>{
+            ...structuredContent,
+            'remediation': remediation.toJson(),
+          };
+    final isMedia = allowMediaPayload ||
+        _hasMediaStructuredContent(effectiveStructuredContent);
     final limit =
         isMedia ? maxMediaStructuredContentBytes : maxStructuredContentBytes;
-    final scBytes = utf8.encode(jsonEncode(structuredContent)).length;
+    final scBytes = utf8.encode(jsonEncode(effectiveStructuredContent)).length;
     if (scBytes > limit) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,
@@ -408,7 +420,7 @@ class XtpResponse extends XtpFrame {
         'content': <Object?>[
           <String, Object?>{'type': 'text', 'text': text},
         ],
-        'structuredContent': structuredContent,
+        'structuredContent': effectiveStructuredContent,
         'isError': status.isError,
         '_meta': meta,
       },
@@ -1286,6 +1298,214 @@ class PresenceParams extends XtpNotificationParams {
       );
 }
 
+/// A normalized host toolchain entry declared in `xuna/resources` (`§4.2.11`, P1.2 / U4).
+///
+/// Never carries filesystem paths, working directories, or raw probe output.
+class XtpToolchainEntry {
+  const XtpToolchainEntry({
+    required this.id,
+    required this.version,
+  });
+
+  factory XtpToolchainEntry.fromJson(Map<String, Object?> json) {
+    _requireExactParamsKeys(json, const <String>{'id', 'version'});
+    final entry = XtpToolchainEntry(
+      id: _requireStringParam(json, 'id'),
+      version: _requireStringParam(json, 'version'),
+    );
+    entry.validate();
+    return entry;
+  }
+
+  static XtpToolchainEntry? tryFromJson(Object? raw) {
+    if (raw is! Map) return null;
+    try {
+      final map = _castStringObjectMap(raw);
+      return XtpToolchainEntry.fromJson(map);
+    } on XtpProtocolException {
+      return null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static const int maxToolchains = 64;
+  static final RegExp idPattern = RegExp(r'^[a-z0-9_.-]{1,32}$');
+  static final RegExp versionPattern =
+      RegExp(r'^[a-zA-Z0-9][a-zA-Z0-9._+-]{0,31}$');
+
+  final String id;
+  final String version;
+
+  void validate() {
+    if (id.isEmpty ||
+        id.length > 32 ||
+        id.trim() != id ||
+        id == '.' ||
+        id == '..' ||
+        id.contains('..') ||
+        id.contains('/') ||
+        id.contains(r'\') ||
+        _asciiControlCharPattern.hasMatch(id) ||
+        hasBinaryOrInvalidSurrogates(id) ||
+        !idPattern.hasMatch(id)) {
+      throw const FormatException('Invalid toolchain id');
+    }
+    if (version.isEmpty ||
+        version.length > 32 ||
+        version.trim() != version ||
+        version.contains('..') ||
+        version.contains('/') ||
+        version.contains(r'\') ||
+        RegExp(r'\s').hasMatch(version) ||
+        _asciiControlCharPattern.hasMatch(version) ||
+        hasBinaryOrInvalidSurrogates(version) ||
+        !versionPattern.hasMatch(version)) {
+      throw const FormatException('Invalid toolchain version');
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    validate();
+    return <String, Object?>{
+      'id': id,
+      'version': version,
+    };
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is XtpToolchainEntry && id == other.id && version == other.version;
+
+  @override
+  int get hashCode => Object.hash(id, version);
+}
+
+/// Kind of host-declared remediation in `structuredContent.remediation` (`§5.1`, P1.2 / U4).
+enum XtpRemediationKind {
+  install('install'),
+  config('config'),
+  manual('manual');
+
+  const XtpRemediationKind(this.wire);
+  final String wire;
+
+  static XtpRemediationKind fromWire(String value) => switch (value) {
+        'install' => XtpRemediationKind.install,
+        'config' => XtpRemediationKind.config,
+        'manual' => XtpRemediationKind.manual,
+        _ => throw FormatException('Unknown XtpRemediationKind: $value'),
+      };
+}
+
+/// Host-declared remediation attached to `structuredContent.remediation` on
+/// missing dependency/toolchain/config errors (`§5.1`, P1.2 / U4).
+///
+/// [command] is strictly display-only and must never contain host filesystem
+/// paths or secrets.
+class XtpRemediation {
+  const XtpRemediation({
+    required this.summary,
+    this.command,
+    required this.kind,
+  });
+
+  factory XtpRemediation.fromJson(Map<String, Object?> json) {
+    _requireExactParamsKeys(
+      json,
+      const <String>{'summary', 'kind'},
+      optionalKeys: const <String>{'command'},
+    );
+    final summary = _requireStringParam(json, 'summary');
+    String? command;
+    if (json.containsKey('command') && json['command'] != null) {
+      command = _requireStringParam(json, 'command');
+    }
+    final kind = XtpRemediationKind.fromWire(_requireStringParam(json, 'kind'));
+    final remediation = XtpRemediation(
+      summary: summary,
+      command: command,
+      kind: kind,
+    );
+    remediation.validate();
+    return remediation;
+  }
+
+  static XtpRemediation? tryFromJson(Object? raw) {
+    if (raw is! Map) return null;
+    try {
+      final map = _castStringObjectMap(raw);
+      return XtpRemediation.fromJson(map);
+    } on XtpProtocolException {
+      return null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static const int maxLength = 240;
+  static final RegExp _windowsForwardDrivePathRe = RegExp(
+    r'''(?:^|[\s"'`(\[{=:,])[A-Za-z]:[/\\]''',
+  );
+
+  final String summary;
+  final String? command;
+  final XtpRemediationKind kind;
+
+  static void _validateTextField(String value, String fieldName) {
+    if (value.isEmpty ||
+        value.length > maxLength ||
+        value.trim() != value ||
+        _asciiControlCharPattern.hasMatch(value) ||
+        hasBinaryOrInvalidSurrogates(value)) {
+      throw FormatException(
+        'remediation.$fieldName must be 1..$maxLength trimmed single-line chars without control chars',
+      );
+    }
+    if (redactFilesystemPaths(value) != value ||
+        _windowsForwardDrivePathRe.hasMatch(value)) {
+      throw FormatException(
+        'remediation.$fieldName must not contain host filesystem paths',
+      );
+    }
+    if (redactSensitiveSelectionText(value, maxChars: maxLength).redactedCount >
+        0) {
+      throw FormatException(
+        'remediation.$fieldName must not contain secrets or tokens',
+      );
+    }
+  }
+
+  void validate() {
+    _validateTextField(summary, 'summary');
+    final cmd = command;
+    if (cmd != null) {
+      _validateTextField(cmd, 'command');
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    validate();
+    return <String, Object?>{
+      'summary': summary,
+      if (command != null) 'command': command,
+      'kind': kind.wire,
+    };
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is XtpRemediation &&
+          summary == other.summary &&
+          command == other.command &&
+          kind == other.kind;
+
+  @override
+  int get hashCode => Object.hash(summary, command, kind);
+}
+
 /// `xuna/resources` notification params (`XUNA_XTP_V1_CONTRACT.md` §4.2.11).
 class ResourcesParams extends XtpNotificationParams {
   const ResourcesParams({
@@ -1293,20 +1513,46 @@ class ResourcesParams extends XtpNotificationParams {
     required this.installedApps,
     required this.workspaces,
     this.capabilitiesVersion,
+    this.toolchains = const <XtpToolchainEntry>[],
   });
 
   final int schemaVersion;
   final List<String> installedApps;
   final List<String> workspaces;
   final String? capabilitiesVersion;
+  final List<XtpToolchainEntry> toolchains;
 
-  Map<String, Object?> toJson() => <String, Object?>{
-        'schemaVersion': schemaVersion,
-        'installedApps': installedApps,
-        'workspaces': workspaces,
-        if (capabilitiesVersion != null)
-          'capabilitiesVersion': capabilitiesVersion,
-      };
+  void validate() {
+    if (schemaVersion != 1) {
+      throw FormatException(
+        'Unsupported xuna/resources schemaVersion: $schemaVersion',
+      );
+    }
+    if (toolchains.length > XtpToolchainEntry.maxToolchains) {
+      throw const FormatException('toolchains exceeds max 64 items');
+    }
+    final seenIds = <String>{};
+    for (final entry in toolchains) {
+      entry.validate();
+      if (!seenIds.add(entry.id)) {
+        throw FormatException('Duplicate toolchain id "${entry.id}"');
+      }
+    }
+  }
+
+  Map<String, Object?> toJson() {
+    validate();
+    return <String, Object?>{
+      'schemaVersion': schemaVersion,
+      'installedApps': installedApps,
+      'workspaces': workspaces,
+      if (capabilitiesVersion != null)
+        'capabilitiesVersion': capabilitiesVersion,
+      if (toolchains.isNotEmpty)
+        'toolchains':
+            toolchains.map((entry) => entry.toJson()).toList(growable: false),
+    };
+  }
 
   XtpNotification toNotification() => XtpNotification(
         method: 'xuna/resources',
@@ -2007,6 +2253,23 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
           throw const FormatException('Invalid xuna/errorCode');
         }
       }
+      final scMap = _castStringObjectMap(sc, requestId: requestId);
+      if (scMap.containsKey('remediation')) {
+        if (status == XtpStatus.ok) {
+          throw const FormatException(
+            'remediation is forbidden when xuna/status is ok',
+          );
+        }
+        final rawRem = scMap['remediation'];
+        if (rawRem is! Map) {
+          throw const FormatException(
+            'structuredContent.remediation must be an object',
+          );
+        }
+        XtpRemediation.fromJson(
+          _castStringObjectMap(rawRem, requestId: requestId),
+        );
+      }
     } on FormatException catch (error) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,
@@ -2437,7 +2700,7 @@ ResourcesParams _parseResourcesParams(Map<String, Object?> params) {
   _requireExactParamsKeys(
     params,
     const <String>{'schemaVersion', 'installedApps', 'workspaces'},
-    optionalKeys: const <String>{'capabilitiesVersion'},
+    optionalKeys: const <String>{'capabilitiesVersion', 'toolchains'},
   );
   final schemaVersion = _requireIntParam(params, 'schemaVersion');
   if (schemaVersion != 1) {
@@ -2493,11 +2756,34 @@ ResourcesParams _parseResourcesParams(Map<String, Object?> params) {
     }
   }
 
+  final toolchains = <XtpToolchainEntry>[];
+  if (params.containsKey('toolchains')) {
+    final rawToolchains = params['toolchains'];
+    if (rawToolchains is! List) {
+      throw const FormatException('toolchains must be a list');
+    }
+    if (rawToolchains.length > XtpToolchainEntry.maxToolchains) {
+      throw const FormatException('toolchains exceeds max 64 items');
+    }
+    final seenIds = <String>{};
+    for (final item in rawToolchains) {
+      if (item is! Map) {
+        throw const FormatException('toolchains item must be an object');
+      }
+      final entry = XtpToolchainEntry.fromJson(_castStringObjectMap(item));
+      if (!seenIds.add(entry.id)) {
+        throw FormatException('Duplicate toolchain id "${entry.id}"');
+      }
+      toolchains.add(entry);
+    }
+  }
+
   return ResourcesParams(
     schemaVersion: schemaVersion,
     installedApps: List<String>.unmodifiable(installedApps),
     workspaces: List<String>.unmodifiable(workspaces),
     capabilitiesVersion: capabilitiesVersion,
+    toolchains: List<XtpToolchainEntry>.unmodifiable(toolchains),
   );
 }
 

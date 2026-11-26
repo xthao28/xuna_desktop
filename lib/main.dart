@@ -16,6 +16,7 @@ import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
+import 'package:xuna_desktop/features/presence/host_toolchain_prober.dart';
 import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
 import 'package:xuna_desktop/features/presence/resource_digest_builder.dart';
 import 'package:xuna_desktop/features/presence/subnet_hash.dart';
@@ -115,15 +116,22 @@ Future<void> main() async {
     logger: logger,
   );
 
+  final toolchainProber = HostToolchainProber(logger: logger);
+
   final presenceCoordinator = PresenceCoordinator(
     channel: channel,
     sessionClient: sessionClient,
     resourceDigestBuilder: ResourceDigestBuilder(
       appScanner: appScanner,
       workspaceIndexer: workspaceIndexer,
+      toolchainProber: toolchainProber,
     ),
     subnetHashCalculator: SubnetHashCalculator(),
     logger: logger,
+  );
+  dispatcher.attachToolchainRefreshCallback(
+    ({bool forceRefresh = true}) => presenceCoordinator
+        .scheduleResourcesPublish(forceRefresh: forceRefresh),
   );
 
   if (Get.isRegistered<DesktopAgentController>()) {

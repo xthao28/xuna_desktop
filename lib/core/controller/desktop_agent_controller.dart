@@ -271,6 +271,7 @@ class DesktopAgentController extends BaseGetxController {
     _syncFromStores();
     scanInstalledApps();
     scanWorkspaces();
+    unawaited(presenceCoordinator?.warmUpToolchains());
     _skillRunner.loadPersistedForgedSkillsFromDisk();
     if (lanModeEnabled.value && lanServer != null) {
       try {
