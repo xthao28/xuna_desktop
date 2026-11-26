@@ -554,3 +554,119 @@ List<ToolDescriptor> buildDraftTools({
     ),
   ];
 }
+
+/// Builds the two fixed declarative capability adapter descriptors
+/// (`ADR-0021` / Upgrade Plan P4.1):
+/// - `capability.list` (`ToolFamily.host`, `R1`)
+/// - `capability.run` (`ToolFamily.exec`, `R2` floor, mandatory preflight)
+List<ToolDescriptor> buildCapabilityTools({
+  required bool shellEnabled,
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  final runPermission =
+      shellEnabled ? XtpPermissionState.granted : XtpPermissionState.denied;
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'capability.list',
+      description:
+          'List approved local declarative capability adapters currently detected and verified on this host.',
+      inputSchema: _obj(<String, Object?>{
+        'capability': const <String, Object?>{
+          'type': 'string',
+          'pattern': r'^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$',
+        },
+        'format': const <String, Object?>{
+          'type': 'string',
+          'pattern': r'^[a-z0-9]{1,16}$',
+        },
+      }),
+      outputSchema: _obj(<String, Object?>{
+        'adapters': <String, Object?>{
+          'type': 'array',
+          'maxItems': 64,
+          'items': _obj(<String, Object?>{
+            'id': const <String, Object?>{
+              'type': 'string',
+              'pattern': r'^[a-z][a-z0-9_.-]{1,63}$',
+            },
+            'capability': _str(1, 64),
+            'description': _str(1, 200),
+            'risk': const <String, Object?>{
+              'type': 'string',
+              'enum': <String>['R2', 'R3'],
+            },
+            'provenance': const <String, Object?>{
+              'type': 'string',
+              'enum': <String>['seed', 'foundry'],
+            },
+            'inputsSummary': _str(0, 240),
+            'binaryVersion': _str(1, 64),
+          }, required: <String>[
+            'id',
+            'capability',
+            'description',
+            'risk',
+            'provenance',
+            'inputsSummary',
+          ]),
+        },
+        'totalDetected': _count,
+      }, required: <String>[
+        'adapters',
+        'totalDetected',
+      ]),
+      policy: ToolPolicyMeta(
+        family: ToolFamily.host,
+        risk: RiskTier.r1,
+        observes: true,
+        reversible: true,
+        permission: defaultPermission,
+      ),
+    ),
+    ToolDescriptor(
+      name: 'capability.run',
+      description:
+          'Invoke a detected declarative capability adapter by id with typed JSON inputs (direct non-shell argv, FsPathGuard, mandatory preflight, P1.1 verifyFiles).',
+      inputSchema: _obj(<String, Object?>{
+        'adapterId': const <String, Object?>{
+          'type': 'string',
+          'pattern': r'^[a-z][a-z0-9_.-]{1,63}$',
+        },
+        'inputsJson': _str(2, 4096),
+        'draftId': _draftId,
+      }, required: <String>[
+        'adapterId',
+        'inputsJson',
+      ]),
+      outputSchema: _obj(<String, Object?>{
+        'adapterId': const <String, Object?>{
+          'type': 'string',
+          'pattern': r'^[a-z][a-z0-9_.-]{1,63}$',
+        },
+        'status': const <String, Object?>{
+          'type': 'string',
+          'enum': <String>['completed', 'failed', 'timed_out', 'cancelled'],
+        },
+        'exitCode': const <String, Object?>{'type': 'integer'},
+        'output': const <String, Object?>{'type': 'string', 'maxLength': 16384},
+        'truncated': _bool,
+        'durationMs': _count,
+        'errorCode': _str(1, 64),
+        'artifacts': _artifacts,
+      }, required: <String>[
+        'adapterId',
+        'status',
+        'output',
+        'truncated',
+        'durationMs',
+      ]),
+      policy: ToolPolicyMeta(
+        family: ToolFamily.exec,
+        risk: RiskTier.r2,
+        observes: false,
+        reversible: false,
+        permission: runPermission,
+      ),
+    ),
+  ];
+}

@@ -5,12 +5,19 @@ import 'dart:io';
 /// - Windows: `%APPDATA%\XUNA\` (machine-local undo WAL: `%LOCALAPPDATA%\XUNA\undo\`)
 /// - macOS: `~/Library/Application Support/XUNA/` (`undo/` mode `0700`)
 class AgentPaths {
-  AgentPaths({required this.rootDir, Directory? undoDir, Directory? draftsDir})
-    : undoDir =
-          undoDir ?? Directory('${rootDir.path}${Platform.pathSeparator}undo'),
-      draftsDir =
-          draftsDir ??
-          Directory('${rootDir.path}${Platform.pathSeparator}drafts');
+  AgentPaths({
+    required this.rootDir,
+    Directory? undoDir,
+    Directory? draftsDir,
+    Directory? capabilitiesDir,
+  }) : undoDir =
+           undoDir ?? Directory('${rootDir.path}${Platform.pathSeparator}undo'),
+       draftsDir =
+           draftsDir ??
+           Directory('${rootDir.path}${Platform.pathSeparator}drafts'),
+       capabilitiesDir =
+           capabilitiesDir ??
+           Directory('${rootDir.path}${Platform.pathSeparator}capabilities');
 
   /// Resolves the default `XUNA` directory from OS environment variables, or
   /// falls back to [overrideRootDir] when supplied (e.g. in tests).
@@ -35,6 +42,9 @@ class AgentPaths {
         draftsDir: Directory(
           '$localAppData${Platform.pathSeparator}XUNA${Platform.pathSeparator}drafts',
         ),
+        capabilitiesDir: Directory(
+          '$localAppData${Platform.pathSeparator}XUNA${Platform.pathSeparator}capabilities',
+        ),
       );
     }
     final home = env['HOME'] ?? '.';
@@ -53,6 +63,9 @@ class AgentPaths {
   /// Swept on startup and E-Stop; never stored inside `audit/`.
   final Directory draftsDir;
 
+  /// Machine-local declarative capability adapter manifests (`ADR-0021` §1).
+  final Directory capabilitiesDir;
+
   /// `host-policy.json` (`UDC-3` §5.6.4).
   File get policyFile =>
       File('${rootDir.path}${Platform.pathSeparator}host-policy.json');
@@ -69,7 +82,8 @@ class AgentPaths {
   Directory get auditDir =>
       Directory('${rootDir.path}${Platform.pathSeparator}audit');
 
-  /// Ensures [rootDir], [auditDir], [undoDir], and [draftsDir] exist.
+  /// Ensures [rootDir], [auditDir], [undoDir], [draftsDir], and
+  /// [capabilitiesDir] exist.
   Future<void> ensureDirectories() async {
     if (!await rootDir.exists()) {
       await rootDir.create(recursive: true);
@@ -83,8 +97,11 @@ class AgentPaths {
     if (!await draftsDir.exists()) {
       await draftsDir.create(recursive: true);
     }
+    if (!await capabilitiesDir.exists()) {
+      await capabilitiesDir.create(recursive: true);
+    }
     if (!Platform.isWindows) {
-      for (final dir in <Directory>[undoDir, draftsDir]) {
+      for (final dir in <Directory>[undoDir, draftsDir, capabilitiesDir]) {
         try {
           await Process.run('/bin/chmod', <String>['700', dir.path]);
         } on Object {

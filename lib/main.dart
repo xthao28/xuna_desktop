@@ -10,6 +10,8 @@ import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/core/single_instance/single_instance_guard.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/browser_bridge/cdp_browser_engine_provider.dart';
+import 'package:xuna_desktop/features/capabilities/capability_engine.dart';
+import 'package:xuna_desktop/features/capabilities/capability_manifest_loader.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
@@ -92,6 +94,19 @@ Future<void> main() async {
     rootDir: paths.draftsDir,
     logger: logger,
   );
+  final capabilityEngine = CapabilityEngine(
+    loader: CapabilityManifestLoader(
+      manifestDirectories: <Directory>[
+        paths.capabilitiesDir,
+        Directory(
+          '${Directory.current.path}${Platform.pathSeparator}assets${Platform.pathSeparator}capabilities',
+        ),
+      ],
+      logger: logger,
+    ),
+    draftWorkspaceManager: draftWorkspaceManager,
+    logger: logger,
+  );
 
   final dispatcher = HostToolDispatcher(
     policyStore: policyStore,
@@ -106,6 +121,7 @@ Future<void> main() async {
     protocolTaskRegistry: protocolTaskRegistry,
     fsUndoJournal: fsUndoJournal,
     draftWorkspaceManager: draftWorkspaceManager,
+    capabilityEngine: capabilityEngine,
   );
 
   final lanServer = LanOfflineServer(

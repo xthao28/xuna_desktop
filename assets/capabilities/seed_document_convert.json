@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "seed_document_convert",
+  "capability": "document.convert",
+  "description": "Convert an office document (docx, xlsx, odt) into a PDF file using an installed local headless office suite.",
+  "fromFormats": ["docx", "xlsx", "odt"],
+  "toFormats": ["pdf"],
+  "risk": "R2",
+  "inputs": [
+    {
+      "name": "inputPath",
+      "type": "path",
+      "required": true,
+      "allowedExtensions": ["docx", "xlsx", "odt"]
+    },
+    {
+      "name": "outDir",
+      "type": "path",
+      "required": true,
+      "isOutputPath": true
+    },
+    {
+      "name": "expectedOutputPath",
+      "type": "path",
+      "required": true,
+      "allowedExtensions": ["pdf"],
+      "isOutputPath": true
+    }
+  ],
+  "detect": {
+    "binary": "soffice",
+    "versionArgs": ["--version"],
+    "remediationSummary": "A local headless office suite is required to convert office documents to PDF.",
+    "remediationCommandWindows": "winget install TheDocumentFoundation.LibreOffice",
+    "remediationCommandMacos": "brew install --cask libreoffice",
+    "remediationCommandLinux": "sudo apt-get install libreoffice-writer"
+  },
+  "invoke": {
+    "argvTemplate": [
+      "--headless",
+      "--convert-to",
+      "pdf",
+      "--outdir",
+      "{outDir}",
+      "{inputPath}"
+    ],
+    "timeoutMs": 60000
+  },
+  "verifyFiles": [
+    {
+      "pathTemplate": "{expectedOutputPath}",
+      "minBytes": 64,
+      "magic": "25504446"
+    }
+  ],
+  "provenance": {
+    "kind": "seed",
+    "approved": true
+  }
+}

@@ -221,7 +221,14 @@ Object? _validValueForSchema(
       return '/ws/proj';
     case 'workspaceAlias':
       return 'proj';
+    case 'adapterId':
+      return 'seed_sample';
+    case 'capability':
+      return 'document.convert';
+    case 'format':
+      return 'pdf';
     case 'payloadJson':
+    case 'inputsJson':
     case 'argsJson':
     case 'testArgsJson':
       return '{}';
@@ -377,6 +384,10 @@ String _stringWithExactLength(String toolName, String propName, int length) {
     const prefix = '/ws/proj/';
     return prefix + ('a' * (length - prefix.length));
   }
+  if (propName == 'inputsJson') {
+    if (length < 8) return '{}';
+    return '{"a":"${'x' * (length - 8)}"}';
+  }
   switch (propName) {
     case 'url':
       const prefix = 'https://example.com/';
@@ -501,7 +512,7 @@ void main() {
 
   final allTools = <ToolDescriptor>[...staticCatalog, dynamicCustomTool];
 
-  group('Schema-Validator Parity Invariants (104 static + 1 dynamic)', () {
+  group('Schema-Validator Parity Invariants (106 static + 1 dynamic)', () {
     late HostPolicyEvaluator evaluator;
     final now = DateTime.utc(2026, 11, 19, 12, 0);
 
@@ -510,11 +521,11 @@ void main() {
     });
 
     test(
-        'catalog has 104 unique static tools + valid metadata & strict schemas',
+        'catalog has 106 unique static tools + valid metadata & strict schemas',
         () {
-      expect(staticCatalog.length, equals(104));
+      expect(staticCatalog.length, equals(106));
       final names = staticCatalog.map((t) => t.name).toSet();
-      expect(names.length, equals(104));
+      expect(names.length, equals(106));
 
       for (final tool in allTools) {
         expect(

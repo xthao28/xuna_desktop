@@ -15,6 +15,7 @@ class SandboxedToolRunResult {
     required this.durationMs,
     this.parsedJsonOutput,
     this.violationCode,
+    this.simulated = false,
   });
 
   final bool ok;
@@ -25,6 +26,11 @@ class SandboxedToolRunResult {
   final int durationMs;
   final Map<String, Object?>? parsedJsonOutput;
   final String? violationCode;
+
+  /// True when executed via a Flutter test stub without spawning a real
+  /// subprocess (`ADR-0021` §3 / P4.3: simulated runs never promote a skill
+  /// from `draft` to `verified`).
+  final bool simulated;
 }
 
 /// Isolated OS sandbox runner for LLM-synthesized executable tools (`FORGE-LATM`).
@@ -129,6 +135,7 @@ class SandboxedToolRunner {
         stdoutPreview: simulatedOut,
         stderrPreview: '',
         durationMs: sw.elapsedMilliseconds,
+        simulated: true,
         parsedJsonOutput: <String, Object?>{
           'status': 'ok',
           'runtime': normRuntime,

@@ -499,7 +499,11 @@ class OmniForgeService {
     var resolvedScriptCode = '';
     var stdoutPreview = '';
     var stderrPreview = '';
-    var selfTestPassed = true;
+    // ADR-0021 §3 / P4.3 (U6): Skills always start in 'draft' (unverified)
+    // and transition to 'verified' ONLY after a real, non-simulated self-test
+    // passes inside SandboxedToolRunner.
+    var selfTestPassed = false;
+    var verificationStatus = 'draft';
     var debugIters = previousEntry != null
         ? previousEntry.selfDebugIterations + 1
         : 1;
@@ -517,14 +521,15 @@ class OmniForgeService {
         targetFolder: folder,
       );
       resolvedRuntime = dryRes.runtime;
-      selfTestPassed = dryRes.ok;
+      selfTestPassed = dryRes.ok && !dryRes.simulated;
+      verificationStatus = selfTestPassed ? 'verified' : 'draft';
       stdoutPreview = dryRes.stdoutPreview;
       stderrPreview = dryRes.stderrPreview;
       final parsedCount = dryRes.parsedJsonOutput?['processedCount'];
       if (parsedCount is int && parsedCount >= 0) {
         realCount = parsedCount;
       }
-      if (dryRes.ok) {
+      if (dryRes.ok && !dryRes.simulated) {
         final previewLine = stdoutPreview.isNotEmpty
             ? stdoutPreview.replaceAll(RegExp(r'\s+'), ' ')
             : 'exitCode=0';
@@ -535,6 +540,9 @@ class OmniForgeService {
           '2. [sandbox.dry_run] Chạy thử với XUNA_TOOL_ARGS_JSON -> exitCode=0',
           '3. [register.tool] Đăng ký công cụ "$normalizedToolName" ($skillId) vào XUNA Skill Library',
         ];
+      } else if (dryRes.simulated) {
+        realSample =
+            'Kỹ năng nháp ($resolvedRuntime): chưa chạy kiểm thử tiến trình thật nên giữ trạng thái draft.';
       } else {
         final errLine = stderrPreview.isNotEmpty
             ? stderrPreview.replaceAll(RegExp(r'\s+'), ' ')
@@ -547,8 +555,8 @@ class OmniForgeService {
     final summaryVi = hasExecutableScript
         ? (selfTestPassed
               ? 'Đã rèn và kiểm thử thành công công cụ "$titleVi" ($resolvedRuntime, mã: $skillId). $realSample'
-              : 'Công cụ "$titleVi" ($skillId) gặp lỗi khi chạy thử ($resolvedRuntime): $realSample — hãy sửa scriptCode và gọi lại với skillIdToUpdate="$skillId".')
-        : 'Đã rèn xong công cụ "$titleVi": tìm thấy $realCount mục phù hợp. $realSample';
+              : 'Công cụ "$titleVi" ($skillId) chưa đạt kiểm thử ($resolvedRuntime, draft): $realSample — hãy sửa scriptCode và gọi lại với skillIdToUpdate="$skillId".')
+        : 'Đã tạo kỹ năng nháp "$titleVi" (trạng thái draft, cần tự-test để xác minh): tìm thấy $realCount mục phù hợp. $realSample';
 
     final nextVersion = previousEntry != null ? previousEntry.version + 1 : 1;
     final nextHistory = previousEntry != null
@@ -586,6 +594,7 @@ class OmniForgeService {
       version: nextVersion,
       versionHistory: nextHistory,
       selfTestPassed: selfTestPassed,
+      verificationStatus: verificationStatus,
       structuredSteps: structuredSteps ?? const <Map<String, Object?>>[],
     );
     if (updateIdx >= 0) {
@@ -672,12 +681,14 @@ class OmniForgeService {
           : summary.substring(0, 240);
 
       if (idx >= 0) {
+        final verifiedNow = execRes.ok && !execRes.simulated;
         _forgedSkills[idx] = existing.copyWith(
           runCount: existing.runCount + 1,
           lastRunSummaryVi: trimmedSummary,
           lastStdoutPreview: execRes.stdoutPreview,
           lastStderrPreview: execRes.stderrPreview,
-          selfTestPassed: execRes.ok,
+          selfTestPassed: verifiedNow,
+          verificationStatus: verifiedNow ? 'verified' : 'draft',
         );
       }
       return (
@@ -729,14 +740,55 @@ class OmniForgeService {
     );
   }
 
-  /// Exposes verified executable forged skills as dynamic XTP `ToolDescriptor`s (`forge.custom_<toolName>`, `FORGE-LATM`).
+  /// Explicitly runs a self-test in [sandboxRunner] for [skillId] (`ADR-0021`
+  /// §3 / P4.3 / U6). Transitions `'draft'` → `'verified'` ONLY when a real
+  /// non-simulated sandbox test passes (`exitCode == 0 && !simulated`).
+  ForgedSkillEntry? verifySkill({
+    required String skillId,
+    String testArgsJson = '{}',
+  }) {
+    final needle = skillId.trim().toLowerCase();
+    final idx = _forgedSkills.indexWhere(
+      (s) => s.skillId.toLowerCase() == needle,
+    );
+    if (idx < 0) return null;
+    final entry = _forgedSkills[idx];
+    if (entry.scriptCode.trim().isEmpty || entry.runtime == 'pipeline') {
+      final demoted = entry.copyWith(
+        selfTestPassed: false,
+        verificationStatus: 'draft',
+      );
+      _forgedSkills[idx] = demoted;
+      saveSkillToDisk(demoted);
+      return demoted;
+    }
+    final res = sandboxRunner.executeSync(
+      skillId: entry.skillId,
+      runtime: entry.runtime,
+      scriptCode: entry.scriptCode,
+      argsJson: testArgsJson,
+      targetFolder: entry.targetFolder,
+    );
+    final verified = res.ok && !res.simulated;
+    final updated = entry.copyWith(
+      lastStdoutPreview: res.stdoutPreview,
+      lastStderrPreview: res.stderrPreview,
+      selfTestPassed: verified,
+      verificationStatus: verified ? 'verified' : 'draft',
+    );
+    _forgedSkills[idx] = updated;
+    saveSkillToDisk(updated);
+    return updated;
+  }
+
+  /// Exposes verified executable forged skills as dynamic XTP `ToolDescriptor`s (`forge.custom_<toolName>`, `FORGE-LATM`, `ADR-0021` §3).
   List<ToolDescriptor> buildDynamicToolDescriptors({
     XtpPermissionState defaultPermission = XtpPermissionState.granted,
   }) {
     final descriptors = <ToolDescriptor>[];
     final seenNames = <String>{};
     for (final entry in _forgedSkills) {
-      if (!entry.selfTestPassed ||
+      if (!entry.isVerified ||
           entry.toolName.isEmpty ||
           entry.scriptCode.isEmpty) {
         continue;

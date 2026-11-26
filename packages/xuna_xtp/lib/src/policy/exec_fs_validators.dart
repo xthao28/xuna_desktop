@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../capability_manifest.dart';
 import '../draft_manifest.dart';
 import '../schemas.dart';
 import 'exec_command_classifier.dart';
@@ -8,8 +9,8 @@ import 'fs_path_guard.dart';
 import 'policy_models.dart';
 import 'shell_control_policy.dart';
 
-/// Host facts used to classify `fs.*`, `exec.*`, and `draft.*` calls
-/// (`ADR-0018`, `ADR-0019`).
+/// Host facts used to classify `fs.*`, `exec.*`, `draft.*`, and `capability.*`
+/// calls (`ADR-0018`, `ADR-0019`, `ADR-0021`).
 ///
 /// The Desktop Agent passes its home directory, platform, a symlink resolver
 /// and a lookup of the risk of a running `exec` task. Without a context the
@@ -35,12 +36,15 @@ class ExecFsHostContext {
 final RegExp execTaskIdPattern = RegExp(r'^exec_[a-zA-Z0-9_-]{1,64}$');
 final RegExp _lowerSha256Re = RegExp(r'^[0-9a-f]{64}$');
 final RegExp _workspaceAliasRe = RegExp(r'^[a-zA-Z0-9_.-]{1,64}$');
+final RegExp _formatFilterRe = RegExp(r'^[a-z0-9]{1,16}$');
 
-/// Whether [toolName] is one of the Wave 3/4 `fs.*` / `exec.*` / `draft.*` tools.
+/// Whether [toolName] is one of the Wave 3/4/P4 `fs.*` / `exec.*` / `draft.*`
+/// / `capability.*` tools.
 bool isExecFsTool(String toolName) =>
     toolName.startsWith('fs.') ||
     toolName.startsWith('exec.') ||
-    toolName.startsWith('draft.');
+    toolName.startsWith('draft.') ||
+    toolName.startsWith('capability.');
 
 /// Tools for which the backend must ask `xuna/preflight` before every call.
 const Set<String> execFsPreflightTools = <String>{
@@ -49,6 +53,7 @@ const Set<String> execFsPreflightTools = <String>{
   'fs.write_file',
   'fs.patch_file',
   'draft.apply',
+  'capability.run',
 };
 
 const Map<String, Set<String>> _allowedKeys = <String, Set<String>>{
@@ -79,6 +84,8 @@ const Map<String, Set<String>> _allowedKeys = <String, Set<String>>{
   'draft.manifest': {'draftId'},
   'draft.discard': {'draftId'},
   'draft.apply': {'draftId', 'effectSha256'},
+  'capability.list': {'capability', 'format'},
+  'capability.run': {'adapterId', 'inputsJson', 'draftId'},
 };
 
 const Map<String, Set<String>> _requiredKeys = <String, Set<String>>{
@@ -95,6 +102,8 @@ const Map<String, Set<String>> _requiredKeys = <String, Set<String>>{
   'draft.manifest': {'draftId'},
   'draft.discard': {'draftId'},
   'draft.apply': {'draftId', 'effectSha256'},
+  'capability.list': <String>{},
+  'capability.run': {'adapterId', 'inputsJson'},
 };
 
 PolicyEvaluationResult _invalid(String code, [RiskTier risk = RiskTier.r1]) =>
@@ -155,7 +164,8 @@ PolicyEvaluationResult validateExecFsArguments({
     return _invalid('schema_mismatch');
   }
   final shell = activePolicy.shellControl;
-  if (toolName.startsWith('exec.') && !shell.enabled) {
+  if ((toolName.startsWith('exec.') || toolName == 'capability.run') &&
+      !shell.enabled) {
     return _denied('shell_not_enabled', 'policy');
   }
   final ctx = context ?? const ExecFsHostContext();
@@ -346,6 +356,38 @@ PolicyEvaluationResult validateExecFsArguments({
         return _invalid('schema_mismatch', RiskTier.r3);
       }
       return _ok(RiskTier.r3, 'draft_apply');
+    case 'capability.list':
+      if (arguments.containsKey('capability')) {
+        final cap = arguments['capability'];
+        if (cap is! String || !capabilityNamePattern.hasMatch(cap)) {
+          return _invalid('schema_mismatch');
+        }
+      }
+      if (arguments.containsKey('format')) {
+        final fmt = arguments['format'];
+        if (fmt is! String || !_formatFilterRe.hasMatch(fmt)) {
+          return _invalid('schema_mismatch');
+        }
+      }
+      return _ok(RiskTier.r1, 'observe');
+    case 'capability.run':
+      final adapterId = arguments['adapterId'];
+      final inputsJson = arguments['inputsJson'];
+      if (adapterId is! String ||
+          !capabilityAdapterIdPattern.hasMatch(adapterId) ||
+          !_string(inputsJson, 2, 4096) ||
+          !_optDraftIdValid(arguments)) {
+        return _invalid('schema_mismatch', RiskTier.r2);
+      }
+      try {
+        final decoded = jsonDecode(inputsJson as String);
+        if (decoded is! Map) {
+          return _invalid('schema_mismatch', RiskTier.r2);
+        }
+      } catch (_) {
+        return _invalid('schema_mismatch', RiskTier.r2);
+      }
+      return _ok(RiskTier.r2, 'capability_run');
   }
   return _invalid('unknown_tool');
 }

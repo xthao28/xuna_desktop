@@ -807,8 +807,11 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   if (toolName == 'tv.list_devices' || toolName == 'tv.control') {
     return ToolFamily.media;
   }
-  if (prefix == 'system') {
+  if (prefix == 'system' || toolName == 'capability.list') {
     return ToolFamily.host;
+  }
+  if (toolName == 'capability.run') {
+    return ToolFamily.exec;
   }
   if (prefix == 'habit' || prefix == 'shortcuts') {
     return ToolFamily.workflow;

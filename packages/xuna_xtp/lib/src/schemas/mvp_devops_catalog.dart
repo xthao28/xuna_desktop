@@ -399,6 +399,10 @@ List<ToolDescriptor> buildMvpToolCatalog({
       ...buildFsTools(defaultPermission: defaultPermission),
       ...buildExecTools(shellEnabled: shellEnabled),
       ...buildDraftTools(defaultPermission: defaultPermission),
+      ...buildCapabilityTools(
+        shellEnabled: shellEnabled,
+        defaultPermission: defaultPermission,
+      ),
     ],
   ];
   return tools;

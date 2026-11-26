@@ -189,9 +189,13 @@ class ForgedSkillEntry {
     this.version = 1,
     this.versionHistory = const <String>['v1: Khởi tạo kỹ năng gốc'],
     this.autoTriggerOnDelta = false,
-    this.selfTestPassed = true,
+    this.selfTestPassed = false,
+    String? verificationStatus,
     this.structuredSteps = const <Map<String, Object?>>[],
-  });
+  }) : verificationStatus =
+           (verificationStatus == 'verified' && selfTestPassed)
+               ? 'verified'
+               : 'draft';
 
   final String skillId;
   final String titleVi;
@@ -221,7 +225,15 @@ class ForgedSkillEntry {
   final List<String> versionHistory;
   final bool autoTriggerOnDelta;
   final bool selfTestPassed;
+
+  /// Explicit skill verification lifecycle (`ADR-0021` §3 / P4.3 / U6):
+  /// `'draft'` by default; `'verified'` ONLY after a real non-simulated
+  /// [SandboxedToolRunner] self-test succeeds.
+  final String verificationStatus;
   final List<Map<String, Object?>> structuredSteps;
+
+  /// Whether this skill has passed a real self-test and may be promoted.
+  bool get isVerified => verificationStatus == 'verified' && selfTestPassed;
 
   /// Returns structured tool-call steps for execution via `HostToolDispatcher.subStepExecutor` (`UDC-18` Wave D).
   List<Map<String, Object?>> get executableSteps {
@@ -270,6 +282,7 @@ class ForgedSkillEntry {
     List<String>? versionHistory,
     bool? autoTriggerOnDelta,
     bool? selfTestPassed,
+    String? verificationStatus,
     List<Map<String, Object?>>? structuredSteps,
   }) => ForgedSkillEntry(
     skillId: skillId,
@@ -300,6 +313,7 @@ class ForgedSkillEntry {
     versionHistory: versionHistory ?? this.versionHistory,
     autoTriggerOnDelta: autoTriggerOnDelta ?? this.autoTriggerOnDelta,
     selfTestPassed: selfTestPassed ?? this.selfTestPassed,
+    verificationStatus: verificationStatus ?? this.verificationStatus,
     structuredSteps: structuredSteps ?? this.structuredSteps,
   );
 
@@ -333,6 +347,7 @@ class ForgedSkillEntry {
     'versionHistory': versionHistory,
     'autoTriggerOnDelta': autoTriggerOnDelta,
     'selfTestPassed': selfTestPassed,
+    'verificationStatus': verificationStatus,
   };
 
   Map<String, Object?> toDiskRecipeJson() => <String, Object?>{
@@ -401,7 +416,13 @@ class ForgedSkillEntry {
     final selfTestPassed =
         (json['selfTestPassed'] as bool?) ??
         (json['dryRunOk'] as bool?) ??
-        true;
+        false;
+    final rawStatus = json['verificationStatus'] as String?;
+    final verificationStatus =
+        (rawStatus == 'verified' && selfTestPassed) ||
+            (rawStatus == null && selfTestPassed && scriptCode.isNotEmpty)
+        ? 'verified'
+        : 'draft';
 
     return ForgedSkillEntry(
       skillId: skillId.isEmpty ? 'skill_reloaded_1' : skillId,
@@ -448,6 +469,7 @@ class ForgedSkillEntry {
       structuredSteps: readStructuredSteps(json['structuredSteps']),
       autoTriggerOnDelta: (json['autoTriggerOnDelta'] as bool?) ?? false,
       selfTestPassed: selfTestPassed,
+      verificationStatus: verificationStatus,
     );
   }
 }

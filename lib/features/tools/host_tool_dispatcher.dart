@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
+import 'package:xuna_desktop/features/capabilities/capability_engine.dart';
+import 'package:xuna_desktop/features/capabilities/capability_manifest_loader.dart';
+import 'package:xuna_desktop/features/capabilities/capability_tools.dart';
 import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.dart';
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_mcp_bridge.dart';
@@ -246,6 +250,7 @@ class ToolExecutionContext {
     this.execFsContext,
     this.fsUndoJournal,
     this.draftWorkspaceManager,
+    this.capabilityEngine,
     this.deadlineMs,
     this.onToolchainRefreshRequested,
   });
@@ -261,6 +266,9 @@ class ToolExecutionContext {
 
   /// Isolated draft workspace manager (`ADR-0019` §3–§4).
   final DraftWorkspaceManager? draftWorkspaceManager;
+
+  /// Declarative capability adapter engine (`ADR-0021` §1 / P4.1).
+  final CapabilityEngine? capabilityEngine;
 
   /// Approval token attached to this `tools/call` (for `draft.apply` v2 gate).
   final ApprovalToken? approval;
@@ -404,6 +412,7 @@ class HostToolDispatcher {
     ExecProcessRegistry? execRegistry,
     FsUndoJournal? fsUndoJournal,
     DraftWorkspaceManager? draftWorkspaceManager,
+    CapabilityEngine? capabilityEngine,
     void Function({bool forceRefresh})? onToolchainRefreshRequested,
     List<HostToolHandler>? handlers,
   }) : execRegistry =
@@ -443,6 +452,20 @@ class HostToolDispatcher {
        smartHomeBridge = smartHomeBridge ?? AutoSmartHomeBridge(),
        symbioticService = symbioticService ?? AutoSymbioticService(),
        actionLedger = actionLedger ?? ReversibleActionLedger() {
+    this.capabilityEngine =
+        capabilityEngine ??
+        CapabilityEngine(
+          loader: CapabilityManifestLoader(
+            manifestDirectories: <Directory>[
+              Directory(
+                '${auditStore.auditDir.parent.path}${Platform.pathSeparator}capabilities',
+              ),
+            ],
+            logger: logger,
+          ),
+          draftWorkspaceManager: this.draftWorkspaceManager,
+          logger: logger,
+        );
     this.acpHarnessAdapter =
         acpHarnessAdapter ??
         AcpHarnessAdapter(taskRegistry: this.protocolTaskRegistry);
@@ -462,6 +485,7 @@ class HostToolDispatcher {
           ...defaultFsToolHandlers,
           ...defaultExecToolHandlers,
           ...defaultDraftToolHandlers,
+          ...defaultCapabilityToolHandlers(),
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -506,6 +530,9 @@ class HostToolDispatcher {
 
   /// Isolated draft workspace manager (`ADR-0019` §3–§4).
   final DraftWorkspaceManager draftWorkspaceManager;
+
+  /// Declarative capability adapter engine (`ADR-0021` §1 / P4.1).
+  late final CapabilityEngine capabilityEngine;
   final EmergencyStopController stopController;
   final ContentFreeLogger logger;
   final EnrollmentStateStore? enrollmentStore;
@@ -597,6 +624,7 @@ class HostToolDispatcher {
     'exec.status',
     'exec.cancel',
     'draft.manifest',
+    'capability.list',
   };
 
   /// Builds the `tools/list` manifest with current OS permission states.
@@ -672,6 +700,7 @@ class HostToolDispatcher {
       token.cancel('stopped:${reason.wire}');
     }
     draftWorkspaceManager.discardAll(reason: reason.wire);
+    capabilityEngine.cancelAll();
   }
 
   /// Dispatches a `tools/call` request following the 8 rules in `UDC-3` §5.6.5:
@@ -935,6 +964,7 @@ class HostToolDispatcher {
         execFsContext: buildExecFsHostContext(execRegistry),
         fsUndoJournal: fsUndoJournal,
         draftWorkspaceManager: draftWorkspaceManager,
+        capabilityEngine: capabilityEngine,
         deadlineMs: params.deadlineMs,
         onToolchainRefreshRequested: _onToolchainRefreshRequested,
       );
@@ -1200,6 +1230,40 @@ class HostToolDispatcher {
       } catch (_) {
         return refuse(XtpStatus.failed, 'draft_not_found');
       }
+    } else if (params.name == 'capability.run') {
+      final shellPolicy = policyStore.evaluator.policy?.shellControl;
+      if (shellPolicy == null) {
+        return refuse(XtpStatus.denied, 'policy_invalid');
+      }
+      final Map<String, Object?> rawInputs;
+      try {
+        final decoded = jsonDecode(params.arguments['inputsJson']! as String);
+        if (decoded is! Map) {
+          return refuse(XtpStatus.invalidArgs, 'schema_mismatch');
+        }
+        rawInputs = decoded.map(
+          (k, v) => MapEntry<String, Object?>(k.toString(), v),
+        );
+      } catch (_) {
+        return refuse(XtpStatus.invalidArgs, 'schema_mismatch');
+      }
+      final capPf = await capabilityEngine.preflightRun(
+        adapterId: params.arguments['adapterId']! as String,
+        rawInputs: rawInputs,
+        shellControl: shellPolicy,
+        draftId: params.arguments['draftId'] as String?,
+        nowUtc: now,
+      );
+      if (!capPf.allowed) {
+        return refuse(
+          XtpStatus.denied,
+          capPf.errorCode ?? 'policy_blocked',
+        );
+      }
+      if (capPf.effectiveRisk > risk) {
+        risk = capPf.effectiveRisk;
+      }
+      reasonCode = capPf.reasonCode ?? 'capability_manifest';
     }
 
     logger.info('tool.preflight', <String, Object?>{

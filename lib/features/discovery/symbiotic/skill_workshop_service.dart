@@ -255,6 +255,8 @@ class SkillWorkshopService {
             'category': s.category,
             'version': s.version,
             'autoTriggerOnDelta': s.autoTriggerOnDelta,
+            'verificationStatus': s.verificationStatus,
+            'verified': s.isVerified,
           },
         )
         .toList(growable: false);
