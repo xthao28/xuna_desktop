@@ -22,6 +22,7 @@ import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/startup/startup_launch_service.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
+import 'package:xuna_desktop/features/exec/fs_undo_journal.dart';
 import 'package:xuna_desktop/features/watch/cdp_watch_signal_driver.dart';
 import 'package:xuna_desktop/features/watch/exec_async_watch_driver.dart';
 import 'package:xuna_desktop/features/watch/local_watch_sentinel.dart';
@@ -52,6 +53,7 @@ class DesktopAgentController extends BaseGetxController {
     LocalWatchSentinel? watchSentinel,
     ProtocolTaskRegistry? protocolTaskRegistry,
     ExecProcessRegistry? execRegistry,
+    this.fsUndoJournal,
     CdpBrowserEngineProvider? cdpBrowserProvider,
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
@@ -126,6 +128,9 @@ class DesktopAgentController extends BaseGetxController {
   final ComputerUseSessionManager? computerUseManager;
   final AutoSymbioticService? symbioticService;
   final PresenceCoordinator? presenceCoordinator;
+
+  /// Crash-safe local file undo journal swept on startup (`ADR-0019` §1).
+  final FsUndoJournal? fsUndoJournal;
 
   /// Opt-in "Khởi động cùng máy" (P0.9); `null` = feature not wired.
   final StartupLaunchService? startupLaunch;
@@ -267,6 +272,13 @@ class DesktopAgentController extends BaseGetxController {
       await policyStore.migrateShellFilesFamily();
     }
     await policyStore.startWatching();
+    if (fsUndoJournal != null) {
+      try {
+        await fsUndoJournal!.recoverAndPruneOnStartup();
+      } on Object {
+        // Recovery issues are logged content-free; never block agent startup.
+      }
+    }
     await refreshStartupLaunch();
     _syncFromStores();
     scanInstalledApps();

@@ -18,6 +18,8 @@ import 'package:xuna_desktop/features/exec/exec_host_environment.dart';
 import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
 import 'package:xuna_desktop/features/exec/exec_tools.dart';
 import 'package:xuna_desktop/features/exec/fs_tools.dart';
+import 'package:xuna_desktop/features/exec/fs_undo_journal.dart';
+import 'package:xuna_desktop/features/exec/preflight_preview_builder.dart';
 import 'package:xuna_desktop/features/native_bridge/macos_native_app_bridge.dart';
 import 'package:xuna_desktop/features/native_bridge/native_app_bridge.dart';
 import 'package:xuna_desktop/features/native_bridge/windows_native_app_bridge.dart';
@@ -181,6 +183,12 @@ class ReversibleActionLedger {
     _stack.add(entry);
   }
 
+  ReversibleActionEntry? peekValid(DateTime nowUtc) {
+    _pruneExpired(nowUtc);
+    if (_stack.isEmpty) return null;
+    return _stack.last;
+  }
+
   ReversibleActionEntry? popValid(DateTime nowUtc) {
     _pruneExpired(nowUtc);
     if (_stack.isEmpty) return null;
@@ -231,6 +239,7 @@ class ToolExecutionContext {
     this.hasVerifiedR3Approval = false,
     this.execRegistry,
     this.execFsContext,
+    this.fsUndoJournal,
     this.deadlineMs,
     this.onToolchainRefreshRequested,
   });
@@ -240,6 +249,9 @@ class ToolExecutionContext {
 
   /// Host facts used to classify `fs.*` / `exec.*` paths (home, symlinks).
   final ExecFsHostContext? execFsContext;
+
+  /// Crash-safe local file undo WAL journal (`ADR-0019` §1).
+  final FsUndoJournal? fsUndoJournal;
 
   /// The `tools/call` deadline (`xuna/deadlineMs`), when known.
   final int? deadlineMs;
@@ -292,13 +304,38 @@ class ActionUndoTool extends HostToolHandler {
 
   @override
   Future<ToolHandlerOutput> execute(ToolExecutionContext context) async {
-    final entry = context.actionLedger.popValid(context.nowUtc);
-    if (entry == null) {
+    final ledgerTop = context.actionLedger.peekValid(context.nowUtc);
+    final fsTop = context.fsUndoJournal?.peekLatestCommitted(context.nowUtc);
+    if (ledgerTop == null && fsTop == null) {
       throw const XunaHostChannelException(
         status: XtpStatus.invalidArgs,
         errorCode: 'nothing_to_undo',
       );
     }
+    final shouldUndoFs =
+        fsTop != null &&
+        (ledgerTop == null || !fsTop.createdAt.isBefore(ledgerTop.recordedAt));
+    if (shouldUndoFs) {
+      final result = await context.fsUndoJournal!.undoTransaction(
+        txId: fsTop.txId,
+        shellControl: context.policy?.shellControl,
+        homeDirectory:
+            context.execFsContext?.homeDirectory ?? hostHomeDirectory(),
+        nowUtc: context.nowUtc,
+      );
+      return ToolHandlerOutput(
+        text: 'Đã hoàn tác ${result.toolName} (${result.totalAffected} tệp).',
+        structuredContent: <String, Object?>{
+          'undoneTool': result.toolName,
+          'inverseTool': 'fs.undo',
+          'restored': true,
+          'filesRestored': result.filesRestored,
+          'filesDeleted': result.filesDeleted,
+        },
+        toastBody: 'đã hoàn tác thay đổi tệp',
+      );
+    }
+    final entry = context.actionLedger.popValid(context.nowUtc)!;
     final executor = context.subStepExecutor;
     if (executor == null) {
       throw const XunaHostChannelException(
@@ -347,11 +384,20 @@ class HostToolDispatcher {
     ProtocolTaskRegistry? protocolTaskRegistry,
     AcpHarnessAdapter? acpHarnessAdapter,
     ExecProcessRegistry? execRegistry,
+    FsUndoJournal? fsUndoJournal,
     void Function({bool forceRefresh})? onToolchainRefreshRequested,
     List<HostToolHandler>? handlers,
   }) : execRegistry =
            execRegistry ??
            ExecProcessRegistry(stopController: stopController, logger: logger),
+       fsUndoJournal =
+           fsUndoJournal ??
+           FsUndoJournal(
+             rootDir: Directory(
+               '${auditStore.auditDir.parent.path}${Platform.pathSeparator}undo',
+             ),
+             logger: logger,
+           ),
        _onToolchainRefreshRequested = onToolchainRefreshRequested,
        _ownsProtocolTaskRegistry = protocolTaskRegistry == null,
        protocolTaskRegistry =
@@ -426,6 +472,9 @@ class HostToolDispatcher {
 
   /// `exec.run` children of this host (`ADR-0018`); killed on E-Stop.
   final ExecProcessRegistry execRegistry;
+
+  /// Crash-safe local file undo WAL journal (`ADR-0019` §1).
+  final FsUndoJournal fsUndoJournal;
   final EmergencyStopController stopController;
   final ContentFreeLogger logger;
   final EnrollmentStateStore? enrollmentStore;
@@ -792,13 +841,18 @@ class HostToolDispatcher {
           computerUseManager: computerUseManager,
           protocolTaskRegistry: protocolTaskRegistry,
           acpHarnessAdapter: acpHarnessAdapter,
+          execRegistry: execRegistry,
+          execFsContext: buildExecFsHostContext(execRegistry),
+          fsUndoJournal: fsUndoJournal,
         );
         final subOut = await subHandler.execute(subContext);
-        actionLedger.record(
-          originalTool: stepToolName,
-          arguments: stepArgs,
-          nowUtc: effectiveNow,
-        );
+        if (params.name != 'action.undo') {
+          actionLedger.record(
+            originalTool: stepToolName,
+            arguments: stepArgs,
+            nowUtc: effectiveNow,
+          );
+        }
         return subOut;
       }
 
@@ -842,6 +896,7 @@ class HostToolDispatcher {
         acpHarnessAdapter: acpHarnessAdapter,
         execRegistry: execRegistry,
         execFsContext: buildExecFsHostContext(execRegistry),
+        fsUndoJournal: fsUndoJournal,
         deadlineMs: params.deadlineMs,
         onToolchainRefreshRequested: _onToolchainRefreshRequested,
       );
@@ -1082,6 +1137,18 @@ class HostToolDispatcher {
       }
     }
 
+    XtpPreflightPreview? preview;
+    if (params.name == 'fs.write_file' ||
+        params.name == 'fs.patch_file' ||
+        params.name == 'exec.run') {
+      preview = buildPreflightPreview(
+        toolName: params.name,
+        arguments: params.arguments,
+        shellControl: policyStore.evaluator.policy?.shellControl,
+        homeDirectory: hostHomeDirectory(),
+      );
+    }
+
     logger.info('tool.preflight', <String, Object?>{
       'tool': params.name,
       'status': XtpStatus.ok.wire,
@@ -1095,6 +1162,7 @@ class HostToolDispatcher {
       reasonCode: reasonCode,
       elementRole: elementRole,
       elementName: elementName,
+      preview: preview,
     );
   }
 

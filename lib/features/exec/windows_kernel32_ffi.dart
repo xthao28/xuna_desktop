@@ -15,6 +15,10 @@ const int winResumeThreadFailed = 0xFFFFFFFF;
 const int winStillActive = 259;
 const int winJobObjectExtendedLimitInfoClass = 9;
 const int winJobObjectLimitKillOnJobClose = 0x00002000;
+const int winMoveFileReplaceExisting = 0x00000001;
+const int winMoveFileWriteThrough = 0x00000008;
+const int winErrorAccessDenied = 5;
+const int winErrorSharingViolation = 32;
 
 final class WinSecurityAttributes extends Struct {
   @Uint32()
@@ -223,6 +227,11 @@ typedef _AssignJobN = Int32 Function(IntPtr, IntPtr);
 typedef WinAssignJobFn = int Function(int, int);
 typedef _ResumeThreadN = Uint32 Function(IntPtr);
 typedef WinResumeThreadFn = int Function(int);
+typedef _MoveFileExWN =
+    Int32 Function(Pointer<Uint16>, Pointer<Uint16>, Uint32);
+typedef WinMoveFileExWFn = int Function(Pointer<Uint16>, Pointer<Uint16>, int);
+typedef _GetLastErrorN = Uint32 Function();
+typedef WinGetLastErrorFn = int Function();
 
 class WinKernel32 {
   WinKernel32._(DynamicLibrary lib)
@@ -277,6 +286,12 @@ class WinKernel32 {
       ),
       resumeThread = lib.lookupFunction<_ResumeThreadN, WinResumeThreadFn>(
         'ResumeThread',
+      ),
+      moveFileExW = lib.lookupFunction<_MoveFileExWN, WinMoveFileExWFn>(
+        'MoveFileExW',
+      ),
+      getLastError = lib.lookupFunction<_GetLastErrorN, WinGetLastErrorFn>(
+        'GetLastError',
       );
 
   static WinKernel32? _instance;
@@ -300,6 +315,8 @@ class WinKernel32 {
   final WinAssignJobFn assignProcessToJobObject;
   final WinTerminateFn terminateJobObject;
   final WinResumeThreadFn resumeThread;
+  final WinMoveFileExWFn moveFileExW;
+  final WinGetLastErrorFn getLastError;
 
   Pointer<T> alloc<T extends NativeType>(int byteCount) {
     final ptr = heapAlloc(getProcessHeap(), winHeapZeroMemory, byteCount);

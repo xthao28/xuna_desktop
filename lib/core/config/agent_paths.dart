@@ -1,11 +1,13 @@
 import 'dart:io';
 
 /// Resolves platform-appropriate directories and file paths for the XUNA
-/// Desktop Agent (`UDC-3` §5.6.4):
-/// - Windows: `%APPDATA%\XUNA\`
-/// - macOS: `~/Library/Application Support/XUNA/`
+/// Desktop Agent (`UDC-3` §5.6.4, `ADR-0019` §1):
+/// - Windows: `%APPDATA%\XUNA\` (machine-local undo WAL: `%LOCALAPPDATA%\XUNA\undo\`)
+/// - macOS: `~/Library/Application Support/XUNA/` (`undo/` mode `0700`)
 class AgentPaths {
-  const AgentPaths({required this.rootDir});
+  AgentPaths({required this.rootDir, Directory? undoDir})
+    : undoDir =
+          undoDir ?? Directory('${rootDir.path}${Platform.pathSeparator}undo');
 
   /// Resolves the default `XUNA` directory from OS environment variables, or
   /// falls back to [overrideRootDir] when supplied (e.g. in tests).
@@ -21,8 +23,12 @@ class AgentPaths {
     final isWin = isWindowsOverride ?? Platform.isWindows;
     if (isWin) {
       final appData = env['APPDATA'] ?? env['USERPROFILE'] ?? '.';
+      final localAppData = env['LOCALAPPDATA'] ?? appData;
       return AgentPaths(
         rootDir: Directory('$appData${Platform.pathSeparator}XUNA'),
+        undoDir: Directory(
+          '$localAppData${Platform.pathSeparator}XUNA${Platform.pathSeparator}undo',
+        ),
       );
     }
     final home = env['HOME'] ?? '.';
@@ -32,6 +38,10 @@ class AgentPaths {
   }
 
   final Directory rootDir;
+
+  /// Machine-local file undo journal directory (`ADR-0019` §1).
+  /// Never stored inside `audit/` or uploaded to the backend.
+  final Directory undoDir;
 
   /// `host-policy.json` (`UDC-3` §5.6.4).
   File get policyFile =>
@@ -49,13 +59,23 @@ class AgentPaths {
   Directory get auditDir =>
       Directory('${rootDir.path}${Platform.pathSeparator}audit');
 
-  /// Ensures [rootDir] and [auditDir] exist.
+  /// Ensures [rootDir], [auditDir], and [undoDir] exist.
   Future<void> ensureDirectories() async {
     if (!await rootDir.exists()) {
       await rootDir.create(recursive: true);
     }
     if (!await auditDir.exists()) {
       await auditDir.create(recursive: true);
+    }
+    if (!await undoDir.exists()) {
+      await undoDir.create(recursive: true);
+    }
+    if (!Platform.isWindows) {
+      try {
+        await Process.run('/bin/chmod', <String>['700', undoDir.path]);
+      } on Object {
+        // Best-effort owner-only permissions on POSIX.
+      }
     }
   }
 }

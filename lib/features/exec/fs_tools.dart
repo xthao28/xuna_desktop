@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
 import 'package:xuna_desktop/features/exec/exec_host_environment.dart';
+import 'package:xuna_desktop/features/exec/fs_undo_journal.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -116,42 +117,56 @@ List<int> _readText(String path) {
   return bytes;
 }
 
-Future<({int bytes, bool created, String sha})> _atomicWrite(
-  String path,
-  List<int> bytes, {
+Future<({int bytes, bool created, String sha})> _writeWithOptionalJournal({
+  required ToolExecutionContext context,
+  required String toolName,
+  required String path,
+  required List<int> bytes,
   required bool createParents,
+  String? expectedPreSha256,
+  bool expectNotExists = false,
 }) async {
-  final target = File(path);
-  final parent = target.parent;
-  if (!parent.existsSync()) {
-    if (!createParents) throw _fail('fs_parent_missing');
-    parent.createSync(recursive: true);
+  final journal = context.fsUndoJournal;
+  final shellControl = context.policy?.shellControl;
+  final home = context.execFsContext?.homeDirectory ?? hostHomeDirectory();
+  if (journal != null &&
+      journal.canJournalSingleWrite(
+        rawPath: path,
+        newBytesLength: bytes.length,
+        shellControl: shellControl,
+        homeDirectory: home,
+      )) {
+    final tx = await journal.applyTransaction(
+      toolName: toolName,
+      changes: <FsPlannedChange>[
+        FsPlannedChange(
+          path: path,
+          newBytes: bytes,
+          createParents: createParents,
+          expectedPreSha256: expectedPreSha256,
+          expectNotExists: expectNotExists,
+        ),
+      ],
+      shellControl: shellControl,
+      homeDirectory: home,
+      nowUtc: context.nowUtc,
+    );
+    final file = tx.files.single;
+    return (
+      bytes: file.bytesWritten,
+      created: file.created,
+      sha: file.sha256Hex!,
+    );
   }
-  final existed = target.existsSync();
-  final mode = existed ? target.statSync().mode : null;
-  final tmp = File(
-    '${parent.path}/.${target.uri.pathSegments.last}.xuna-'
-    '${Random.secure().nextInt(1 << 32).toRadixString(16)}.tmp',
+  // Ineligible for undo journaling (e.g. R3 write outside workspace roots,
+  // R3 secret file, or file larger than the per-file backup cap): still
+  // perform an OS-atomic write without snapshotting to the undo journal.
+  final direct = await atomicWriteFileDirect(
+    targetPath: path,
+    bytes: bytes,
+    createParents: createParents,
   );
-  try {
-    await tmp.writeAsBytes(bytes, flush: true);
-    if (mode != null && !Platform.isWindows && (mode & 0x49) != 0) {
-      // Keep executable bits of an existing script.
-      await Process.run('/bin/chmod', <String>[
-        (mode & 0x1FF).toRadixString(8),
-        tmp.path,
-      ]);
-    }
-    await tmp.rename(path);
-  } on FileSystemException {
-    if (tmp.existsSync()) tmp.deleteSync();
-    throw _fail('fs_write_failed');
-  }
-  return (
-    bytes: bytes.length,
-    created: !existed,
-    sha: sha256.convert(bytes).toString(),
-  );
+  return (bytes: direct.bytes, created: direct.created, sha: direct.sha256Hex);
 }
 
 class FsListFilesTool extends HostToolHandler {
@@ -321,10 +336,13 @@ class FsWriteFileTool extends HostToolHandler {
     if (args['overwrite'] == false && File(path).existsSync()) {
       throw _fail('fs_exists');
     }
-    final result = await _atomicWrite(
-      path,
-      utf8.encode(args['content']! as String),
+    final result = await _writeWithOptionalJournal(
+      context: context,
+      toolName: name,
+      path: path,
+      bytes: utf8.encode(args['content']! as String),
       createParents: args['createParents'] != false,
+      expectNotExists: args['overwrite'] == false,
     );
     return ToolHandlerOutput(
       text: 'fs.write_file ${result.bytes} bytes',
@@ -349,7 +367,9 @@ class FsPatchFileTool extends HostToolHandler {
     final args = context.arguments;
     final path = _guard(context, args['path']! as String, FsAccessKind.write);
     if (FileSystemEntity.isDirectorySync(path)) throw _fail('fs_not_a_file');
-    final original = utf8.decode(_readText(path));
+    final originalBytes = _readText(path);
+    final original = utf8.decode(originalBytes);
+    final preSha = sha256.convert(originalBytes).toString();
     final target = args['target']! as String;
     final count = target.allMatches(original).length;
     if (count == 0) throw _fail('patch_target_not_found');
@@ -365,10 +385,13 @@ class FsPatchFileTool extends HostToolHandler {
     final updated = args['replaceAll'] == true
         ? original.replaceAll(target, replacement)
         : original.replaceFirst(target, replacement);
-    final result = await _atomicWrite(
-      path,
-      utf8.encode(updated),
+    final result = await _writeWithOptionalJournal(
+      context: context,
+      toolName: name,
+      path: path,
+      bytes: utf8.encode(updated),
       createParents: false,
+      expectedPreSha256: preSha,
     );
     return ToolHandlerOutput(
       text: 'fs.patch_file $count replacement(s)',

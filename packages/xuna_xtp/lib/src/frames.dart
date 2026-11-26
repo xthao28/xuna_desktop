@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'crypto.dart';
+import 'policy/fs_path_guard.dart' show hardDeniedPathReason, isSecretFileName;
 import 'policy/security_redaction.dart'
     show
         hasBinaryOrInvalidSurrogates,
@@ -428,8 +429,8 @@ class XtpResponse extends XtpFrame {
   }
 
   /// Builds an `xuna/preflight` response frame (`XUNA_XTP_V1_CONTRACT.md`
-  /// §4.2.8). [status] `ok` carries [effectiveRisk]; any other status carries
-  /// [errorCode]. [elementName] is the live label of the target, if any.
+  /// §4.2.8). [status] `ok` carries [effectiveRisk] and optional [elementName]
+  /// / [preview]; any other status carries [errorCode] only.
   factory XtpResponse.preflightResult({
     required Object id,
     required XtpStatus status,
@@ -438,7 +439,15 @@ class XtpResponse extends XtpFrame {
     String? errorCode,
     String? elementRole,
     String? elementName,
+    XtpPreflightPreview? preview,
   }) {
+    if (preview != null && status != XtpStatus.ok) {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message: 'A refused preflight must not carry preview',
+        requestId: id,
+      );
+    }
     final preflight = <String, Object?>{
       'status': status.wire,
       if (effectiveRisk != null) 'effectiveRisk': effectiveRisk.wire,
@@ -449,6 +458,7 @@ class XtpResponse extends XtpFrame {
           'role': elementRole ?? 'unknown',
           'name': elementName,
         },
+      if (preview != null) 'preview': preview.toJson(),
     };
     return XtpResponse(
       id: id,
@@ -2421,6 +2431,219 @@ void _validateResultPayload(Map<String, Object?> result, Object requestId) {
   );
 }
 
+/// Kind of bounded read-only preflight preview (`XUNA_XTP_V1_CONTRACT.md` §4.2.8,
+/// `ADR-0019` §2 / `W4-M2`).
+enum XtpPreflightPreviewKind {
+  diff('diff'),
+  paths('paths');
+
+  const XtpPreflightPreviewKind(this.wire);
+  final String wire;
+
+  static XtpPreflightPreviewKind fromWire(String raw) {
+    for (final value in values) {
+      if (value.wire == raw) return value;
+    }
+    throw FormatException('Invalid preflight preview kind: $raw');
+  }
+}
+
+/// Bounded, read-only, ephemeral preview attached to an `ok` `xuna/preflight`
+/// response (`XUNA_XTP_V1_CONTRACT.md` §4.2.8, `ADR-0019` §2 / `W4-M2`).
+class XtpPreflightPreview {
+  XtpPreflightPreview.diff({
+    required String summary,
+    required String snippet,
+    required this.truncated,
+  })  : kind = XtpPreflightPreviewKind.diff,
+        summary = _validatePreviewSummary(summary),
+        snippet = _validatePreviewSnippet(snippet, truncated: truncated),
+        paths = null,
+        totalCount = null;
+
+  XtpPreflightPreview.paths({
+    required String summary,
+    required List<String> paths,
+    required int totalCount,
+    required this.truncated,
+  })  : kind = XtpPreflightPreviewKind.paths,
+        summary = _validatePreviewSummary(summary),
+        snippet = null,
+        paths = List<String>.unmodifiable(_validatePreviewPaths(paths)),
+        totalCount = _validatePreviewTotalCount(totalCount, paths.length);
+
+  factory XtpPreflightPreview.fromJson(Map<String, Object?> json) {
+    final kind = XtpPreflightPreviewKind.fromWire(
+      _requireStringParam(json, 'kind'),
+    );
+    final summary = _requireStringParam(json, 'summary');
+    final truncated = _requireBoolParam(json, 'truncated');
+    switch (kind) {
+      case XtpPreflightPreviewKind.diff:
+        _requireExactParamsKeys(
+          json,
+          const <String>{'kind', 'summary', 'snippet', 'truncated'},
+        );
+        return XtpPreflightPreview.diff(
+          summary: summary,
+          snippet: _requireStringParam(json, 'snippet'),
+          truncated: truncated,
+        );
+      case XtpPreflightPreviewKind.paths:
+        _requireExactParamsKeys(
+          json,
+          const <String>{
+            'kind',
+            'summary',
+            'paths',
+            'totalCount',
+            'truncated',
+          },
+        );
+        final rawPaths = json['paths'];
+        if (rawPaths is! List) {
+          throw const FormatException('preview.paths must be a list');
+        }
+        final pathList = <String>[];
+        for (final item in rawPaths) {
+          if (item is! String) {
+            throw const FormatException('preview.paths items must be strings');
+          }
+          pathList.add(item);
+        }
+        final rawTotal = json['totalCount'];
+        if (rawTotal is! int) {
+          throw const FormatException('preview.totalCount must be an integer');
+        }
+        return XtpPreflightPreview.paths(
+          summary: summary,
+          paths: pathList,
+          totalCount: rawTotal,
+          truncated: truncated,
+        );
+    }
+  }
+
+  static const int maxSummaryChars = 160;
+  static const int maxSnippetBytes = 2048;
+  static const int maxSnippetLines = 40;
+  static const int maxPaths = 20;
+  static const int maxPathChars = 260;
+  static const String truncationMarker = '…';
+
+  final XtpPreflightPreviewKind kind;
+  final String summary;
+  final bool truncated;
+  final String? snippet;
+  final List<String>? paths;
+  final int? totalCount;
+
+  Map<String, Object?> toJson() => switch (kind) {
+        XtpPreflightPreviewKind.diff => <String, Object?>{
+            'kind': kind.wire,
+            'summary': summary,
+            'snippet': snippet!,
+            'truncated': truncated,
+          },
+        XtpPreflightPreviewKind.paths => <String, Object?>{
+            'kind': kind.wire,
+            'summary': summary,
+            'paths': paths!,
+            'totalCount': totalCount!,
+            'truncated': truncated,
+          },
+      };
+
+  static final RegExp _singleLineControlRe = RegExp(r'[\u0000-\u001F\u007F]');
+  static final RegExp _snippetControlRe = RegExp(
+    r'[\u0000-\u0008\u000B-\u001F\u007F]',
+  );
+  static final RegExp _windowsDriveRe = RegExp(r'^[A-Za-z]:');
+
+  static String _validatePreviewSummary(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty ||
+        trimmed.length > maxSummaryChars ||
+        _singleLineControlRe.hasMatch(trimmed) ||
+        hasBinaryOrInvalidSurrogates(trimmed)) {
+      throw const FormatException('Invalid preflight preview summary');
+    }
+    return trimmed;
+  }
+
+  static String _validatePreviewSnippet(String raw, {required bool truncated}) {
+    if (raw.isEmpty ||
+        _snippetControlRe.hasMatch(raw) ||
+        hasBinaryOrInvalidSurrogates(raw)) {
+      throw const FormatException('Invalid preflight preview snippet');
+    }
+    if (utf8.encode(raw).length > maxSnippetBytes) {
+      throw const FormatException(
+        'Preflight preview snippet exceeds 2048 UTF-8 bytes',
+      );
+    }
+    if (raw.split('\n').length > maxSnippetLines) {
+      throw const FormatException(
+        'Preflight preview snippet exceeds 40 lines',
+      );
+    }
+    if (truncated && !raw.endsWith(truncationMarker)) {
+      throw const FormatException(
+        'Truncated preflight preview snippet must end with …',
+      );
+    }
+    return raw;
+  }
+
+  static List<String> _validatePreviewPaths(List<String> rawPaths) {
+    if (rawPaths.length > maxPaths) {
+      throw const FormatException('Preflight preview paths exceeds 20 entries');
+    }
+    final validated = <String>[];
+    for (final raw in rawPaths) {
+      if (raw.isEmpty ||
+          raw.length > maxPathChars ||
+          raw.trim() != raw ||
+          _singleLineControlRe.hasMatch(raw) ||
+          hasBinaryOrInvalidSurrogates(raw)) {
+        throw const FormatException('Invalid preflight preview path entry');
+      }
+      if (raw.startsWith('/') ||
+          raw.startsWith(r'\') ||
+          raw.startsWith('~') ||
+          _windowsDriveRe.hasMatch(raw)) {
+        throw const FormatException(
+          'Preflight preview paths must be workspace-relative',
+        );
+      }
+      final normalized = raw.replaceAll(r'\', '/');
+      final segments = normalized.split('/');
+      if (segments.contains('..')) {
+        throw const FormatException(
+          'Preflight preview path must not contain .. traversal',
+        );
+      }
+      if (hardDeniedPathReason(normalized) != null ||
+          isSecretFileName(normalized)) {
+        throw const FormatException(
+          'Preflight preview path must not contain secret or Hard-Deny path',
+        );
+      }
+      validated.add(normalized);
+    }
+    return validated;
+  }
+
+  static int _validatePreviewTotalCount(int totalCount, int returnedCount) {
+    if (totalCount < returnedCount) {
+      throw const FormatException(
+        'Preflight preview totalCount must be >= paths.length',
+      );
+    }
+    return totalCount;
+  }
+}
+
 /// Validates the `preflight` object of an `xuna/preflight` result (§4.2.8).
 void _validatePreflightResult(Map<String, Object?> preflight) {
   _requireExactParamsKeys(
@@ -2431,6 +2654,7 @@ void _validatePreflightResult(Map<String, Object?> preflight) {
       'reasonCode',
       'errorCode',
       'element',
+      'preview',
     },
   );
   final status = XtpStatus.fromWire(_requireStringParam(preflight, 'status'));
@@ -2445,9 +2669,10 @@ void _validatePreflightResult(Map<String, Object?> preflight) {
       throw const FormatException('Invalid preflight errorCode');
     }
     if (preflight.containsKey('effectiveRisk') ||
-        preflight.containsKey('element')) {
+        preflight.containsKey('element') ||
+        preflight.containsKey('preview')) {
       throw const FormatException(
-        'A refused preflight carries no risk or element',
+        'A refused preflight carries no risk, element or preview',
       );
     }
   }
@@ -2465,6 +2690,9 @@ void _validatePreflightResult(Map<String, Object?> preflight) {
     if (name.length > 80 || RegExp(r'[\u0000-\u001F\u007F]').hasMatch(name)) {
       throw const FormatException('Invalid preflight element name');
     }
+  }
+  if (preflight.containsKey('preview')) {
+    XtpPreflightPreview.fromJson(_requireMapParam(preflight, 'preview'));
   }
 }
 
