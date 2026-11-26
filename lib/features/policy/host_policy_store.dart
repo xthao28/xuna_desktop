@@ -228,18 +228,43 @@ class HostPolicyStore {
     if (hardDeniedPathReason(canonNorm) != null) return 'forbidden';
     final segments = canonNorm.split('/').where((s) => s.isNotEmpty).length;
     if (segments <= (windows ? 1 : 0)) return 'too_broad';
+    final caseInsensitive = windows || Platform.isMacOS;
     final homeNorm = home == null
         ? null
         : normalizeHostPath(home, windows: windows);
-    if (homeNorm != null &&
-        isPathInsideRoot(homeNorm, canonNorm, caseInsensitive: windows)) {
+    String? homeRealNorm;
+    if (home != null) {
+      try {
+        final homeDir = Directory(windows ? home.replaceAll('/', r'\') : home);
+        if (homeDir.existsSync()) {
+          homeRealNorm = normalizeHostPath(
+            homeDir.resolveSymbolicLinksSync(),
+            windows: windows,
+          );
+        }
+      } on FileSystemException {
+        homeRealNorm = null;
+      }
+    }
+    if ((homeNorm != null &&
+            isPathInsideRoot(
+              homeNorm,
+              canonNorm,
+              caseInsensitive: caseInsensitive,
+            )) ||
+        (homeRealNorm != null &&
+            isPathInsideRoot(
+              homeRealNorm,
+              canonNorm,
+              caseInsensitive: caseInsensitive,
+            ))) {
       return 'too_broad';
     }
     final roots = current.shellControl.workspaceRoots;
     final duplicate = roots.any((r) {
       final n = normalizeHostPath(r, homeDirectory: home, windows: windows);
       return n != null &&
-          (windows
+          (caseInsensitive
               ? n.toLowerCase() == canonNorm.toLowerCase()
               : n == canonNorm);
     });

@@ -8,11 +8,14 @@ import 'package:xuna_desktop/core/logging/content_free_logger.dart';
 import 'package:xuna_desktop/features/audit/audit_log_store.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
 import 'package:xuna_desktop/features/exec/draft_workspace_manager.dart';
+import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
 import 'package:xuna_desktop/features/exec/fs_undo_journal.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
+
+import 'exec_test_support.dart';
 
 class _StubChannel implements XunaHostChannel {
   @override
@@ -116,6 +119,12 @@ void main() {
     stopController = EmergencyStopController(logger: logger);
     undoJournal = FsUndoJournal(rootDir: undoDir, logger: logger);
     draftManager = DraftWorkspaceManager(rootDir: draftsDir, logger: logger);
+    final fakeLauncher = FakeExecLauncher()
+      ..onStart = (handle) {
+        handle
+          ..emit('draft-check-ok\n')
+          ..exit(0);
+      };
     dispatcher = HostToolDispatcher(
       policyStore: policyStore,
       channel: _StubChannel(),
@@ -125,6 +134,11 @@ void main() {
       stopController: stopController,
       logger: logger,
       enrollmentStore: enrollmentStore,
+      execRegistry: ExecProcessRegistry(
+        stopController: stopController,
+        launcher: fakeLauncher,
+        pollInterval: const Duration(milliseconds: 5),
+      ),
       fsUndoJournal: undoJournal,
       draftWorkspaceManager: draftManager,
     );
@@ -192,10 +206,7 @@ void main() {
         ),
         nowUtc: baseNow,
       );
-      expect(
-        (createRes.result['_meta']! as Map)['xuna/status'],
-        equals('ok'),
-      );
+      expect((createRes.result['_meta']! as Map)['xuna/status'], equals('ok'));
       final createSc =
           createRes.result['structuredContent']! as Map<String, Object?>;
       final draftId = createSc['draftId']! as String;
@@ -206,8 +217,9 @@ void main() {
       // Verify .env and node_modules were excluded from the draft copy.
       final session = draftManager.requireSession(draftId, nowUtc: baseNow);
       expect(
-        File('${session.draftDir.path}${Platform.pathSeparator}.env')
-            .existsSync(),
+        File(
+          '${session.draftDir.path}${Platform.pathSeparator}.env',
+        ).existsSync(),
         isFalse,
       );
       expect(
@@ -235,10 +247,7 @@ void main() {
         ),
         nowUtc: baseNow,
       );
-      expect(
-        (patchRes.result['_meta']! as Map)['xuna/status'],
-        equals('ok'),
-      );
+      expect((patchRes.result['_meta']! as Map)['xuna/status'], equals('ok'));
 
       final writeArgs = <String, Object?>{
         'path':
@@ -258,10 +267,7 @@ void main() {
         ),
         nowUtc: baseNow,
       );
-      expect(
-        (writeRes.result['_meta']! as Map)['xuna/status'],
-        equals('ok'),
-      );
+      expect((writeRes.result['_meta']! as Map)['xuna/status'], equals('ok'));
 
       // Simulate deleting remove.txt inside the draft copy.
       File(
@@ -285,15 +291,13 @@ void main() {
         ),
         nowUtc: baseNow,
       );
-      expect(
-        (execRes.result['_meta']! as Map)['xuna/status'],
-        equals('ok'),
-      );
+      expect((execRes.result['_meta']! as Map)['xuna/status'], equals('ok'));
 
       // Original workspace must still be 100% unchanged!
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}edit.txt')
-            .readAsStringSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}edit.txt',
+        ).readAsStringSync(),
         equals('hello world\n'),
       );
       expect(
@@ -303,8 +307,9 @@ void main() {
         isFalse,
       );
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}remove.txt')
-            .existsSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}remove.txt',
+        ).existsSync(),
         isTrue,
       );
 
@@ -355,10 +360,7 @@ void main() {
         ),
         nowUtc: baseNow,
       );
-      expect(
-        (applyRes.result['_meta']! as Map)['xuna/status'],
-        equals('ok'),
-      );
+      expect((applyRes.result['_meta']! as Map)['xuna/status'], equals('ok'));
       final applySc =
           applyRes.result['structuredContent']! as Map<String, Object?>;
       expect(applySc['appliedCount'], equals(3));
@@ -369,8 +371,9 @@ void main() {
 
       // Real workspace reflects all 3 changes and draft copy is discarded!
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}edit.txt')
-            .readAsStringSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}edit.txt',
+        ).readAsStringSync(),
         equals('hello xuna\n'),
       );
       expect(
@@ -380,15 +383,17 @@ void main() {
         equals('new file content\n'),
       );
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}remove.txt')
-            .existsSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}remove.txt',
+        ).existsSync(),
         isFalse,
       );
       expect(draftManager.activeDraftCount, equals(0));
       // .env untouched!
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}.env')
-            .readAsStringSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}.env',
+        ).readAsStringSync(),
         equals('SECRET_TOKEN=supersecret\n'),
       );
 
@@ -405,8 +410,9 @@ void main() {
       );
       expect((undoRes.result['_meta']! as Map)['xuna/status'], equals('ok'));
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}edit.txt')
-            .readAsStringSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}edit.txt',
+        ).readAsStringSync(),
         equals('hello world\n'),
       );
       expect(
@@ -416,8 +422,9 @@ void main() {
         isFalse,
       );
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}remove.txt')
-            .readAsStringSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}remove.txt',
+        ).readAsStringSync(),
         equals('obsolete\n'),
       );
 
@@ -475,13 +482,15 @@ void main() {
 
       // ZERO files modified: keep.txt must still have original content!
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}keep.txt')
-            .readAsStringSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}keep.txt',
+        ).readAsStringSync(),
         equals('keep v1\n'),
       );
       expect(
-        File('${workspaceDir.path}${Platform.pathSeparator}edit.txt')
-            .readAsStringSync(),
+        File(
+          '${workspaceDir.path}${Platform.pathSeparator}edit.txt',
+        ).readAsStringSync(),
         equals('external concurrent edit\n'),
       );
 
@@ -602,8 +611,9 @@ void main() {
       final stale = Directory(
         '${draftsDir.path}${Platform.pathSeparator}draft_stale_orphan',
       )..createSync(recursive: true);
-      File('${stale.path}${Platform.pathSeparator}x.txt')
-          .writeAsStringSync('stale');
+      File(
+        '${stale.path}${Platform.pathSeparator}x.txt',
+      ).writeAsStringSync('stale');
       final removed = await draftManager.cleanupAllOnStartup();
       expect(removed, equals(1));
       expect(stale.existsSync(), isFalse);
