@@ -405,7 +405,7 @@ List<ToolDescriptor> buildClawPulseTools({
     ToolDescriptor(
       name: 'skill.markdown_bridge',
       description:
-          'Export a forged XUNA skill as an OpenClaw-compatible SKILL.md document or import a safe SKILL.md into the sandboxed OmniForge library.',
+          'Export a forged skill as SKILL.md, or import a SKILL.md as a draft skill built from its name/description only (steps are not imported). securityVerified = static forbidden-pattern scan only.',
       inputSchema: const <String, Object?>{
         'type': 'object',
         'properties': <String, Object?>{

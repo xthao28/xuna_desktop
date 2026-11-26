@@ -10,6 +10,8 @@ const int winHandleFlagInherit = 0x00000001;
 const int winStartfUseStdHandles = 0x00000100;
 const int winCreateUnicodeEnvironment = 0x00000400;
 const int winCreateNoWindow = 0x08000000;
+const int winCreateSuspended = 0x00000004;
+const int winResumeThreadFailed = 0xFFFFFFFF;
 const int winStillActive = 259;
 const int winJobObjectExtendedLimitInfoClass = 9;
 const int winJobObjectLimitKillOnJobClose = 0x00002000;
@@ -219,6 +221,8 @@ typedef _SetJobInfoN = Int32 Function(IntPtr, Int32, Pointer<Void>, Uint32);
 typedef WinSetJobInfoFn = int Function(int, int, Pointer<Void>, int);
 typedef _AssignJobN = Int32 Function(IntPtr, IntPtr);
 typedef WinAssignJobFn = int Function(int, int);
+typedef _ResumeThreadN = Uint32 Function(IntPtr);
+typedef WinResumeThreadFn = int Function(int);
 
 class WinKernel32 {
   WinKernel32._(DynamicLibrary lib)
@@ -270,6 +274,9 @@ class WinKernel32 {
           ),
       terminateJobObject = lib.lookupFunction<_TerminateN, WinTerminateFn>(
         'TerminateJobObject',
+      ),
+      resumeThread = lib.lookupFunction<_ResumeThreadN, WinResumeThreadFn>(
+        'ResumeThread',
       );
 
   static WinKernel32? _instance;
@@ -292,6 +299,7 @@ class WinKernel32 {
   final WinSetJobInfoFn setInformationJobObject;
   final WinAssignJobFn assignProcessToJobObject;
   final WinTerminateFn terminateJobObject;
+  final WinResumeThreadFn resumeThread;
 
   Pointer<T> alloc<T extends NativeType>(int byteCount) {
     final ptr = heapAlloc(getProcessHeap(), winHeapZeroMemory, byteCount);

@@ -74,6 +74,18 @@ const Set<String> _gitR2 = <String>{
 };
 const Set<String> _writeCommands = <String>{'mkdir', 'touch', 'cp', 'tee'};
 
+/// Global git options placed before the subcommand that only change output or
+/// pathspec handling; they are skipped so the subcommand decides the risk.
+const Set<String> _gitBenignGlobalFlags = <String>{
+  '--no-pager', '-P', '--no-optional-locks', '--literal-pathspecs', //
+  '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
+  '--no-replace-objects',
+};
+
+/// Global git options that only print information and exit. `--help` is not
+/// here: Git for Windows opens the HTML manual in a browser for it.
+const Set<String> _gitInfoOnlyGlobalFlags = <String>{'--version', '-v', '-h'};
+
 FsGuardDecision? _hardDenyRule(
   String exe,
   List<String> args,
@@ -171,14 +183,26 @@ FsGuardDecision _pipRule(List<String> args) {
 FsGuardDecision _gitRule(List<String> args) {
   const r2 = FsGuardDecision.allow(RiskTier.r2, 'local_command');
   const destructive = FsGuardDecision.allow(RiskTier.r3, 'destructive_command');
-  if (args.isNotEmpty &&
-      (args.first == '-c' || args.first.startsWith('--config'))) {
-    return destructive;
-  }
+  // Walk the global options before the subcommand. Anything not known to be
+  // benign (`-c`, `--config-env`, `--git-dir`, `--work-tree`, `--exec-path`,
+  // unknown flags) stays R3 (fail closed).
   var rest = args;
-  if (rest.length >= 2 && rest.first == '-C') rest = rest.sublist(2);
+  while (rest.isNotEmpty && rest.first.startsWith('-')) {
+    final opt = rest.first;
+    if (opt == '-C') {
+      if (rest.length < 2) return destructive;
+      rest = rest.sublist(2);
+    } else if (_gitBenignGlobalFlags.contains(opt)) {
+      rest = rest.sublist(1);
+    } else if (_gitInfoOnlyGlobalFlags.contains(opt)) {
+      return r2;
+    } else {
+      return destructive;
+    }
+  }
   if (rest.isEmpty) return r2;
   final sub = rest.first;
+  if (sub == 'version') return r2;
   final tail = rest.skip(1).toList();
   if (const {
     'push',

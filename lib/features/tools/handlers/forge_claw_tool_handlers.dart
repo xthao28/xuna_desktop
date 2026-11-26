@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:xuna_desktop/core/channel/xuna_host_channel.dart';
+import 'package:xuna_desktop/features/discovery/symbiotic/skill_workshop_service.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
 import 'package:xuna_xtp/xuna_xtp.dart';
 
@@ -438,12 +439,31 @@ class SkillMarkdownBridgeTool extends HostToolHandler {
     final action = context.arguments['action'] as String;
     final skillId = context.arguments['skillId'] as String?;
     final markdownContent = context.arguments['markdownContent'] as String?;
-    final res = context.symbioticService.bridgeSkillMarkdown(
-      action: action,
-      skillId: skillId,
-      markdownContent: markdownContent,
-      nowUtc: context.nowUtc,
-    );
+    final ({
+      String action,
+      String skillId,
+      String titleVi,
+      String skillMarkdown,
+      bool securityVerified,
+      String summaryVi,
+    })
+    res;
+    try {
+      res = context.symbioticService.bridgeSkillMarkdown(
+        action: action,
+        skillId: skillId,
+        markdownContent: markdownContent,
+        nowUtc: context.nowUtc,
+      );
+    } on SkillNotFoundError catch (e) {
+      throw XunaHostChannelException(
+        status: XtpStatus.invalidArgs,
+        errorCode: 'skill_not_found',
+        message: e.candidateIds.isEmpty
+            ? 'No forged skills exist yet.'
+            : 'Valid skillId values: ${e.candidateIds.join(', ')}',
+      );
+    }
     return ToolHandlerOutput(
       text: res.summaryVi,
       structuredContent: <String, Object?>{

@@ -19,6 +19,7 @@ import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
 import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
+import 'package:xuna_desktop/features/startup/startup_launch_service.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
 import 'package:xuna_desktop/features/watch/cdp_watch_signal_driver.dart';
@@ -54,6 +55,7 @@ class DesktopAgentController extends BaseGetxController {
     CdpBrowserEngineProvider? cdpBrowserProvider,
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
+    this.startupLaunch,
   }) : _appScanner = appScanner ?? AutoAppScanner(),
        _execRegistry = execRegistry,
        _workspaceIndexer = workspaceIndexer ?? AutoWorkspaceIndexer() {
@@ -124,6 +126,12 @@ class DesktopAgentController extends BaseGetxController {
   final ComputerUseSessionManager? computerUseManager;
   final AutoSymbioticService? symbioticService;
   final PresenceCoordinator? presenceCoordinator;
+
+  /// Opt-in "Khởi động cùng máy" (P0.9); `null` = feature not wired.
+  final StartupLaunchService? startupLaunch;
+
+  /// `null` = unsupported/unknown; otherwise the real OS state.
+  final startupLaunchEnabled = Rxn<bool>();
   late final LocalWatchSentinel _watchSentinel;
   late final bool _ownsWatchSentinel;
 
@@ -258,6 +266,8 @@ class DesktopAgentController extends BaseGetxController {
       await policyStore.migrateMissingDesktopFamilies();
       await policyStore.migrateShellFilesFamily();
     }
+    await policyStore.startWatching();
+    await refreshStartupLaunch();
     _syncFromStores();
     scanInstalledApps();
     scanWorkspaces();
@@ -302,6 +312,18 @@ class DesktopAgentController extends BaseGetxController {
       enabled: enabled,
       port: lanServer?.boundPort ?? defaultLanOfflinePort,
     );
+  }
+
+  bool get isStartupLaunchSupported => startupLaunch?.isSupported ?? false;
+
+  Future<void> refreshStartupLaunch() async {
+    startupLaunchEnabled.value = await startupLaunch?.readEnabled();
+  }
+
+  Future<void> setStartupLaunchEnabled(bool enabled) async {
+    final service = startupLaunch;
+    if (service == null) return;
+    startupLaunchEnabled.value = await service.setEnabled(enabled);
   }
 
   Future<void> refreshPermissions() async {
@@ -468,12 +490,17 @@ class DesktopAgentController extends BaseGetxController {
   String? exportSkillMarkdownFromUi(String skillId) {
     final svc = symbioticService;
     if (svc == null) return null;
-    final res = svc.bridgeSkillMarkdown(
-      action: 'export_skill_md',
-      skillId: skillId,
-    );
-    refreshSymbioticState();
-    return res.skillMarkdown;
+    try {
+      final res = svc.bridgeSkillMarkdown(
+        action: 'export_skill_md',
+        skillId: skillId,
+      );
+      return res.skillMarkdown;
+    } on SkillNotFoundError {
+      return null;
+    } finally {
+      refreshSymbioticState();
+    }
   }
 
   LiveCanvasSurfaceSnapshot? presentLiveCanvasFromUi({
@@ -915,6 +942,15 @@ class DesktopAgentController extends BaseGetxController {
     }
   }
 
+  /// Adds a local-only `shellControl.workspaceRoots` folder (`ADR-0018`);
+  /// returns the [HostPolicyStore.addWorkspaceRoot] result code.
+  Future<String> addWorkspaceRootToPolicy(String rawPath) =>
+      policyStore.addWorkspaceRoot(rawPath);
+
+  Future<void> removeWorkspaceRootFromPolicy(String root) async {
+    await policyStore.removeWorkspaceRoot(root);
+  }
+
   Future<void> removeAllowedDomainFromPolicy(String domain) async {
     final current = activePolicy.value;
     if (current == null) return;
@@ -969,6 +1005,7 @@ class DesktopAgentController extends BaseGetxController {
       unawaited(sub.cancel());
     }
     _subs.clear();
+    unawaited(policyStore.stopWatching());
     if (_ownsWatchSentinel) {
       unawaited(_watchSentinel.dispose());
     }

@@ -11,6 +11,23 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
   /// Local-only `shellControl` switch (`ADR-0018`).
   static const shellControlToggleKey = Key('policy.shellControl.toggle');
 
+  /// Local-only `shellControl.workspaceRoots` card (`ADR-0018`).
+  static const workspaceRootsCardKey = Key('policy.workspaceRoots.card');
+
+  static String _workspaceRootError(String code) => switch (code) {
+    'invalid_path' =>
+      'Cần đường dẫn tuyệt đối, ví dụ C:\\Users\\ban\\Projects\\app hoặc ~/Projects/app.',
+    'not_a_directory' => 'Thư mục không tồn tại trên máy này.',
+    'forbidden' => 'Thư mục thuộc vùng luôn bị chặn (khóa SSH, kho mật khẩu…).',
+    'too_broad' =>
+      'Quá rộng: hãy chọn một thư mục dự án cụ thể, không phải ổ đĩa hay cả thư mục người dùng.',
+    'duplicate' => 'Thư mục này đã có trong danh sách.',
+    'limit_reached' => 'Tối đa 16 thư mục dự án.',
+    'policy_invalid' =>
+      'Chính sách đang lỗi — hãy bấm "Khôi phục mặc định" trước.',
+    _ => 'Không thêm được thư mục ($code).',
+  };
+
   const PolicyTabView({
     super.key,
     required super.controller,
@@ -27,24 +44,23 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
   ];
 
   static String _familyRiskLabel(ToolFamily family) => switch (family) {
-        ToolFamily.media => 'R1 · Tự động',
-        ToolFamily.app => 'R2 · Hỏi trước',
-        ToolFamily.url => 'R2 · Hỏi trước',
-        ToolFamily.workflow => 'R2 · Hỏi trước',
-        _ => 'R1',
-      };
+    ToolFamily.media => 'R1 · Tự động',
+    ToolFamily.app => 'R2 · Hỏi trước',
+    ToolFamily.url => 'R2 · Hỏi trước',
+    ToolFamily.workflow => 'R2 · Hỏi trước',
+    _ => 'R1',
+  };
 
   static String _familyDescription(ToolFamily family) => switch (family) {
-        ToolFamily.media =>
-          'Phát / tạm dừng nhạc, chuyển bài và điều chỉnh âm lượng hệ thống.',
-        ToolFamily.app =>
-          'Mở ứng dụng trong danh sách cho phép và kiểm tra trạng thái cửa sổ.',
-        ToolFamily.url =>
-          'Mở liên kết HTTPS hợp lệ thuộc các tên miền được phép.',
-        ToolFamily.workflow =>
-          'Chạy quy trình Shortcuts / tự động hóa đã được phê duyệt.',
-        _ => '',
-      };
+    ToolFamily.media =>
+      'Phát / tạm dừng nhạc, chuyển bài và điều chỉnh âm lượng hệ thống.',
+    ToolFamily.app =>
+      'Mở ứng dụng trong danh sách cho phép và kiểm tra trạng thái cửa sổ.',
+    ToolFamily.url => 'Mở liên kết HTTPS hợp lệ thuộc các tên miền được phép.',
+    ToolFamily.workflow =>
+      'Chạy quy trình Shortcuts / tự động hóa đã được phê duyệt.',
+    _ => '',
+  };
 
   @override
   Widget buildTab(BuildContext context) {
@@ -134,6 +150,63 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
           ),
           UtilWidget.sizedBox10,
           AppSectionCard(
+            key: workspaceRootsCardKey,
+            title: 'Thư mục dự án (workspaceRoots) — chỉ đặt tại máy này',
+            shadow: AppDimens.shadow2,
+            subtitle: policy.shellControl.workspaceRoots.isEmpty
+                ? 'Chưa có thư mục nào — mọi lệnh ghi/sửa tệp của XUNA đều cần ký R3 trên điện thoại.'
+                : 'Ghi/sửa tệp trong các thư mục này là R2; ngoài các thư mục này, tệp ẩn và tệp mật vẫn cần ký R3.',
+            trailing: AppBoxButton(
+              label: '+ Thêm thư mục',
+              compact: true,
+              onPressed: () => _showAddWorkspaceRootDialog(context),
+            ),
+            children: [
+              if (policy.shellControl.workspaceRoots.isNotEmpty)
+                Wrap(
+                  spacing: AppDimens.padding6,
+                  runSpacing: AppDimens.padding6,
+                  children: [
+                    for (final root in policy.shellControl.workspaceRoots)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AppDimens.paddingVerySmall,
+                          vertical: AppDimens.paddingSmallest,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.xunaPaper,
+                          borderRadius: BorderRadius.circular(
+                            AppDimens.radius8,
+                          ),
+                          border: Border.all(
+                            color: AppColors.xunaInk,
+                            width: AppDimens.strokeThin,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('📁 $root', style: AppTextStyle.mono11Re),
+                            const SizedBox(width: AppDimens.padding6),
+                            InkWell(
+                              onTap: () => controller
+                                  .removeWorkspaceRootFromPolicy(root),
+                              child: Text(
+                                '✕',
+                                style: AppTextStyle.mono10Bo.copyWith(
+                                  color: AppColors.xunaHeart,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+            ],
+          ),
+          UtilWidget.sizedBox10,
+          AppSectionCard(
             title: 'Tên miền cho phép (url.open)',
             shadow: AppDimens.shadow2,
             subtitle: policy.urlDomains.isEmpty
@@ -158,8 +231,9 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
                         ),
                         decoration: BoxDecoration(
                           color: AppColors.xunaPaper,
-                          borderRadius:
-                              BorderRadius.circular(AppDimens.radius8),
+                          borderRadius: BorderRadius.circular(
+                            AppDimens.radius8,
+                          ),
                           border: Border.all(
                             color: AppColors.xunaInk,
                             width: AppDimens.strokeThin,
@@ -168,10 +242,7 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              '🌐 $domain',
-                              style: AppTextStyle.mono11Re,
-                            ),
+                            Text('🌐 $domain', style: AppTextStyle.mono11Re),
                             const SizedBox(width: AppDimens.padding6),
                             InkWell(
                               onTap: () => controller
@@ -249,8 +320,9 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
                         ),
                         decoration: BoxDecoration(
                           color: AppColors.xunaLime,
-                          borderRadius:
-                              BorderRadius.circular(AppDimens.radius8),
+                          borderRadius: BorderRadius.circular(
+                            AppDimens.radius8,
+                          ),
                           border: Border.all(
                             color: AppColors.xunaInk,
                             width: AppDimens.strokeThin,
@@ -265,8 +337,8 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
                             ),
                             const SizedBox(width: AppDimens.padding6),
                             InkWell(
-                              onTap: () => controller
-                                  .removeAllowedAppFromPolicy(app.id),
+                              onTap: () =>
+                                  controller.removeAllowedAppFromPolicy(app.id),
                               child: Text(
                                 '✕',
                                 style: AppTextStyle.mono10Bo.copyWith(
@@ -325,10 +397,7 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.xunaPaper,
-        title: Text(
-          '➕ Thêm ứng dụng tùy chỉnh',
-          style: AppTextStyle.font16Bo,
-        ),
+        title: Text('➕ Thêm ứng dụng tùy chỉnh', style: AppTextStyle.font16Bo),
         content: SizedBox(
           width: 420,
           child: Column(
@@ -388,6 +457,54 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
     );
   }
 
+  Future<void> _showAddWorkspaceRootDialog(BuildContext context) async {
+    final pathCtrl = TextEditingController();
+    String? error;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          backgroundColor: AppColors.xunaPaper,
+          title: Text('📁 Thêm thư mục dự án', style: AppTextStyle.font16Bo),
+          content: SizedBox(
+            width: 420,
+            child: TextField(
+              controller: pathCtrl,
+              decoration: InputDecoration(
+                labelText: 'Đường dẫn tuyệt đối tới thư mục dự án',
+                border: const OutlineInputBorder(),
+                isDense: true,
+                errorText: error,
+                errorMaxLines: 3,
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Hủy'),
+            ),
+            AppBoxButton(
+              label: 'Thêm thư mục',
+              compact: true,
+              highlighted: true,
+              onPressed: () async {
+                final code = await controller.addWorkspaceRootToPolicy(
+                  pathCtrl.text,
+                );
+                if (code == 'added') {
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  return;
+                }
+                setState(() => error = _workspaceRootError(code));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _showAddDomainDialog(BuildContext context) async {
     final domainCtrl = TextEditingController();
     await showDialog<void>(
@@ -403,7 +520,8 @@ class PolicyTabView extends BaseTabView<DesktopAgentController> {
           child: TextField(
             controller: domainCtrl,
             decoration: const InputDecoration(
-              labelText: 'Tên miền (VD: docs.flutter.dev, notion.so, figma.com)',
+              labelText:
+                  'Tên miền (VD: docs.flutter.dev, notion.so, figma.com)',
               border: OutlineInputBorder(),
               isDense: true,
             ),

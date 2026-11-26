@@ -190,7 +190,130 @@ class HostPolicyStore {
     return savePolicy(current.copyWith(families: updatedFamilies));
   }
 
+  /// Adds a local-only `shellControl.workspaceRoots` entry (`ADR-0018`):
+  /// `fs.*` writes inside a root are `R2`, elsewhere `R3`. Returns a stable
+  /// code: `added`, `policy_invalid`, `invalid_path` (empty/relative/control
+  /// chars), `not_a_directory`, `forbidden` (Hard-Deny location), `too_broad`
+  /// (filesystem/drive root, the home directory or one of its ancestors),
+  /// `duplicate`, `limit_reached`. The canonical (symlink-resolved) path is
+  /// stored.
+  Future<String> addWorkspaceRoot(
+    String rawPath, {
+    String? homeDirectory,
+  }) async {
+    final current = _evaluator.policy;
+    if (!_evaluator.isHealthy || current == null) return 'policy_invalid';
+    final windows = Platform.isWindows;
+    final home =
+        homeDirectory ?? Platform.environment[windows ? 'USERPROFILE' : 'HOME'];
+    final trimmed = rawPath.trim().replaceAll('"', '');
+    final normalized = normalizeHostPath(
+      trimmed,
+      homeDirectory: home,
+      windows: windows,
+    );
+    if (trimmed.isEmpty || normalized == null) return 'invalid_path';
+    final dir = Directory(
+      windows ? normalized.replaceAll('/', r'\') : normalized,
+    );
+    if (!await dir.exists()) return 'not_a_directory';
+    final String canonical;
+    try {
+      canonical = dir.resolveSymbolicLinksSync();
+    } on FileSystemException {
+      return 'not_a_directory';
+    }
+    final canonNorm = normalizeHostPath(canonical, windows: windows);
+    if (canonNorm == null) return 'invalid_path';
+    if (hardDeniedPathReason(canonNorm) != null) return 'forbidden';
+    final segments = canonNorm.split('/').where((s) => s.isNotEmpty).length;
+    if (segments <= (windows ? 1 : 0)) return 'too_broad';
+    final homeNorm = home == null
+        ? null
+        : normalizeHostPath(home, windows: windows);
+    if (homeNorm != null &&
+        isPathInsideRoot(homeNorm, canonNorm, caseInsensitive: windows)) {
+      return 'too_broad';
+    }
+    final roots = current.shellControl.workspaceRoots;
+    final duplicate = roots.any((r) {
+      final n = normalizeHostPath(r, homeDirectory: home, windows: windows);
+      return n != null &&
+          (windows
+              ? n.toLowerCase() == canonNorm.toLowerCase()
+              : n == canonNorm);
+    });
+    if (duplicate) return 'duplicate';
+    if (roots.length >= 16) return 'limit_reached';
+    await savePolicy(
+      current.copyWith(
+        shellControl: current.shellControl.copyWith(
+          workspaceRoots: <String>[...roots, canonical],
+        ),
+      ),
+    );
+    return isHealthy ? 'added' : 'policy_invalid';
+  }
+
+  /// Removes an exact `shellControl.workspaceRoots` entry. Returns `false`
+  /// when the policy is unhealthy or the entry is absent.
+  Future<bool> removeWorkspaceRoot(String root) async {
+    final current = _evaluator.policy;
+    if (!_evaluator.isHealthy || current == null) return false;
+    final roots = current.shellControl.workspaceRoots;
+    if (!roots.contains(root)) return false;
+    await savePolicy(
+      current.copyWith(
+        shellControl: current.shellControl.copyWith(
+          workspaceRoots: roots.where((r) => r != root).toList(),
+        ),
+      ),
+    );
+    return true;
+  }
+
+  StreamSubscription<FileSystemEvent>? _watchSub;
+  Timer? _watchDebounce;
+
+  /// Reloads automatically when `host-policy.json` changes on disk (e.g. the
+  /// owner edits it by hand), debounced so a multi-write save reloads once.
+  /// Reload keeps its fail-closed semantics: a broken edit turns the policy
+  /// `policy_invalid`. Never throws; if the OS watcher is unavailable the
+  /// store keeps the loaded policy and [reload] still works on demand.
+  Future<void> startWatching({
+    Duration debounce = const Duration(milliseconds: 300),
+  }) async {
+    if (_watchSub != null) return;
+    final fileName = _baseName(policyFile.path);
+    try {
+      await policyFile.parent.create(recursive: true);
+      _watchSub = policyFile.parent.watch().listen((event) {
+        final touched = <String>[
+          event.path,
+          if (event is FileSystemMoveEvent && event.destination != null)
+            event.destination!,
+        ];
+        if (!touched.any((p) => _baseName(p) == fileName)) return;
+        _watchDebounce?.cancel();
+        _watchDebounce = Timer(debounce, () => unawaited(reload()));
+      }, onError: (Object _) {});
+    } on FileSystemException {
+      _watchSub = null;
+    }
+  }
+
+  Future<void> stopWatching() async {
+    _watchDebounce?.cancel();
+    _watchDebounce = null;
+    await _watchSub?.cancel();
+    _watchSub = null;
+  }
+
+  static String _baseName(String path) =>
+      path.split(RegExp(r'[\\/]')).last.toLowerCase();
+
   Future<void> dispose() async {
+    await stopWatching();
     await _changes.close();
   }
 }

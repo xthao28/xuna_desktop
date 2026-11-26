@@ -190,13 +190,23 @@ class _Win32ExecProcess implements ExecProcessHandle {
       si.ref.hStdOutput = hOutWrite;
       si.ref.hStdError = hOutWrite;
 
+      // Created suspended so the kill-on-close Job Object is attached BEFORE
+      // cmd.exe runs: no grandchild can start outside the job in the window
+      // between process creation and job assignment.
+      //
+      // Note (P0.5, 2026-11-26): cmd builtins still write the OEM code page
+      // to the pipe. Setting the child's console to UTF-8 is not possible
+      // here: AttachConsole on the suspended child fails with
+      // ERROR_INVALID_HANDLE (its console only exists once it runs), and
+      // after resume cmd has already cached the code page. The real fix is a
+      // ConPTY launcher (also needed for `pty: true` on Windows).
       final ok = k32.createProcessW(
         appPtr,
         cmdPtr,
         nullptr,
         nullptr,
         1,
-        winCreateUnicodeEnvironment | winCreateNoWindow,
+        winCreateUnicodeEnvironment | winCreateNoWindow | winCreateSuspended,
         envPtr.cast<Void>(),
         cwdPtr,
         si,
@@ -214,7 +224,21 @@ class _Win32ExecProcess implements ExecProcessHandle {
       k32.closeHandle(hInRead);
       hInRead = 0;
 
-      hJob = _attachKillOnCloseJob(k32, pi.ref.hProcess);
+      try {
+        hJob = _attachKillOnCloseJob(k32, pi.ref.hProcess);
+        if (k32.resumeThread(pi.ref.hThread) == winResumeThreadFailed) {
+          throw const XunaHostChannelException(
+            status: XtpStatus.failed,
+            errorCode: 'exec_spawn_failed',
+          );
+        }
+      } catch (_) {
+        // Never leave a suspended cmd.exe behind.
+        k32.terminateProcess(pi.ref.hProcess, 1);
+        k32.closeHandle(pi.ref.hThread);
+        k32.closeHandle(pi.ref.hProcess);
+        rethrow;
+      }
       final handle = _Win32ExecProcess._(
         k32: k32,
         pid: pi.ref.dwProcessId,

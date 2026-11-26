@@ -38,11 +38,32 @@ class PermissionsTabView extends BaseTabView<DesktopAgentController> {
             variant: _badgeVariantForState(stateWire),
           ),
           UtilWidget.sizedBoxWidth10,
-          AppPillButton(
-            label: buttonLabel,
-            onPressed: onPressed,
-          ),
+          AppPillButton(label: buttonLabel, onPressed: onPressed),
         ],
+      ),
+    );
+  }
+
+  /// Opt-in "Khởi động cùng máy" switch (P0.9).
+  static const startupLaunchToggleKey = Key('permissions.startupLaunch.toggle');
+
+  Widget _buildStartupLaunchCard() {
+    final supported = controller.isStartupLaunchSupported;
+    final enabled = controller.startupLaunchEnabled.value;
+    final subtitle = !supported
+        ? 'Chưa hỗ trợ trên hệ điều hành này.'
+        : enabled == null
+        ? 'Không đọc được trạng thái khởi động của Windows.'
+        : 'Tự mở XUNA khi bạn đăng nhập Windows (quyền người dùng thường, không phải dịch vụ). Mặc định tắt.';
+    return AppSectionCard(
+      key: startupLaunchToggleKey,
+      title: 'Khởi động cùng máy (tùy chọn)',
+      subtitle: subtitle,
+      trailing: AppToggle(
+        value: enabled ?? false,
+        onChanged: supported && enabled != null
+            ? controller.setStartupLaunchEnabled
+            : null,
       ),
     );
   }
@@ -101,6 +122,8 @@ class PermissionsTabView extends BaseTabView<DesktopAgentController> {
             buttonLabel: 'Kiểm tra / Cấp quyền',
             onPressed: () => controller.requestOsPermission('notifications'),
           ),
+          UtilWidget.sizedBox10,
+          _buildStartupLaunchCard(),
         ],
       ),
     );

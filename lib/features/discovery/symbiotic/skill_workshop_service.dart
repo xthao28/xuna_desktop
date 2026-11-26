@@ -8,6 +8,23 @@ import 'omniforge_service.dart';
 import 'symbiotic_models.dart';
 import 'universal_pipeline_service.dart';
 
+/// Raised when a `SKILL.md` export names a skill that does not exist (Rule H3:
+/// never guess a target). Carries a bounded list of valid ids.
+class SkillNotFoundError implements Exception {
+  const SkillNotFoundError({
+    required this.requestedId,
+    required this.candidateIds,
+  });
+
+  static const int maxCandidates = 8;
+
+  final String? requestedId;
+  final List<String> candidateIds;
+
+  @override
+  String toString() => 'SkillNotFoundError(candidates: ${candidateIds.length})';
+}
+
 /// OpenClaw `SKILL.md` Bridge, Self-Improving Correction Rules, Disk-Backed
 /// Skill Workshop, and Multi-Skill DAG Pipe Chaining (`CLAW-1`, `WORKSHOP-2`).
 class SkillWorkshopService {
@@ -23,8 +40,15 @@ class SkillWorkshopService {
   final UniversalPipelineService _pipelineService;
   final HeartbeatCanvasService _heartbeatCanvasService;
 
-  /// Exports a forged skill as an OpenClaw-compatible `SKILL.md` document or
-  /// imports a safe `SKILL.md` into the sandboxed OmniForge library (`CLAW-1`).
+  /// Exports a forged skill as an OpenClaw-compatible `SKILL.md` document, or
+  /// imports a `SKILL.md` as a draft OmniForge skill (`CLAW-1`).
+  ///
+  /// Import reads only the frontmatter `name`/`description` and synthesizes a
+  /// skill from them; the document's steps or commands are NOT imported.
+  /// `securityVerified` reports only the static forbidden-pattern scan
+  /// ([containsForbiddenSkillMarkdownPattern]) of the markdown involved — it is
+  /// not a sandbox run. Export throws [SkillNotFoundError] when [skillId] does
+  /// not match a forged skill (never falls back to another skill).
   ({
     String action,
     String skillId,
@@ -74,22 +98,27 @@ class SkillWorkshopService {
         skillId: forged.skillId,
         titleVi: forged.titleVi,
         skillMarkdown: rawMd.length <= 4000 ? rawMd : rawMd.substring(0, 4000),
+        // The forbidden-pattern scan above passed (otherwise we threw).
         securityVerified: true,
         summaryVi:
-            'Đã kiểm duyệt an toàn hộp cát và nhập SKILL.md thành công cụ "${forged.titleVi}" (${forged.skillId}).',
+            'Đã quét tĩnh (không có mẫu nguy hiểm) và tạo kỹ năng nháp "${forged.titleVi}" từ tên/mô tả; các bước trong tệp chưa được nhập.',
       );
     }
 
     final skills = _forgeService.listForgedSkillEntries();
-    final target = (skillId != null && skillId.trim().isNotEmpty)
-        ? skills
-                  .where(
-                    (s) =>
-                        s.skillId.toLowerCase() == skillId.trim().toLowerCase(),
-                  )
-                  .firstOrNull ??
-              skills.first
-        : skills.first;
+    final wanted = skillId?.trim().toLowerCase() ?? '';
+    final target = wanted.isEmpty
+        ? null
+        : skills.where((s) => s.skillId.toLowerCase() == wanted).firstOrNull;
+    if (target == null) {
+      throw SkillNotFoundError(
+        requestedId: skillId,
+        candidateIds: skills
+            .take(SkillNotFoundError.maxCandidates)
+            .map((s) => s.skillId)
+            .toList(growable: false),
+      );
+    }
     final stepsMd = target.scriptSteps.map((s) => '- $s').join('\n');
     final rulesMd = target.correctionRules.isEmpty
         ? '- Chưa có ghi chú tự sửa lỗi.'
@@ -112,14 +141,16 @@ class SkillWorkshopService {
         '$stepsMd\n\n'
         '## Ghi chú tự thích nghi (Self-Improving Rules)\n'
         '$rulesMd\n';
+    final scanPassed = !containsForbiddenSkillMarkdownPattern(md);
     return (
       action: 'export_skill_md',
       skillId: target.skillId,
       titleVi: target.titleVi,
       skillMarkdown: md,
-      securityVerified: true,
-      summaryVi:
-          'Đã xuất kỹ năng "${target.titleVi}" sang chuẩn SKILL.md tương thích hệ sinh thái OpenClaw.',
+      securityVerified: scanPassed,
+      summaryVi: scanPassed
+          ? 'Đã xuất kỹ năng "${target.titleVi}" sang SKILL.md (quét tĩnh: không có mẫu nguy hiểm).'
+          : 'Đã xuất kỹ năng "${target.titleVi}" sang SKILL.md nhưng quét tĩnh phát hiện mẫu nguy hiểm — không nên chia sẻ tệp này.',
     );
   }
 

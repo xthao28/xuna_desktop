@@ -1150,19 +1150,33 @@ end tell
       considerPath(ws.path);
     }
 
-    final searchRoots = <String>[
-      canonicalHome,
-      if (_scanDefaultLocations) ...<String>[
-        '$canonicalHome${sep}Documents',
-        '$canonicalHome${sep}Desktop',
-        '$canonicalHome${sep}Downloads',
-        '$canonicalHome${sep}Projects',
-        '$canonicalHome${sep}Developer',
-        '$canonicalHome${sep}Repos',
-        '$canonicalHome${sep}work',
-      ],
-      ..._customScanRoots,
-    ];
+    // Each root is scanned once at its deepest requested depth: home itself
+    // shallowly (1), default locations and explicit custom roots at 2. Keying
+    // by path (not `r == canonicalHome`) keeps behaviour identical when a
+    // custom root equals home on Windows and when macOS resolves `/var` to
+    // `/private/var`.
+    final searchDepths = <String, int>{canonicalHome: 1};
+    void addRoot(String root, int depth) {
+      final current = searchDepths[root];
+      if (current == null || depth > current) searchDepths[root] = depth;
+    }
+
+    if (_scanDefaultLocations) {
+      for (final name in const <String>[
+        'Documents',
+        'Desktop',
+        'Downloads',
+        'Projects',
+        'Developer',
+        'Repos',
+        'work',
+      ]) {
+        addRoot('$canonicalHome$sep$name', 2);
+      }
+    }
+    for (final root in _customScanRoots) {
+      addRoot(root, 2);
+    }
 
     void scanShallowForName(Directory dir, int depth, int maxDepth) {
       if (depth > maxDepth || !dir.existsSync()) return;
@@ -1191,9 +1205,8 @@ end tell
       } catch (_) {}
     }
 
-    for (final r in searchRoots) {
-      final maxD = r == canonicalHome ? 1 : 2;
-      scanShallowForName(Directory(r), 1, maxD);
+    for (final entry in searchDepths.entries) {
+      scanShallowForName(Directory(entry.key), 1, entry.value);
     }
 
     if (exactMatches.isEmpty &&

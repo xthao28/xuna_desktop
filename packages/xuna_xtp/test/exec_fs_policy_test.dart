@@ -276,6 +276,41 @@ void main() {
       });
     }
 
+    test('git global options before the subcommand (Windows live 2026-11-26)',
+        () {
+      const r2 = <String>[
+        'git --no-pager log -1 --format="%h %s"',
+        'git --no-pager -C sub status',
+        'git -P diff',
+        'git --version',
+        'git -v',
+        'git version',
+        'git -C sub --no-pager log --oneline',
+      ];
+      const r3 = <String>[
+        'git -c core.pager=evil log',
+        'git --no-pager -c alias.x=!sh x',
+        'git --config-env=core.pager=X log',
+        'git --git-dir=/elsewhere/.git log',
+        'git --work-tree=/ status',
+        'git --exec-path=/tmp log',
+        'git --help',
+        'git --unknown-global log',
+        'git -C',
+        'git --no-pager push origin dev',
+      ];
+      for (final c in r2) {
+        final d = _cmd(c);
+        expect(d.denied, isFalse, reason: c);
+        expect(d.risk, RiskTier.r2, reason: '$c -> ${d.reasonCode}');
+      }
+      for (final c in r3) {
+        final d = _cmd(c);
+        expect(d.denied, isFalse, reason: c);
+        expect(d.risk, RiskTier.r3, reason: '$c -> ${d.reasonCode}');
+      }
+    });
+
     test('R3 call without a phone-signed approval is refused at dispatch', () {
       final res =
           _eval('exec.run', <String, Object?>{'command': 'rm temp.txt'});

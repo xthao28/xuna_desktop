@@ -20,6 +20,7 @@ import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
 import 'package:xuna_desktop/features/presence/resource_digest_builder.dart';
 import 'package:xuna_desktop/features/presence/subnet_hash.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
+import 'package:xuna_desktop/features/startup/startup_launch_service.dart';
 import 'package:xuna_desktop/features/stop/desktop_tray_service.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
 import 'package:xuna_desktop/features/tools/host_tool_dispatcher.dart';
@@ -145,6 +146,7 @@ Future<void> main() async {
       execRegistry: dispatcher.execRegistry,
       appScanner: appScanner,
       workspaceIndexer: workspaceIndexer,
+      startupLaunch: StartupLaunchService(),
       logger: logger,
     ),
   );
