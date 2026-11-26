@@ -98,9 +98,7 @@ Future<void> main() async {
     loader: CapabilityManifestLoader(
       manifestDirectories: <Directory>[
         paths.capabilitiesDir,
-        Directory(
-          '${Directory.current.path}${Platform.pathSeparator}assets${Platform.pathSeparator}capabilities',
-        ),
+        ...CapabilityManifestLoader.bundledSeedDirectories(),
       ],
       logger: logger,
     ),

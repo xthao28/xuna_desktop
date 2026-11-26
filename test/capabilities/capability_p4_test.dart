@@ -47,9 +47,9 @@ void main() {
     // A small deterministic local helper script invoked via Python WITHOUT
     // a shell (-c/-e are forbidden by CapabilityManifest; passing a script
     // file path + literal argv proves non-shell execution and magic bytes!).
-    helperScript = File(
-      '${tempRoot.path}${Platform.pathSeparator}convert_helper.py',
-    )..writeAsStringSync('''
+    helperScript =
+        File('${tempRoot.path}${Platform.pathSeparator}convert_helper.py')
+          ..writeAsStringSync('''
 import sys
 label = sys.argv[1]
 src = sys.argv[2]
@@ -312,12 +312,14 @@ print("ARGV_LABEL=" + label)
 
         // 1. capability.list shows ONLY the valid approved adapter.
         final detected = await engine.listDetectedAdapters();
-        expect(detected.map((d) => d.manifest.id), equals(['test_local_pdf_writer']));
+        expect(
+          detected.map((d) => d.manifest.id),
+          equals(['test_local_pdf_writer']),
+        );
 
         // 2. Shell metacharacters in {label} stay trapped in argv[1] (NOT executed!),
         //    and valid PDF magic passes verifyFiles!
-        final outGood =
-            '${workspaceDir.path}${Platform.pathSeparator}good.pdf';
+        final outGood = '${workspaceDir.path}${Platform.pathSeparator}good.pdf';
         final markerFile =
             '${workspaceDir.path}${Platform.pathSeparator}injected.txt';
         final goodArgs = <String, Object?>{
@@ -432,227 +434,287 @@ print("ARGV_LABEL=" + label)
   });
 
   group('P4.3 (U6): Verified Skills (draft -> verified only after real self-test)', () {
-    test('pipeline, imported SKILL.md, simulated, and failing skills stay draft; real passing script verifies', () {
-      // 1. Simulated test runner (allowSubprocessInWidgetTests: false) must NEVER mark verified!
-      final simService = AutoSymbioticService(
-        sandboxRunner: SandboxedToolRunner(
-          allowSubprocessInWidgetTests: false,
-          sandboxRootPath: tempRoot.path,
-        ),
-        workshopDirectory: Directory('${tempRoot.path}/ws_sim'),
-      );
-      final pipelineSkill = simService.synthesizeSkill(
-        goal: 'Tóm tắt báo cáo bán hàng hằng tuần',
-      );
-      expect(pipelineSkill.verificationStatus, equals('draft'));
-      expect(pipelineSkill.selfTestPassed, isFalse);
-      expect(pipelineSkill.isVerified, isFalse);
-      expect(simService.buildDynamicToolDescriptors(), isEmpty);
-
-      final simScriptSkill = simService.synthesizeSkill(
-        goal: 'Chạy kịch bản thử nghiệm',
-        toolName: 'sim_only_tool',
-        runtime: 'python',
-        scriptCode: 'print("{\\"processedCount\\": 1}")',
-      );
-      expect(simScriptSkill.verificationStatus, equals('draft'));
-      expect(simScriptSkill.isVerified, isFalse);
-      expect(simService.buildDynamicToolDescriptors(), isEmpty);
-
-      final imported = simService.bridgeSkillMarkdown(
-        action: 'import_skill_md',
-        markdownContent: '---\nname: "Demo Import"\ndescription: "Check docs"\n---\n# Demo\n',
-      );
-      final importedEntry = simService.findForgedSkill(imported.skillId);
-      expect(importedEntry, isNotNull);
-      expect(importedEntry!.verificationStatus, equals('draft'));
-      expect(importedEntry.isVerified, isFalse);
-
-      // 2. Real subprocess runner promotes ONLY passing scripts to 'verified'!
-      final realService = AutoSymbioticService(
-        sandboxRunner: SandboxedToolRunner(
-          allowSubprocessInWidgetTests: true,
-          sandboxRootPath: tempRoot.path,
-        ),
-        workshopDirectory: Directory('${tempRoot.path}/ws_real'),
-      );
-      final failing = realService.synthesizeSkill(
-        goal: 'Broken real script',
-        toolName: 'real_broken',
-        runtime: 'python',
-        scriptCode: 'import sys\nsys.exit(1)',
-      );
-      expect(failing.verificationStatus, equals('draft'));
-      expect(failing.isVerified, isFalse);
-      expect(realService.buildDynamicToolDescriptors(), isEmpty);
-
-      final passing = realService.synthesizeSkill(
-        goal: 'Passing real script',
-        toolName: 'real_passing',
-        runtime: 'python',
-        scriptCode: 'import json\nprint(json.dumps({"processedCount": 2}))',
-      );
-      expect(passing.verificationStatus, equals('verified'));
-      expect(passing.isVerified, isTrue);
-      expect(
-        realService.buildDynamicToolDescriptors().map((d) => d.name),
-        contains('forge.custom_real_passing'),
-      );
-    });
-  });
-
-  group('P4.4 (F2): Manifest Foundry (manifests only + DraftWorkspace verify + owner approval)', () {
     test(
-      'verifies candidate inside isolated DraftWorkspace leaving real workspace untouched and promotes only after pass + owner approval',
-      () async {
-        final pythonBin = Platform.isWindows ? 'python' : 'python3';
-        final loader = CapabilityManifestLoader(
-          manifestDirectories: <Directory>[manifestsDir],
-          logger: logger,
+      'pipeline, imported SKILL.md, simulated, and failing skills stay draft; real passing script verifies',
+      () {
+        // 1. Simulated test runner (allowSubprocessInWidgetTests: false) must NEVER mark verified!
+        final simService = AutoSymbioticService(
+          sandboxRunner: SandboxedToolRunner(
+            allowSubprocessInWidgetTests: false,
+            sandboxRootPath: tempRoot.path,
+          ),
+          workshopDirectory: Directory('${tempRoot.path}/ws_sim'),
         );
-        final engine = CapabilityEngine(
-          loader: loader,
-          draftWorkspaceManager: draftManager,
-          logger: logger,
+        final pipelineSkill = simService.synthesizeSkill(
+          goal: 'Tóm tắt báo cáo bán hàng hằng tuần',
         );
-        final foundry = CapabilityFoundryService(
-          engine: engine,
-          draftManager: draftManager,
-          installDir: manifestsDir,
-          logger: logger,
-        );
+        expect(pipelineSkill.verificationStatus, equals('draft'));
+        expect(pipelineSkill.selfTestPassed, isFalse);
+        expect(pipelineSkill.isVerified, isFalse);
+        expect(simService.buildDynamicToolDescriptors(), isEmpty);
 
-        // Shell-based proposal is rejected immediately fail-closed.
+        final simScriptSkill = simService.synthesizeSkill(
+          goal: 'Chạy kịch bản thử nghiệm',
+          toolName: 'sim_only_tool',
+          runtime: 'python',
+          scriptCode: 'print("{\\"processedCount\\": 1}")',
+        );
+        expect(simScriptSkill.verificationStatus, equals('draft'));
+        expect(simScriptSkill.isVerified, isFalse);
+        expect(simService.buildDynamicToolDescriptors(), isEmpty);
+
+        final imported = simService.bridgeSkillMarkdown(
+          action: 'import_skill_md',
+          markdownContent:
+              '---\nname: "Demo Import"\ndescription: "Check docs"\n---\n# Demo\n',
+        );
+        final importedEntry = simService.findForgedSkill(imported.skillId);
+        expect(importedEntry, isNotNull);
+        expect(importedEntry!.verificationStatus, equals('draft'));
+        expect(importedEntry.isVerified, isFalse);
+
+        // 2. Real subprocess runner promotes ONLY passing scripts to 'verified'!
+        final realService = AutoSymbioticService(
+          sandboxRunner: SandboxedToolRunner(
+            allowSubprocessInWidgetTests: true,
+            sandboxRootPath: tempRoot.path,
+          ),
+          workshopDirectory: Directory('${tempRoot.path}/ws_real'),
+        );
+        final failing = realService.synthesizeSkill(
+          goal: 'Broken real script',
+          toolName: 'real_broken',
+          runtime: 'python',
+          scriptCode: 'import sys\nsys.exit(1)',
+        );
+        expect(failing.verificationStatus, equals('draft'));
+        expect(failing.isVerified, isFalse);
+        expect(realService.buildDynamicToolDescriptors(), isEmpty);
+
+        final passing = realService.synthesizeSkill(
+          goal: 'Passing real script',
+          toolName: 'real_passing',
+          runtime: 'python',
+          scriptCode: 'import json\nprint(json.dumps({"processedCount": 2}))',
+        );
+        expect(passing.verificationStatus, equals('verified'));
+        expect(passing.isVerified, isTrue);
         expect(
-          () => foundry.proposeManifest(
-            id: 'bad_foundry_shell',
-            capability: 'document.convert',
-            description: 'Must fail',
-            binary: 'powershell',
-            argvTemplate: const <String>['-Command', '{inputPath}'],
-            inputs: <CapabilityInputSpec>[
-              CapabilityInputSpec(name: 'inputPath', type: CapabilityInputType.path),
-            ],
-          ),
-          throwsFormatException,
+          realService.buildDynamicToolDescriptors().map((d) => d.name),
+          contains('forge.custom_real_passing'),
         );
-
-        final candidate = foundry.proposeManifest(
-          id: 'foundry_pdf_gen',
-          capability: 'document.convert',
-          description: 'Synthesized declarative PDF converter manifest.',
-          binary: pythonBin,
-          fromFormats: const <String>['txt'],
-          toFormats: const <String>['pdf'],
-          argvTemplate: <String>[
-            helperScript.path,
-            '{label}',
-            '{inputPath}',
-            '{outputPath}',
-            '{mode}',
-          ],
-          inputs: <CapabilityInputSpec>[
-            CapabilityInputSpec(name: 'label', type: CapabilityInputType.string),
-            CapabilityInputSpec(name: 'inputPath', type: CapabilityInputType.path),
-            CapabilityInputSpec(
-              name: 'outputPath',
-              type: CapabilityInputType.path,
-              isOutputPath: true,
-            ),
-            CapabilityInputSpec(
-              name: 'mode',
-              type: CapabilityInputType.enumValue,
-              enumValues: const <String>['good', 'bad_magic'],
-            ),
-          ],
-          verifyFiles: <CapabilityVerifyFileSpec>[
-            CapabilityVerifyFileSpec(
-              pathTemplate: '{outputPath}',
-              minBytes: 16,
-              magic: '25504446',
-            ),
-          ],
-        );
-        expect(candidate.provenance.kind, equals(CapabilityProvenanceKind.foundry));
-        expect(candidate.provenance.approved, isFalse);
-
-        final outPath =
-            '${workspaceDir.path}${Platform.pathSeparator}foundry_out.pdf';
-        final shellPolicy = policyStore.evaluator.policy!.shellControl;
-
-        // 1. Failing golden run (bad_magic) cannot be promoted!
-        final failVerify = await foundry.verifyCandidateInDraft(
-          candidate: candidate,
-          workspacePath: workspaceDir.path,
-          goldenInputs: <String, Object?>{
-            'label': 'golden',
-            'inputPath':
-                '${workspaceDir.path}${Platform.pathSeparator}input.txt',
-            'outputPath': outPath,
-            'mode': 'bad_magic',
-          },
-          shellControl: shellPolicy,
-          nowUtc: now,
-        );
-        expect(failVerify.passed, isFalse);
-        expect(failVerify.errorCode, equals('expected_output_mismatch'));
-        expect(File(outPath).existsSync(), isFalse);
-        await expectLater(
-          () => foundry.approveAndInstall(
-            verification: failVerify,
-            ownerApproved: true,
-            nowUtc: now,
-          ),
-          throwsStateError,
-        );
-
-        // 2. Passing golden run in DraftWorkspace leaves real workspace 100% untouched!
-        final okVerify = await foundry.verifyCandidateInDraft(
-          candidate: candidate,
-          workspacePath: workspaceDir.path,
-          goldenInputs: <String, Object?>{
-            'label': 'golden',
-            'inputPath':
-                '${workspaceDir.path}${Platform.pathSeparator}input.txt',
-            'outputPath': outPath,
-            'mode': 'good',
-          },
-          shellControl: shellPolicy,
-          nowUtc: now,
-        );
-        expect(okVerify.passed, isTrue, reason: okVerify.errorCode);
-        expect(okVerify.observedBinarySha256, isNotNull);
-        expect(
-          File(outPath).existsSync(),
-          isFalse,
-          reason: 'Draft verification must NEVER modify the real workspace',
-        );
-        expect(draftManager.activeDraftCount, equals(0));
-
-        // 3. Without ownerApproved == true, promotion fails closed!
-        await expectLater(
-          () => foundry.approveAndInstall(
-            verification: okVerify,
-            ownerApproved: false,
-            nowUtc: now,
-          ),
-          throwsStateError,
-        );
-        expect(await engine.listDetectedAdapters(), isEmpty);
-
-        // 4. With verified + ownerApproved, manifest is pinned & advertised!
-        final installed = await foundry.approveAndInstall(
-          verification: okVerify,
-          ownerApproved: true,
-          nowUtc: now,
-        );
-        expect(installed.provenance.approved, isTrue);
-        expect(installed.provenance.manifestSha256, isNotNull);
-        expect(installed.provenance.binarySha256, equals(okVerify.observedBinarySha256));
-
-        final advertised = await engine.listDetectedAdapters();
-        expect(advertised.map((a) => a.manifest.id), equals(['foundry_pdf_gen']));
       },
     );
   });
+
+  group(
+    'P4.4 (F2): Manifest Foundry (manifests only + DraftWorkspace verify + owner approval)',
+    () {
+      test(
+        'verifies candidate inside isolated DraftWorkspace leaving real workspace untouched and promotes only after pass + owner approval',
+        () async {
+          final pythonBin = Platform.isWindows ? 'python' : 'python3';
+          final loader = CapabilityManifestLoader(
+            manifestDirectories: <Directory>[manifestsDir],
+            logger: logger,
+          );
+          final engine = CapabilityEngine(
+            loader: loader,
+            draftWorkspaceManager: draftManager,
+            logger: logger,
+          );
+          final foundry = CapabilityFoundryService(
+            engine: engine,
+            draftManager: draftManager,
+            installDir: manifestsDir,
+            logger: logger,
+          );
+
+          // Shell-based proposal is rejected immediately fail-closed.
+          expect(
+            () => foundry.proposeManifest(
+              id: 'bad_foundry_shell',
+              capability: 'document.convert',
+              description: 'Must fail',
+              binary: 'powershell',
+              argvTemplate: const <String>['-Command', '{inputPath}'],
+              inputs: <CapabilityInputSpec>[
+                CapabilityInputSpec(
+                  name: 'inputPath',
+                  type: CapabilityInputType.path,
+                ),
+              ],
+            ),
+            throwsFormatException,
+          );
+
+          final candidate = foundry.proposeManifest(
+            id: 'foundry_pdf_gen',
+            capability: 'document.convert',
+            description: 'Synthesized declarative PDF converter manifest.',
+            binary: pythonBin,
+            fromFormats: const <String>['txt'],
+            toFormats: const <String>['pdf'],
+            argvTemplate: <String>[
+              helperScript.path,
+              '{label}',
+              '{inputPath}',
+              '{outputPath}',
+              '{mode}',
+            ],
+            inputs: <CapabilityInputSpec>[
+              CapabilityInputSpec(
+                name: 'label',
+                type: CapabilityInputType.string,
+              ),
+              CapabilityInputSpec(
+                name: 'inputPath',
+                type: CapabilityInputType.path,
+              ),
+              CapabilityInputSpec(
+                name: 'outputPath',
+                type: CapabilityInputType.path,
+                isOutputPath: true,
+              ),
+              CapabilityInputSpec(
+                name: 'mode',
+                type: CapabilityInputType.enumValue,
+                enumValues: const <String>['good', 'bad_magic'],
+              ),
+            ],
+            verifyFiles: <CapabilityVerifyFileSpec>[
+              CapabilityVerifyFileSpec(
+                pathTemplate: '{outputPath}',
+                minBytes: 16,
+                magic: '25504446',
+              ),
+            ],
+          );
+          expect(
+            candidate.provenance.kind,
+            equals(CapabilityProvenanceKind.foundry),
+          );
+          expect(candidate.provenance.approved, isFalse);
+
+          final outPath =
+              '${workspaceDir.path}${Platform.pathSeparator}foundry_out.pdf';
+          final shellPolicy = policyStore.evaluator.policy!.shellControl;
+
+          // 1. Failing golden run (bad_magic) cannot be promoted!
+          final failVerify = await foundry.verifyCandidateInDraft(
+            candidate: candidate,
+            workspacePath: workspaceDir.path,
+            goldenInputs: <String, Object?>{
+              'label': 'golden',
+              'inputPath':
+                  '${workspaceDir.path}${Platform.pathSeparator}input.txt',
+              'outputPath': outPath,
+              'mode': 'bad_magic',
+            },
+            shellControl: shellPolicy,
+            nowUtc: now,
+          );
+          expect(failVerify.passed, isFalse);
+          expect(failVerify.errorCode, equals('expected_output_mismatch'));
+          expect(File(outPath).existsSync(), isFalse);
+          await expectLater(
+            () => foundry.approveAndInstall(
+              verification: failVerify,
+              ownerApproved: true,
+              nowUtc: now,
+            ),
+            throwsStateError,
+          );
+
+          // 2. Passing golden run in DraftWorkspace leaves real workspace 100% untouched!
+          final okVerify = await foundry.verifyCandidateInDraft(
+            candidate: candidate,
+            workspacePath: workspaceDir.path,
+            goldenInputs: <String, Object?>{
+              'label': 'golden',
+              'inputPath':
+                  '${workspaceDir.path}${Platform.pathSeparator}input.txt',
+              'outputPath': outPath,
+              'mode': 'good',
+            },
+            shellControl: shellPolicy,
+            nowUtc: now,
+          );
+          expect(okVerify.passed, isTrue, reason: okVerify.errorCode);
+          expect(okVerify.observedBinarySha256, isNotNull);
+          expect(
+            File(outPath).existsSync(),
+            isFalse,
+            reason: 'Draft verification must NEVER modify the real workspace',
+          );
+          expect(draftManager.activeDraftCount, equals(0));
+
+          // 3. Without ownerApproved == true, promotion fails closed!
+          await expectLater(
+            () => foundry.approveAndInstall(
+              verification: okVerify,
+              ownerApproved: false,
+              nowUtc: now,
+            ),
+            throwsStateError,
+          );
+          expect(await engine.listDetectedAdapters(), isEmpty);
+
+          // 4. With verified + ownerApproved, manifest is pinned & advertised!
+          final installed = await foundry.approveAndInstall(
+            verification: okVerify,
+            ownerApproved: true,
+            nowUtc: now,
+          );
+          expect(installed.provenance.approved, isTrue);
+          expect(installed.provenance.manifestSha256, isNotNull);
+          expect(
+            installed.provenance.binarySha256,
+            equals(okVerify.observedBinarySha256),
+          );
+
+          final advertised = await engine.listDetectedAdapters();
+          expect(
+            advertised.map((a) => a.manifest.id),
+            equals(['foundry_pdf_gen']),
+          );
+        },
+      );
+
+      test(
+        'bundledSeedDirectories resolves Release flutter_assets next to executable',
+        () {
+          final sep = Platform.pathSeparator;
+          final winDirs = CapabilityManifestLoader.bundledSeedDirectories(
+            resolvedExecutableOverride: 'C:${sep}App${sep}xuna_desktop.exe',
+            currentDirectoryOverride: 'C:${sep}Users${sep}owner',
+            isMacOsOverride: false,
+          );
+          expect(
+            winDirs.first.path,
+            equals(
+              'C:${sep}App${sep}data${sep}flutter_assets${sep}assets${sep}capabilities',
+            ),
+          );
+          expect(
+            winDirs.last.path,
+            equals('C:${sep}Users${sep}owner${sep}assets${sep}capabilities'),
+          );
+
+          final macDirs = CapabilityManifestLoader.bundledSeedDirectories(
+            resolvedExecutableOverride:
+                '/Applications/XUNA.app/Contents/MacOS/XUNA',
+            currentDirectoryOverride: '/tmp',
+            isMacOsOverride: true,
+          );
+          expect(
+            macDirs.first.path,
+            contains(
+              'Frameworks${sep}App.framework${sep}Resources${sep}flutter_assets${sep}assets${sep}capabilities',
+            ),
+          );
+        },
+      );
+    },
+  );
 }
