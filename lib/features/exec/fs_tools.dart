@@ -28,9 +28,24 @@ XunaHostChannelException _fail(String code, [XtpStatus s = XtpStatus.failed]) =>
     XunaHostChannelException(status: s, errorCode: code);
 
 /// Normalizes and re-checks [raw] for [access]; returns the normalized path.
+/// When `arguments['draftId']` is set, maps the workspace path into the
+/// isolated draft copy so the original workspace stays untouched (`ADR-0019` §3).
 String _guard(ToolExecutionContext context, String raw, FsAccessKind access) {
   final windows = Platform.isWindows;
   final home = context.execFsContext?.homeDirectory ?? hostHomeDirectory();
+  final draftId = context.arguments['draftId'] as String?;
+  if (draftId != null) {
+    final draftManager = context.draftWorkspaceManager;
+    if (draftManager == null) {
+      throw _fail('platform_unsupported', XtpStatus.unsupported);
+    }
+    return draftManager.resolvePathInDraft(
+      draftId: draftId,
+      rawPath: raw,
+      homeDirectory: home,
+      nowUtc: context.nowUtc,
+    );
+  }
   final normalized = normalizeHostPath(
     raw,
     homeDirectory: home,
@@ -129,7 +144,9 @@ Future<({int bytes, bool created, String sha})> _writeWithOptionalJournal({
   final journal = context.fsUndoJournal;
   final shellControl = context.policy?.shellControl;
   final home = context.execFsContext?.homeDirectory ?? hostHomeDirectory();
-  if (journal != null &&
+  final isDraftMode = context.arguments['draftId'] != null;
+  if (!isDraftMode &&
+      journal != null &&
       journal.canJournalSingleWrite(
         rawPath: path,
         newBytesLength: bytes.length,

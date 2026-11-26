@@ -10,6 +10,7 @@ library;
 
 export 'src/canonical_json.dart';
 export 'src/crypto.dart';
+export 'src/draft_manifest.dart';
 export 'src/frames.dart';
 export 'src/policy.dart';
 export 'src/schemas.dart';

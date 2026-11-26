@@ -20,6 +20,13 @@ final Uint8List approvalProofDomain = Uint8List.fromList(
   <int>[...ascii.encode('xuna.approval.v1'), 0x00],
 );
 
+/// Domain prefix for `xuna.approval.v2\0` (17 bytes, `ADR-0019` §4 / `W4-M4`).
+final Uint8List approvalV2ProofDomain = Uint8List.fromList(
+  <int>[...ascii.encode('xuna.approval.v2'), 0x00],
+);
+
+final RegExp _lowerSha256HexPattern = RegExp(r'^[0-9a-f]{64}$');
+
 const int hostProofNonceSize = 32;
 const int hostEnrollmentCodeSize = 16;
 const int hostPublicKeySize = 65;
@@ -313,6 +320,34 @@ Uint8List approvalProofMessage({
   final body = utf8.encode('$approvalId|$argsSha256|$hostId|$expiresAt');
   final builder = BytesBuilder(copy: false)
     ..add(approvalProofDomain)
+    ..add(body);
+  return builder.toBytes();
+}
+
+/// Builds the canonical phone-signed effect-bound approval message (`ADR-0019` §4 / `W4-M4`):
+/// `b"xuna.approval.v2\x00" || approvalId || "|" || effectSha256 || "|" || hostId || "|" || expiresAt`.
+///
+/// Domain-separated from `xuna.approval.v1\x00` and `xuna.preapproval.v1\x00`.
+Uint8List approvalV2ProofMessage({
+  required String approvalId,
+  required String effectSha256,
+  required String hostId,
+  required String expiresAt,
+}) {
+  if (approvalId.isEmpty ||
+      effectSha256.isEmpty ||
+      hostId.isEmpty ||
+      expiresAt.isEmpty) {
+    throw const FormatException('Approval v2 proof fields must not be empty');
+  }
+  if (!_lowerSha256HexPattern.hasMatch(effectSha256)) {
+    throw const FormatException(
+      'Approval v2 effectSha256 must be 64 lowercase hex characters',
+    );
+  }
+  final body = utf8.encode('$approvalId|$effectSha256|$hostId|$expiresAt');
+  final builder = BytesBuilder(copy: false)
+    ..add(approvalV2ProofDomain)
     ..add(body);
   return builder.toBytes();
 }

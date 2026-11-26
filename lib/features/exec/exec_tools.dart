@@ -88,14 +88,38 @@ class ExecRunTool extends HostToolHandler {
     }
     final args = context.arguments;
     final fsContext = context.execFsContext;
+    final draftId = args['draftId'] as String?;
     final rawCwd = args['cwd'] as String? ?? fsContext?.homeDirectory;
-    final cwd = rawCwd == null
-        ? null
-        : normalizeHostPath(
-            rawCwd,
-            homeDirectory: fsContext?.homeDirectory,
-            windows: Platform.isWindows,
-          );
+    final String? cwd;
+    if (draftId != null) {
+      final draftManager = context.draftWorkspaceManager;
+      if (draftManager == null) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.unsupported,
+          errorCode: 'platform_unsupported',
+        );
+      }
+      if (context.evaluation.effectiveRisk >= RiskTier.r3) {
+        throw const XunaHostChannelException(
+          status: XtpStatus.denied,
+          errorCode: 'draft_r3_forbidden',
+        );
+      }
+      cwd = draftManager.resolveCwdInDraft(
+        draftId: draftId,
+        rawCwd: args['cwd'] as String?,
+        homeDirectory: fsContext?.homeDirectory ?? hostHomeDirectory(),
+        nowUtc: context.nowUtc,
+      );
+    } else {
+      cwd = rawCwd == null
+          ? null
+          : normalizeHostPath(
+              rawCwd,
+              homeDirectory: fsContext?.homeDirectory,
+              windows: Platform.isWindows,
+            );
+    }
     if (cwd == null || !Directory(cwd).existsSync()) {
       throw const XunaHostChannelException(
         status: XtpStatus.invalidArgs,
@@ -120,7 +144,7 @@ class ExecRunTool extends HostToolHandler {
       500,
       min((args['yieldMs'] as int?) ?? 10000, deadlineMs - 1500),
     );
-    final expectFiles = args.containsKey('expectFiles')
+    var expectFiles = args.containsKey('expectFiles')
         ? ExpectedFileSpec.parseList(args['expectFiles'])
         : null;
     if (args.containsKey('expectFiles') && expectFiles == null) {
@@ -128,6 +152,25 @@ class ExecRunTool extends HostToolHandler {
         status: XtpStatus.invalidArgs,
         errorCode: 'schema_mismatch',
       );
+    }
+    if (draftId != null && expectFiles != null) {
+      final draftManager = context.draftWorkspaceManager!;
+      final home = fsContext?.homeDirectory ?? hostHomeDirectory();
+      expectFiles = expectFiles
+          .map(
+            (spec) => ExpectedFileSpec(
+              path: draftManager.resolvePathInDraft(
+                draftId: draftId,
+                rawPath: spec.path,
+                homeDirectory: home,
+                nowUtc: context.nowUtc,
+              ),
+              minBytes: spec.minBytes,
+              magic: spec.magic,
+              sha256: spec.sha256,
+            ),
+          )
+          .toList(growable: false);
     }
     final command = args['command']! as String;
     final ExecTaskSnapshot snapshot;
@@ -144,11 +187,17 @@ class ExecRunTool extends HostToolHandler {
         verifyOutputs: expectFiles == null
             ? null
             : () => verifyExpectedFiles(
-                expectFiles,
+                expectFiles!,
                 homeDirectory: fsContext?.homeDirectory,
               ),
       );
     } on XunaHostChannelException catch (error) {
+      if (draftId != null) {
+        context.draftWorkspaceManager?.recordExecCheckOutcome(
+          draftId,
+          completed: false,
+        );
+      }
       if (error.errorCode == 'exec_spawn_failed') {
         final token = HostRemediationCatalog.extractMissingCommandToken(
           command,
@@ -173,6 +222,15 @@ class ExecRunTool extends HostToolHandler {
         }
       }
       rethrow;
+    }
+
+    if (draftId != null) {
+      context.draftWorkspaceManager?.recordExecCheckOutcome(
+        draftId,
+        completed:
+            snapshot.status == ExecTaskStatus.completed &&
+            snapshot.errorCode == null,
+      );
     }
 
     if (snapshot.status == ExecTaskStatus.failed &&

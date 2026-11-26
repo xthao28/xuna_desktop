@@ -14,6 +14,8 @@ import 'package:xuna_desktop/features/discovery/auto_symbiotic_service.dart';
 import 'package:xuna_desktop/features/discovery/auto_tv_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
+import 'package:xuna_desktop/features/exec/draft_tools.dart';
+import 'package:xuna_desktop/features/exec/draft_workspace_manager.dart';
 import 'package:xuna_desktop/features/exec/exec_host_environment.dart';
 import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
 import 'package:xuna_desktop/features/exec/exec_tools.dart';
@@ -237,9 +239,13 @@ class ToolExecutionContext {
     this.protocolTaskRegistry,
     this.acpHarnessAdapter,
     this.hasVerifiedR3Approval = false,
+    this.approval,
+    this.hostId,
+    this.pinnedPhonePublicKeys = const <Uint8List>[],
     this.execRegistry,
     this.execFsContext,
     this.fsUndoJournal,
+    this.draftWorkspaceManager,
     this.deadlineMs,
     this.onToolchainRefreshRequested,
   });
@@ -252,6 +258,18 @@ class ToolExecutionContext {
 
   /// Crash-safe local file undo WAL journal (`ADR-0019` §1).
   final FsUndoJournal? fsUndoJournal;
+
+  /// Isolated draft workspace manager (`ADR-0019` §3–§4).
+  final DraftWorkspaceManager? draftWorkspaceManager;
+
+  /// Approval token attached to this `tools/call` (for `draft.apply` v2 gate).
+  final ApprovalToken? approval;
+
+  /// Enrolled host UUID (for `draft.apply` v2 signature verification).
+  final String? hostId;
+
+  /// Owner's pinned phone P-256 public keys.
+  final List<Uint8List> pinnedPhonePublicKeys;
 
   /// The `tools/call` deadline (`xuna/deadlineMs`), when known.
   final int? deadlineMs;
@@ -385,6 +403,7 @@ class HostToolDispatcher {
     AcpHarnessAdapter? acpHarnessAdapter,
     ExecProcessRegistry? execRegistry,
     FsUndoJournal? fsUndoJournal,
+    DraftWorkspaceManager? draftWorkspaceManager,
     void Function({bool forceRefresh})? onToolchainRefreshRequested,
     List<HostToolHandler>? handlers,
   }) : execRegistry =
@@ -395,6 +414,14 @@ class HostToolDispatcher {
            FsUndoJournal(
              rootDir: Directory(
                '${auditStore.auditDir.parent.path}${Platform.pathSeparator}undo',
+             ),
+             logger: logger,
+           ),
+       draftWorkspaceManager =
+           draftWorkspaceManager ??
+           DraftWorkspaceManager(
+             rootDir: Directory(
+               '${auditStore.auditDir.parent.path}${Platform.pathSeparator}drafts',
              ),
              logger: logger,
            ),
@@ -434,6 +461,7 @@ class HostToolDispatcher {
           ...defaultBrowserToolHandlers(this.browserEngineProvider),
           ...defaultFsToolHandlers,
           ...defaultExecToolHandlers,
+          ...defaultDraftToolHandlers,
           if (computerUseManager != null)
             ...computerUseManager!.buildHandlers(),
         ];
@@ -475,6 +503,9 @@ class HostToolDispatcher {
 
   /// Crash-safe local file undo WAL journal (`ADR-0019` §1).
   final FsUndoJournal fsUndoJournal;
+
+  /// Isolated draft workspace manager (`ADR-0019` §3–§4).
+  final DraftWorkspaceManager draftWorkspaceManager;
   final EmergencyStopController stopController;
   final ContentFreeLogger logger;
   final EnrollmentStateStore? enrollmentStore;
@@ -565,6 +596,7 @@ class HostToolDispatcher {
     'fs.grep',
     'exec.status',
     'exec.cancel',
+    'draft.manifest',
   };
 
   /// Builds the `tools/list` manifest with current OS permission states.
@@ -639,6 +671,7 @@ class HostToolDispatcher {
     for (final token in _inFlightByRequestId.values) {
       token.cancel('stopped:${reason.wire}');
     }
+    draftWorkspaceManager.discardAll(reason: reason.wire);
   }
 
   /// Dispatches a `tools/call` request following the 8 rules in `UDC-3` §5.6.5:
@@ -875,6 +908,10 @@ class HostToolDispatcher {
 
       final execContext = ToolExecutionContext(
         hasVerifiedR3Approval: hasVerifiedR3Approval,
+        approval: params.approval,
+        hostId: enrolled?.hostId,
+        pinnedPhonePublicKeys:
+            enrolled?.pinnedPhonePublicKeyBytes ?? const <Uint8List>[],
         arguments: effectiveArguments,
         evaluation: evaluation,
         policy: evaluator.policy,
@@ -897,6 +934,7 @@ class HostToolDispatcher {
         execRegistry: execRegistry,
         execFsContext: buildExecFsHostContext(execRegistry),
         fsUndoJournal: fsUndoJournal,
+        draftWorkspaceManager: draftWorkspaceManager,
         deadlineMs: params.deadlineMs,
         onToolchainRefreshRequested: _onToolchainRefreshRequested,
       );
@@ -1138,6 +1176,7 @@ class HostToolDispatcher {
     }
 
     XtpPreflightPreview? preview;
+    String? effectSha256;
     if (params.name == 'fs.write_file' ||
         params.name == 'fs.patch_file' ||
         params.name == 'exec.run') {
@@ -1147,6 +1186,20 @@ class HostToolDispatcher {
         shellControl: policyStore.evaluator.policy?.shellControl,
         homeDirectory: hostHomeDirectory(),
       );
+    } else if (params.name == 'draft.apply') {
+      try {
+        final draftApplyPreview = draftWorkspaceManager.preflightApply(
+          draftId: params.arguments['draftId']! as String,
+          requestedEffectSha256: params.arguments['effectSha256']! as String,
+          nowUtc: now,
+        );
+        effectSha256 = draftApplyPreview.effectSha256;
+        preview = draftApplyPreview.preview;
+      } on XunaHostChannelException catch (error) {
+        return refuse(error.status, error.errorCode);
+      } catch (_) {
+        return refuse(XtpStatus.failed, 'draft_not_found');
+      }
     }
 
     logger.info('tool.preflight', <String, Object?>{
@@ -1163,6 +1216,7 @@ class HostToolDispatcher {
       elementRole: elementRole,
       elementName: elementName,
       preview: preview,
+      effectSha256: effectSha256,
     );
   }
 

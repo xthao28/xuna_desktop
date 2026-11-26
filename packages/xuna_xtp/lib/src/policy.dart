@@ -200,15 +200,27 @@ class HostPolicyEvaluator {
         : effectiveRisk >= RiskTier.r2;
 
     if (requiresApproval) {
-      final approvalError = effectiveRisk >= RiskTier.r3
-          ? verifyPhoneSignedApproval(
-              approval: approval,
-              arguments: arguments,
-              nowUtc: now,
-              hostId: hostId,
-              pinnedPhonePublicKeys: pinnedPhonePublicKeys,
-            )
-          : _verifyBoundApproval(approval, arguments, now);
+      final String? approvalError;
+      if (toolName == 'draft.apply') {
+        approvalError = verifyPhoneSignedEffectApproval(
+          approval: approval,
+          arguments: arguments,
+          expectedEffectSha256: arguments['effectSha256'] as String? ?? '',
+          nowUtc: now,
+          hostId: hostId,
+          pinnedPhonePublicKeys: pinnedPhonePublicKeys,
+        );
+      } else if (effectiveRisk >= RiskTier.r3) {
+        approvalError = verifyPhoneSignedApproval(
+          approval: approval,
+          arguments: arguments,
+          nowUtc: now,
+          hostId: hostId,
+          pinnedPhonePublicKeys: pinnedPhonePublicKeys,
+        );
+      } else {
+        approvalError = _verifyBoundApproval(approval, arguments, now);
+      }
       if (approvalError != null) {
         return PolicyEvaluationResult(
           allowed: false,
@@ -246,8 +258,9 @@ String? _verifyBoundApproval(
   return null;
 }
 
-/// Verifies an R3 approval: bound to [arguments] and unexpired, scope `once`,
-/// and signed by one of the owner's enrolled phone keys (UDC-7 S7.5).
+/// Verifies an R3 `xuna.approval.v1` approval: bound to [arguments] and
+/// unexpired, scope `once`, version `1`, and signed by one of the owner's
+/// enrolled phone keys (UDC-7 S7.5).
 ///
 /// Returns `null` when the approval is valid, otherwise the XTP error code.
 /// The Desktop Agent also calls this when the risk comes from the live screen
@@ -263,6 +276,7 @@ String? verifyPhoneSignedApproval({
   final boundError = _verifyBoundApproval(approval, arguments, nowUtc.toUtc());
   if (boundError != null) return boundError;
   final token = approval!;
+  if (token.version != 1) return 'approval_version_mismatch';
   if (token.scope != 'once') return 'r3_requires_once_scope';
   final sig = token.signature;
   if (sig == null ||
@@ -277,6 +291,67 @@ String? verifyPhoneSignedApproval({
     hostId: hostId,
     expiresAt: token.expiresAtWire,
   );
+  return _verifyPhoneSignatureAgainstPinned(
+    token: token,
+    proofMessage: proofMsg,
+    signature: sig,
+    pinnedPhonePublicKeys: pinnedPhonePublicKeys,
+  );
+}
+
+/// Verifies an effect-bound `xuna.approval.v2` approval for `draft.apply`
+/// (`ADR-0019` §4 / `W4-M4`): bound to [arguments], unexpired, `version == 2`,
+/// `scope == "once"`, `effectSha256 == expectedEffectSha256`, and signed by an
+/// enrolled phone P-256 key over `approvalV2ProofMessage`.
+///
+/// Rejects `v1` tokens, mismatched `effectSha256`, wrong domain, expired, or
+/// unpinned signatures fail-closed.
+String? verifyPhoneSignedEffectApproval({
+  required ApprovalToken? approval,
+  required Map<String, Object?> arguments,
+  required String expectedEffectSha256,
+  required DateTime nowUtc,
+  String? hostId,
+  List<Uint8List> pinnedPhonePublicKeys = const <Uint8List>[],
+}) {
+  final boundError = _verifyBoundApproval(approval, arguments, nowUtc.toUtc());
+  if (boundError != null) return boundError;
+  final token = approval!;
+  if (token.version != 2) return 'approval_version_mismatch';
+  if (token.scope != 'once') return 'r3_requires_once_scope';
+  final effectHash = token.effectSha256;
+  if (effectHash == null ||
+      expectedEffectSha256.isEmpty ||
+      effectHash != expectedEffectSha256) {
+    return 'effect_sha256_mismatch';
+  }
+  final sig = token.signature;
+  if (sig == null ||
+      hostId == null ||
+      hostId.isEmpty ||
+      pinnedPhonePublicKeys.isEmpty) {
+    return 'approval_signature_invalid';
+  }
+  final proofMsg = approvalV2ProofMessage(
+    approvalId: token.approvalId,
+    effectSha256: effectHash,
+    hostId: hostId,
+    expiresAt: token.expiresAtWire,
+  );
+  return _verifyPhoneSignatureAgainstPinned(
+    token: token,
+    proofMessage: proofMsg,
+    signature: sig,
+    pinnedPhonePublicKeys: pinnedPhonePublicKeys,
+  );
+}
+
+String? _verifyPhoneSignatureAgainstPinned({
+  required ApprovalToken token,
+  required Uint8List proofMessage,
+  required Uint8List signature,
+  required List<Uint8List> pinnedPhonePublicKeys,
+}) {
   final candidateKeys = <Uint8List>[];
   final presentedKey = token.publicKey;
   if (presentedKey != null) {
@@ -288,7 +363,11 @@ String? verifyPhoneSignedApproval({
     candidateKeys.addAll(pinnedPhonePublicKeys);
   }
   final verified = candidateKeys.any(
-    (k) => verifyP256Signature(publicKey: k, message: proofMsg, signature: sig),
+    (k) => verifyP256Signature(
+      publicKey: k,
+      message: proofMessage,
+      signature: signature,
+    ),
   );
   return verified ? null : 'approval_signature_invalid';
 }

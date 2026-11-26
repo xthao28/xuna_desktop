@@ -14,6 +14,7 @@ import 'package:xuna_desktop/features/computer_use/computer_use_session_manager.
 import 'package:xuna_desktop/features/discovery/auto_app_scanner.dart';
 import 'package:xuna_desktop/features/discovery/auto_workspace_indexer.dart';
 import 'package:xuna_desktop/features/enrollment/enrollment_state_store.dart';
+import 'package:xuna_desktop/features/exec/draft_workspace_manager.dart';
 import 'package:xuna_desktop/features/exec/fs_undo_journal.dart';
 import 'package:xuna_desktop/features/lan/lan_offline_server.dart';
 import 'package:xuna_desktop/features/policy/host_policy_store.dart';
@@ -87,6 +88,10 @@ Future<void> main() async {
     stopController: stopController,
   );
   final fsUndoJournal = FsUndoJournal(rootDir: paths.undoDir, logger: logger);
+  final draftWorkspaceManager = DraftWorkspaceManager(
+    rootDir: paths.draftsDir,
+    logger: logger,
+  );
 
   final dispatcher = HostToolDispatcher(
     policyStore: policyStore,
@@ -100,6 +105,7 @@ Future<void> main() async {
     browserEngineProvider: cdpBrowserProvider,
     protocolTaskRegistry: protocolTaskRegistry,
     fsUndoJournal: fsUndoJournal,
+    draftWorkspaceManager: draftWorkspaceManager,
   );
 
   final lanServer = LanOfflineServer(
@@ -156,6 +162,7 @@ Future<void> main() async {
       protocolTaskRegistry: protocolTaskRegistry,
       execRegistry: dispatcher.execRegistry,
       fsUndoJournal: fsUndoJournal,
+      draftWorkspaceManager: draftWorkspaceManager,
       appScanner: appScanner,
       workspaceIndexer: workspaceIndexer,
       startupLaunch: StartupLaunchService(),

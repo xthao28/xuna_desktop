@@ -440,11 +440,19 @@ class XtpResponse extends XtpFrame {
     String? elementRole,
     String? elementName,
     XtpPreflightPreview? preview,
+    String? effectSha256,
   }) {
-    if (preview != null && status != XtpStatus.ok) {
+    if ((preview != null || effectSha256 != null) && status != XtpStatus.ok) {
       throw XtpProtocolException(
         jsonRpcCode: JsonRpcErrorCode.invalidParams,
-        message: 'A refused preflight must not carry preview',
+        message: 'A refused preflight must not carry preview or effectSha256',
+        requestId: id,
+      );
+    }
+    if (effectSha256 != null && !RegExp(r'^[0-9a-f]{64}$').hasMatch(effectSha256)) {
+      throw XtpProtocolException(
+        jsonRpcCode: JsonRpcErrorCode.invalidParams,
+        message: 'Invalid preflight effectSha256 hex',
         requestId: id,
       );
     }
@@ -459,6 +467,7 @@ class XtpResponse extends XtpFrame {
           'name': elementName,
         },
       if (preview != null) 'preview': preview.toJson(),
+      if (effectSha256 != null) 'effectSha256': effectSha256,
     };
     return XtpResponse(
       id: id,
@@ -2655,6 +2664,7 @@ void _validatePreflightResult(Map<String, Object?> preflight) {
       'errorCode',
       'element',
       'preview',
+      'effectSha256',
     },
   );
   final status = XtpStatus.fromWire(_requireStringParam(preflight, 'status'));
@@ -2670,9 +2680,10 @@ void _validatePreflightResult(Map<String, Object?> preflight) {
     }
     if (preflight.containsKey('effectiveRisk') ||
         preflight.containsKey('element') ||
-        preflight.containsKey('preview')) {
+        preflight.containsKey('preview') ||
+        preflight.containsKey('effectSha256')) {
       throw const FormatException(
-        'A refused preflight carries no risk, element or preview',
+        'A refused preflight carries no risk, element, preview or effectSha256',
       );
     }
   }
@@ -2693,6 +2704,12 @@ void _validatePreflightResult(Map<String, Object?> preflight) {
   }
   if (preflight.containsKey('preview')) {
     XtpPreflightPreview.fromJson(_requireMapParam(preflight, 'preview'));
+  }
+  if (preflight.containsKey('effectSha256')) {
+    final effectHash = _requireStringParam(preflight, 'effectSha256');
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(effectHash)) {
+      throw const FormatException('Invalid preflight effectSha256');
+    }
   }
 }
 

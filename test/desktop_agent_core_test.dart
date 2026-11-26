@@ -704,8 +704,8 @@ void main() {
         final listResp = sentFrames.last as XtpResponse;
         expect(listResp.id, 77);
         final toolsList = listResp.result['tools'] as List<Object?>;
-        // 79 pre-Wave-3 tools + 5 fs.* + 4 exec.* (ADR-0018).
-        expect(toolsList, hasLength(88));
+        // 79 pre-Wave-3 tools + 5 fs.* + 4 exec.* (ADR-0018) + 4 draft.* (ADR-0019).
+        expect(toolsList, hasLength(92));
         final toolNames = toolsList
             .whereType<Map<Object?, Object?>>()
             .map((t) => t['name'])

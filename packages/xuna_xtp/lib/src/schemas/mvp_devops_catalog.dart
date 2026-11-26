@@ -398,6 +398,7 @@ List<ToolDescriptor> buildMvpToolCatalog({
     if (includeExecFsTools) ...[
       ...buildFsTools(defaultPermission: defaultPermission),
       ...buildExecTools(shellEnabled: shellEnabled),
+      ...buildDraftTools(defaultPermission: defaultPermission),
     ],
   ];
   return tools;

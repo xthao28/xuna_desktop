@@ -21,6 +21,7 @@ import 'package:xuna_desktop/features/presence/presence_coordinator.dart';
 import 'package:xuna_desktop/features/session/xtp_session_client.dart';
 import 'package:xuna_desktop/features/startup/startup_launch_service.dart';
 import 'package:xuna_desktop/features/stop/emergency_stop_controller.dart';
+import 'package:xuna_desktop/features/exec/draft_workspace_manager.dart';
 import 'package:xuna_desktop/features/exec/exec_process_registry.dart';
 import 'package:xuna_desktop/features/exec/fs_undo_journal.dart';
 import 'package:xuna_desktop/features/watch/cdp_watch_signal_driver.dart';
@@ -54,6 +55,7 @@ class DesktopAgentController extends BaseGetxController {
     ProtocolTaskRegistry? protocolTaskRegistry,
     ExecProcessRegistry? execRegistry,
     this.fsUndoJournal,
+    this.draftWorkspaceManager,
     CdpBrowserEngineProvider? cdpBrowserProvider,
     AutoAppScanner? appScanner,
     AutoWorkspaceIndexer? workspaceIndexer,
@@ -131,6 +133,9 @@ class DesktopAgentController extends BaseGetxController {
 
   /// Crash-safe local file undo journal swept on startup (`ADR-0019` §1).
   final FsUndoJournal? fsUndoJournal;
+
+  /// Isolated draft workspace manager swept on startup (`ADR-0019` §3).
+  final DraftWorkspaceManager? draftWorkspaceManager;
 
   /// Opt-in "Khởi động cùng máy" (P0.9); `null` = feature not wired.
   final StartupLaunchService? startupLaunch;
@@ -277,6 +282,13 @@ class DesktopAgentController extends BaseGetxController {
         await fsUndoJournal!.recoverAndPruneOnStartup();
       } on Object {
         // Recovery issues are logged content-free; never block agent startup.
+      }
+    }
+    if (draftWorkspaceManager != null) {
+      try {
+        await draftWorkspaceManager!.cleanupAllOnStartup();
+      } on Object {
+        // Stale draft cleanup is logged content-free; never block agent startup.
       }
     }
     await refreshStartupLaunch();

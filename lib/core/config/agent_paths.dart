@@ -5,9 +5,12 @@ import 'dart:io';
 /// - Windows: `%APPDATA%\XUNA\` (machine-local undo WAL: `%LOCALAPPDATA%\XUNA\undo\`)
 /// - macOS: `~/Library/Application Support/XUNA/` (`undo/` mode `0700`)
 class AgentPaths {
-  AgentPaths({required this.rootDir, Directory? undoDir})
+  AgentPaths({required this.rootDir, Directory? undoDir, Directory? draftsDir})
     : undoDir =
-          undoDir ?? Directory('${rootDir.path}${Platform.pathSeparator}undo');
+          undoDir ?? Directory('${rootDir.path}${Platform.pathSeparator}undo'),
+      draftsDir =
+          draftsDir ??
+          Directory('${rootDir.path}${Platform.pathSeparator}drafts');
 
   /// Resolves the default `XUNA` directory from OS environment variables, or
   /// falls back to [overrideRootDir] when supplied (e.g. in tests).
@@ -29,6 +32,9 @@ class AgentPaths {
         undoDir: Directory(
           '$localAppData${Platform.pathSeparator}XUNA${Platform.pathSeparator}undo',
         ),
+        draftsDir: Directory(
+          '$localAppData${Platform.pathSeparator}XUNA${Platform.pathSeparator}drafts',
+        ),
       );
     }
     final home = env['HOME'] ?? '.';
@@ -42,6 +48,10 @@ class AgentPaths {
   /// Machine-local file undo journal directory (`ADR-0019` §1).
   /// Never stored inside `audit/` or uploaded to the backend.
   final Directory undoDir;
+
+  /// Machine-local isolated draft workspace directory (`ADR-0019` §3).
+  /// Swept on startup and E-Stop; never stored inside `audit/`.
+  final Directory draftsDir;
 
   /// `host-policy.json` (`UDC-3` §5.6.4).
   File get policyFile =>
@@ -59,7 +69,7 @@ class AgentPaths {
   Directory get auditDir =>
       Directory('${rootDir.path}${Platform.pathSeparator}audit');
 
-  /// Ensures [rootDir], [auditDir], and [undoDir] exist.
+  /// Ensures [rootDir], [auditDir], [undoDir], and [draftsDir] exist.
   Future<void> ensureDirectories() async {
     if (!await rootDir.exists()) {
       await rootDir.create(recursive: true);
@@ -70,11 +80,16 @@ class AgentPaths {
     if (!await undoDir.exists()) {
       await undoDir.create(recursive: true);
     }
+    if (!await draftsDir.exists()) {
+      await draftsDir.create(recursive: true);
+    }
     if (!Platform.isWindows) {
-      try {
-        await Process.run('/bin/chmod', <String>['700', undoDir.path]);
-      } on Object {
-        // Best-effort owner-only permissions on POSIX.
+      for (final dir in <Directory>[undoDir, draftsDir]) {
+        try {
+          await Process.run('/bin/chmod', <String>['700', dir.path]);
+        } on Object {
+          // Best-effort owner-only permissions on POSIX.
+        }
       }
     }
   }

@@ -813,7 +813,7 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   if (prefix == 'habit' || prefix == 'shortcuts') {
     return ToolFamily.workflow;
   }
-  if (prefix == 'finder' || prefix == 'fs') {
+  if (prefix == 'finder' || prefix == 'fs' || prefix == 'draft') {
     return ToolFamily.files;
   }
   if (prefix == 'display' ||
@@ -851,7 +851,7 @@ ToolFamily? resolveToolFamilyForName(String toolName) {
   return null;
 }
 
-/// Single-use approval token in `_meta["xuna/approval"]` (`XUNA_XTP_V1_CONTRACT.md` §4.2.2, `UDC-7`).
+/// Single-use approval token in `_meta["xuna/approval"]` (`XUNA_XTP_V1_CONTRACT.md` §4.2.2, `UDC-7`, `ADR-0019` §4).
 class ApprovalToken {
   ApprovalToken({
     required this.approvalId,
@@ -860,6 +860,8 @@ class ApprovalToken {
     this.scope = 'once',
     this.signature,
     this.publicKey,
+    this.version = 1,
+    this.effectSha256,
     String? expiresAtRaw,
   }) : expiresAtWire = expiresAtRaw ?? expiresAt.toUtc().toIso8601String() {
     if (!isValidUuid(approvalId)) {
@@ -870,6 +872,24 @@ class ApprovalToken {
     }
     if (scope != 'once' && scope != 'conversation_15m') {
       throw FormatException('Invalid approval scope: $scope');
+    }
+    if (version != 1 && version != 2) {
+      throw FormatException('Unsupported approval version: $version');
+    }
+    if (version == 2) {
+      if (effectSha256 == null ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(effectSha256!)) {
+        throw const FormatException(
+          'Approval v2 requires a 64-char lowercase hex effectSha256',
+        );
+      }
+      if (scope != 'once') {
+        throw const FormatException('Approval v2 requires scope "once"');
+      }
+    } else if (effectSha256 != null) {
+      throw const FormatException(
+        'Approval v1 must not carry effectSha256',
+      );
     }
     if (signature != null && signature!.length != 64) {
       throw const FormatException('Approval signature must be 64 bytes');
@@ -886,7 +906,13 @@ class ApprovalToken {
     _requireExactKeys(
       json,
       const <String>{'approvalId', 'argsSha256', 'expiresAt'},
-      optionalKeys: const <String>{'scope', 'signature', 'publicKey'},
+      optionalKeys: const <String>{
+        'scope',
+        'signature',
+        'publicKey',
+        'version',
+        'effectSha256',
+      },
       context: 'xuna/approval',
     );
     final expiresRaw = _requireString(json, 'expiresAt');
@@ -898,6 +924,18 @@ class ApprovalToken {
     final scope = json.containsKey('scope') && json['scope'] != null
         ? _requireString(json, 'scope')
         : 'once';
+    var version = 1;
+    if (json.containsKey('version') && json['version'] != null) {
+      final rawVersion = json['version'];
+      if (rawVersion is! int) {
+        throw const FormatException('Approval version must be an integer');
+      }
+      version = rawVersion;
+    }
+    String? effectSha256;
+    if (json.containsKey('effectSha256') && json['effectSha256'] != null) {
+      effectSha256 = _requireString(json, 'effectSha256');
+    }
     Uint8List? sigBytes;
     if (json.containsKey('signature') && json['signature'] != null) {
       sigBytes = _decodeB64Flex(_requireString(json, 'signature'), 64);
@@ -913,6 +951,8 @@ class ApprovalToken {
       scope: scope,
       signature: sigBytes,
       publicKey: pubBytes,
+      version: version,
+      effectSha256: effectSha256,
       expiresAtRaw: expiresRaw,
     );
   }
@@ -923,6 +963,8 @@ class ApprovalToken {
   final String scope;
   final Uint8List? signature;
   final Uint8List? publicKey;
+  final int version;
+  final String? effectSha256;
   final String expiresAtWire;
 
   bool isExpiredAt(DateTime nowUtc) => !nowUtc.toUtc().isBefore(expiresAt);
@@ -932,6 +974,8 @@ class ApprovalToken {
         'argsSha256': argsSha256,
         'expiresAt': expiresAtWire,
         if (scope != 'once') 'scope': scope,
+        if (version != 1) 'version': version,
+        if (effectSha256 != null) 'effectSha256': effectSha256,
         if (signature != null) 'signature': base64.encode(signature!),
         if (publicKey != null) 'publicKey': base64.encode(publicKey!),
       };

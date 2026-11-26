@@ -34,6 +34,14 @@ const Map<String, Object?> _taskId = <String, Object?>{
   'type': 'string',
   'pattern': r'^exec_[a-zA-Z0-9_-]{1,64}$',
 };
+const Map<String, Object?> _draftId = <String, Object?>{
+  'type': 'string',
+  'pattern': r'^draft_[a-zA-Z0-9_-]{1,48}$',
+};
+const Map<String, Object?> _workspaceAlias = <String, Object?>{
+  'type': 'string',
+  'pattern': r'^[a-zA-Z0-9_.-]{1,64}$',
+};
 const Map<String, Object?> _execStatus = <String, Object?>{
   'type': 'string',
   'enum': <String>['completed', 'running', 'failed', 'timed_out', 'cancelled'],
@@ -121,6 +129,7 @@ List<ToolDescriptor> buildFsTools({
         'glob': _str(1, 128),
         'maxDepth': _int(1, 6),
         'maxEntries': _int(1, 200),
+        'draftId': _draftId,
       }, required: <String>[
         'path'
       ]),
@@ -156,6 +165,7 @@ List<ToolDescriptor> buildFsTools({
         'path': path,
         'startLine': _int(1, 1 << 30),
         'endLine': _int(1, 1 << 30),
+        'draftId': _draftId,
       }, required: <String>[
         'path'
       ]),
@@ -184,6 +194,7 @@ List<ToolDescriptor> buildFsTools({
         'isRegex': _bool,
         'glob': _str(1, 128),
         'maxMatches': _int(1, 100),
+        'draftId': _draftId,
       }, required: <String>[
         'path',
         'pattern'
@@ -219,6 +230,7 @@ List<ToolDescriptor> buildFsTools({
         'content': _str(0, 262144),
         'createParents': _bool,
         'overwrite': _bool,
+        'draftId': _draftId,
       }, required: <String>[
         'path',
         'content'
@@ -243,6 +255,7 @@ List<ToolDescriptor> buildFsTools({
         'target': _str(1, 65536),
         'replacement': _str(0, 65536),
         'replaceAll': _bool,
+        'draftId': _draftId,
       }, required: <String>[
         'path',
         'target',
@@ -287,6 +300,7 @@ List<ToolDescriptor> buildExecTools({required bool shellEnabled}) {
         'yieldMs': _int(500, 60000),
         'pty': _bool,
         'expectFiles': _expectFiles,
+        'draftId': _draftId,
       }, required: <String>[
         'command'
       ]),
@@ -377,6 +391,166 @@ List<ToolDescriptor> buildExecTools({required bool shellEnabled}) {
         'signalSent'
       ]),
       policy: meta(RiskTier.r1, observes: false),
+    ),
+  ];
+}
+
+/// Builds the four `draft.*` descriptors (`ADR-0019` §3–§4 / `W4-M3`, `W4-M4`,
+/// family `files`).
+List<ToolDescriptor> buildDraftTools({
+  XtpPermissionState defaultPermission = XtpPermissionState.granted,
+}) {
+  ToolPolicyMeta meta(
+    RiskTier risk, {
+    required bool observes,
+    required bool reversible,
+  }) =>
+      ToolPolicyMeta(
+        family: ToolFamily.files,
+        risk: risk,
+        observes: observes,
+        reversible: reversible,
+        permission: defaultPermission,
+      );
+  return <ToolDescriptor>[
+    ToolDescriptor(
+      name: 'draft.create',
+      description:
+          'Create an isolated filtered copy of one configured workspace root for trial fs.*/R2 exec.run edits without modifying the original workspace.',
+      inputSchema: _obj(<String, Object?>{
+        'workspacePath': _str(1, 512),
+        'workspaceAlias': _workspaceAlias,
+      }, required: <String>[
+        'workspacePath'
+      ]),
+      outputSchema: _obj(<String, Object?>{
+        'draftId': _draftId,
+        'workspaceAlias': _workspaceAlias,
+        'scope': const <String, Object?>{
+          'type': 'string',
+          'enum': <String>['workspace_files_only'],
+        },
+        'networkIsolated': _bool,
+        'fileCount': _count,
+        'totalBytes': _count,
+        'expiresAt': _str(1, 64),
+      }, required: <String>[
+        'draftId',
+        'workspaceAlias',
+        'scope',
+        'networkIsolated',
+        'fileCount',
+        'totalBytes',
+        'expiresAt',
+      ]),
+      policy: meta(RiskTier.r2, observes: false, reversible: true),
+    ),
+    ToolDescriptor(
+      name: 'draft.manifest',
+      description:
+          'Compute the canonical EffectManifest and effectSha256 of workspace file changes inside an active draft session.',
+      inputSchema: _obj(<String, Object?>{
+        'draftId': _draftId,
+      }, required: <String>[
+        'draftId'
+      ]),
+      outputSchema: _obj(<String, Object?>{
+        'schemaVersion': _int(1, 1),
+        'draftId': _draftId,
+        'workspaceAlias': _workspaceAlias,
+        'scope': const <String, Object?>{
+          'type': 'string',
+          'enum': <String>['workspace_files_only'],
+        },
+        'networkIsolated': _bool,
+        'effectSha256': _sha256,
+        'changeCount': _count,
+        'changes': <String, Object?>{
+          'type': 'array',
+          'maxItems': 200,
+          'items': _obj(<String, Object?>{
+            'relPath': _str(1, 260),
+            'op': const <String, Object?>{
+              'type': 'string',
+              'enum': <String>['create', 'modify', 'delete'],
+            },
+            'preSha256': _sha256,
+            'postSha256': _sha256,
+            'sizeBytes': _count,
+          }, required: <String>[
+            'relPath',
+            'op'
+          ]),
+        },
+        'truncated': _bool,
+        'commandCount': _count,
+        'allCompleted': _bool,
+        'failedCount': _count,
+        'createdAt': _str(1, 64),
+        'expiresAt': _str(1, 64),
+      }, required: <String>[
+        'schemaVersion',
+        'draftId',
+        'workspaceAlias',
+        'scope',
+        'networkIsolated',
+        'effectSha256',
+        'changeCount',
+        'changes',
+        'truncated',
+        'createdAt',
+        'expiresAt',
+      ]),
+      policy: meta(RiskTier.r1, observes: true, reversible: true),
+    ),
+    ToolDescriptor(
+      name: 'draft.discard',
+      description:
+          'Delete an active draft workspace copy without touching the original workspace.',
+      inputSchema: _obj(<String, Object?>{
+        'draftId': _draftId,
+      }, required: <String>[
+        'draftId'
+      ]),
+      outputSchema: _obj(<String, Object?>{
+        'draftId': _draftId,
+        'discarded': _bool,
+      }, required: <String>[
+        'draftId',
+        'discarded'
+      ]),
+      policy: meta(RiskTier.r1, observes: false, reversible: false),
+    ),
+    ToolDescriptor(
+      name: 'draft.apply',
+      description:
+          'Apply a verified draft EffectManifest to the real workspace via crash-safe WAL journal (requires xuna.approval.v2 effect-bound signature and live TOCTOU check).',
+      inputSchema: _obj(<String, Object?>{
+        'draftId': _draftId,
+        'effectSha256': _sha256,
+      }, required: <String>[
+        'draftId',
+        'effectSha256'
+      ]),
+      outputSchema: _obj(<String, Object?>{
+        'draftId': _draftId,
+        'effectSha256': _sha256,
+        'appliedCount': _count,
+        'createdCount': _count,
+        'modifiedCount': _count,
+        'deletedCount': _count,
+        'undoTxId': _str(1, 64),
+        'undoAvailable': _bool,
+      }, required: <String>[
+        'draftId',
+        'effectSha256',
+        'appliedCount',
+        'createdCount',
+        'modifiedCount',
+        'deletedCount',
+        'undoAvailable',
+      ]),
+      policy: meta(RiskTier.r3, observes: false, reversible: true),
     ),
   ];
 }

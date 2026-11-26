@@ -213,7 +213,14 @@ Object? _validValueForSchema(
     case 'outputFileName':
       return 'report.csv';
     case 'sha256':
+    case 'effectSha256':
       return 'a' * 64;
+    case 'draftId':
+      return 'draft_parity1';
+    case 'workspacePath':
+      return '/ws/proj';
+    case 'workspaceAlias':
+      return 'proj';
     case 'payloadJson':
     case 'argsJson':
     case 'testArgsJson':
@@ -365,7 +372,8 @@ Map<String, Object?> _synthesizeArgs(
 
 String _stringWithExactLength(String toolName, String propName, int length) {
   if ((toolName.startsWith('fs.') && propName == 'path') ||
-      (toolName == 'exec.run' && propName == 'cwd')) {
+      (toolName == 'exec.run' && propName == 'cwd') ||
+      (toolName == 'draft.create' && propName == 'workspacePath')) {
     const prefix = '/ws/proj/';
     return prefix + ('a' * (length - prefix.length));
   }
@@ -493,7 +501,7 @@ void main() {
 
   final allTools = <ToolDescriptor>[...staticCatalog, dynamicCustomTool];
 
-  group('Schema-Validator Parity Invariants (100 static + 1 dynamic)', () {
+  group('Schema-Validator Parity Invariants (104 static + 1 dynamic)', () {
     late HostPolicyEvaluator evaluator;
     final now = DateTime.utc(2026, 11, 19, 12, 0);
 
@@ -502,11 +510,11 @@ void main() {
     });
 
     test(
-        'catalog has 100 unique static tools + valid metadata & strict schemas',
+        'catalog has 104 unique static tools + valid metadata & strict schemas',
         () {
-      expect(staticCatalog.length, equals(100));
+      expect(staticCatalog.length, equals(104));
       final names = staticCatalog.map((t) => t.name).toSet();
-      expect(names.length, equals(100));
+      expect(names.length, equals(104));
 
       for (final tool in allTools) {
         expect(
@@ -547,25 +555,46 @@ void main() {
           if (res.effectiveRisk >= RiskTier.r2) {
             final digest = argsSha256(args);
             final expiresWire = expiresAt.toUtc().toIso8601String();
-            final sig = res.effectiveRisk >= RiskTier.r3
-                ? signer.sign(
-                    approvalProofMessage(
-                      approvalId: approvalId,
-                      argsSha256: digest,
-                      hostId: hostId,
-                      expiresAt: expiresWire,
-                    ),
-                  )
-                : null;
-            approval = ApprovalToken(
-              approvalId: approvalId,
-              argsSha256: digest,
-              expiresAt: expiresAt,
-              expiresAtRaw: expiresWire,
-              signature: sig,
-              publicKey:
-                  res.effectiveRisk >= RiskTier.r3 ? signer.publicKey : null,
-            );
+            if (tool.name == 'draft.apply') {
+              final effectHash = args['effectSha256']! as String;
+              approval = ApprovalToken(
+                approvalId: approvalId,
+                argsSha256: digest,
+                expiresAt: expiresAt,
+                expiresAtRaw: expiresWire,
+                version: 2,
+                effectSha256: effectHash,
+                signature: signer.sign(
+                  approvalV2ProofMessage(
+                    approvalId: approvalId,
+                    effectSha256: effectHash,
+                    hostId: hostId,
+                    expiresAt: expiresWire,
+                  ),
+                ),
+                publicKey: signer.publicKey,
+              );
+            } else {
+              final sig = res.effectiveRisk >= RiskTier.r3
+                  ? signer.sign(
+                      approvalProofMessage(
+                        approvalId: approvalId,
+                        argsSha256: digest,
+                        hostId: hostId,
+                        expiresAt: expiresWire,
+                      ),
+                    )
+                  : null;
+              approval = ApprovalToken(
+                approvalId: approvalId,
+                argsSha256: digest,
+                expiresAt: expiresAt,
+                expiresAtRaw: expiresWire,
+                signature: sig,
+                publicKey:
+                    res.effectiveRisk >= RiskTier.r3 ? signer.publicKey : null,
+              );
+            }
           }
           final evalRes = evaluator.evaluateInvocation(
             toolName: tool.name,
