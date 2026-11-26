@@ -113,6 +113,47 @@ class HostPolicyStore {
     return savePolicy(defaultPolicy);
   }
 
+  /// Applies the local-only "Dòng lệnh & tệp" switch (`ADR-0018`): it controls
+  /// `exec.*` through `shellControl.enabled` and the `files` family (`fs.*`,
+  /// `finder.*`) together. On sets `files: allow`; off removes `files` so it
+  /// falls back to denied (absent family).
+  static HostPolicy applyShellAndFilesSwitch(HostPolicy policy, bool enabled) {
+    final families = Map<ToolFamily, FamilyPolicyDecision>.from(
+      policy.families,
+    );
+    if (enabled) {
+      families[ToolFamily.files] = FamilyPolicyDecision.allow;
+    } else {
+      families.remove(ToolFamily.files);
+    }
+    return policy.copyWith(
+      shellControl: policy.shellControl.copyWith(enabled: enabled),
+      families: families,
+    );
+  }
+
+  /// Adds `files: allow` to a healthy policy whose `shellControl` was enabled
+  /// before the switch also covered `files`. An explicit `files: block` is
+  /// kept, and nothing changes while `shellControl` is off.
+  Future<HostPolicyEvaluator> migrateShellFilesFamily() async {
+    final current = _evaluator.policy;
+    if (!_evaluator.isHealthy || current == null) {
+      return _evaluator;
+    }
+    if (!current.shellControl.enabled ||
+        current.families.containsKey(ToolFamily.files)) {
+      return _evaluator;
+    }
+    return savePolicy(
+      current.copyWith(
+        families: <ToolFamily, FamilyPolicyDecision>{
+          ...current.families,
+          ToolFamily.files: FamilyPolicyDecision.allow,
+        },
+      ),
+    );
+  }
+
   /// Computer-use families introduced after the first `host-policy.json`
   /// format. Only these are added by [migrateMissingDesktopFamilies].
   static const List<ToolFamily> _migratedComputerUseFamilies = <ToolFamily>[

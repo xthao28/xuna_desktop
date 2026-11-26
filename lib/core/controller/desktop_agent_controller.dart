@@ -256,6 +256,7 @@ class DesktopAgentController extends BaseGetxController {
     await policyStore.reload();
     if (policyStore.isHealthy) {
       await policyStore.migrateMissingDesktopFamilies();
+      await policyStore.migrateShellFilesFamily();
     }
     _syncFromStores();
     scanInstalledApps();
@@ -809,16 +810,16 @@ class DesktopAgentController extends BaseGetxController {
     await policyStore.writeDefaultPolicy();
   }
 
-  /// Turns the local-only `shellControl` switch on or off (`ADR-0018`).
-  /// Only this desktop UI (or a direct edit of `host-policy.json`) can change
-  /// it; turning it off also terminates every running `exec.run` task.
+  /// Turns the local-only "Dòng lệnh & tệp" switch on or off (`ADR-0018`):
+  /// `shellControl.enabled` plus the `files` family
+  /// ([HostPolicyStore.applyShellAndFilesSwitch]). Only this desktop UI (or a
+  /// direct edit of `host-policy.json`) can change it; turning it off also
+  /// terminates every running `exec.run` task.
   Future<void> setShellControlEnabled(bool enabled) async {
     final current = activePolicy.value;
     if (current == null) return;
     await policyStore.savePolicy(
-      current.copyWith(
-        shellControl: current.shellControl.copyWith(enabled: enabled),
-      ),
+      HostPolicyStore.applyShellAndFilesSwitch(current, enabled),
     );
     if (!enabled) await _execRegistry?.killAll();
   }
